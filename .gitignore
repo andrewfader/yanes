@@ -1,0 +1,39 @@
+# CMake build trees and generated files. Keep the checked-in Linux CLAP binary
+# below available as a convenience for users who do not want to build first.
+/build/*
+!/build/YANES.clap
+/cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+cmake_install.cmake
+compile_commands.json
+
+# Compiled output
+*.a
+*.clap
+*.dll
+*.dylib
+*.o
+*.obj
+*.so
+*.vst3
+!/build/YANES.clap
+
+# Test and profiling output
+Testing/
+*.gcda
+*.gcno
+*.profraw
+
+# Local editor and OS metadata
+.DS_Store
+.idea/
+.vscode/
+*~
+*.swp
+
+# Local sample banks and rendered audio
+*.ydmc
+*.wav
+!tests/**/*.wav

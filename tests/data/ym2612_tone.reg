@@ -1,0 +1,33 @@
+# Native ymfm sample index, hexadecimal register, hexadecimal value.
+# One YM2612 channel using all four hardware envelopes and algorithm 7.
+0 22 08
+0 30 01
+0 34 02
+0 38 03
+0 3c 01
+0 40 18
+0 44 20
+0 48 28
+0 4c 00
+0 50 5f
+0 54 5c
+0 58 59
+0 5c 5f
+0 60 88
+0 64 8c
+0 68 90
+0 6c 88
+0 70 04
+0 74 06
+0 78 08
+0 7c 04
+0 80 27
+0 84 36
+0 88 45
+0 8c 27
+0 b0 3f
+0 b4 c7
+0 a4 22
+0 a0 69
+0 28 f0
+12000 28 00
