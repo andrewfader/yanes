@@ -239,3 +239,15 @@ acceptance pass.
 This project implements published chip behavior using clean-room code. The built-in DPCM drums are
 generated at runtime and contain no samples from commercial games. Imported material remains the
 user's responsibility.
+
+## License
+
+This project is licensed under the [YANES Source-Available License](LICENSE).
+
+- **Personal & Evaluation Use**: Free to view, compile, and use for personal, non-commercial, or evaluation purposes with attribution.
+- **Notification**: Users redistributing or adapting this project for public release must notify the author.
+- **Commercial Use & Licensing**: Commercial use, embedding, or commercial redistribution requires explicit prior authorization from the author. The author reserves the right to deny permission or require a negotiated licensing fee.
+
+
+
+
