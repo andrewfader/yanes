@@ -60,12 +60,27 @@ add_executable(yanes-audio-compare tools/yanes_audio_compare.cpp)
 target_compile_features(yanes-audio-compare PRIVATE cxx_std_20)
 install(TARGETS yanes-audio-compare RUNTIME DESTINATION bin)
 
+add_executable(yanes-parity-compare tools/yanes_parity_compare.cpp)
+target_compile_features(yanes-parity-compare PRIVATE cxx_std_20)
+target_compile_options(yanes-parity-compare PRIVATE -Wall -Wextra -Wpedantic)
+install(TARGETS yanes-parity-compare RUNTIME DESTINATION bin)
+
 add_executable(yanes-vgm-extract tools/yanes_vgm_extract.cpp)
 target_compile_features(yanes-vgm-extract PRIVATE cxx_std_20)
 install(TARGETS yanes-vgm-extract RUNTIME DESTINATION bin)
+
+add_executable(vgm_tests tests/vgm_tests.cpp)
+target_compile_features(vgm_tests PRIVATE cxx_std_20)
+target_compile_options(vgm_tests PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
 install(PROGRAMS tools/compare_furnace.sh DESTINATION bin RENAME yanes-compare-furnace)
 
 enable_testing()
+add_executable(yanes-fixture-render tests/furnace_render.cpp)
+target_compile_features(yanes-fixture-render PRIVATE cxx_std_20)
+target_compile_options(yanes-fixture-render PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+target_include_directories(yanes-fixture-render PRIVATE "${clap_SOURCE_DIR}/include")
+target_link_libraries(yanes-fixture-render PRIVATE dl)
+add_test(NAME vgm_tests COMMAND vgm_tests $<TARGET_FILE:yanes-vgm-extract>)
 add_executable(dsp_tests tests/dsp_tests.cpp)
 target_compile_features(dsp_tests PRIVATE cxx_std_20)
 target_compile_options(dsp_tests PRIVATE -UNDEBUG)
@@ -83,6 +98,18 @@ target_compile_options(plugin_smoke PRIVATE -UNDEBUG)
 target_include_directories(plugin_smoke PRIVATE "${clap_SOURCE_DIR}/include")
 target_link_libraries(plugin_smoke PRIVATE dl)
 add_test(NAME plugin_smoke COMMAND plugin_smoke $<TARGET_FILE:yanes_clap>)
+
+# Behavioural suites that drive the built plug-in through the public CLAP interfaces.
+foreach(suite note_tests state_tests bank_tests)
+  add_executable(${suite} tests/${suite}.cpp)
+  target_compile_features(${suite} PRIVATE cxx_std_20)
+  target_compile_options(${suite} PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+  target_include_directories(${suite} PRIVATE "${clap_SOURCE_DIR}/include")
+  target_link_libraries(${suite} PRIVATE dl)
+  add_test(NAME ${suite} COMMAND ${suite} $<TARGET_FILE:yanes_clap>)
+endforeach()
+set_tests_properties(bank_tests PROPERTIES
+  ENVIRONMENT "YANES_DPCM_TOOL=$<TARGET_FILE:yanes-dpcm>")
 add_test(NAME ymfm_register_render COMMAND yanes-register-render ym2612
   ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ym2612_tone.reg
   ${CMAKE_CURRENT_BINARY_DIR}/ym2612_tone.wav)
@@ -93,3 +120,53 @@ set_tests_properties(audio_compare PROPERTIES FIXTURES_REQUIRED ymfm_tone)
 add_test(NAME ymfm_opm_register_render COMMAND yanes-register-render ym2151
   ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ym2151_tone.reg
   ${CMAKE_CURRENT_BINARY_DIR}/ym2151_tone.wav)
+foreach(chip ym2203 ym2608 ym3812 ymf262)
+  add_test(NAME ${chip}_register_render COMMAND yanes-register-render ${chip}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ym2612_tone.reg
+    ${CMAKE_CURRENT_BINARY_DIR}/${chip}_tone.wav)
+endforeach()
+
+# Optional external-oracle suite. Supply a directory containing ym2203.fur,
+# ym2608.fur, ym2612.fur, ym2151.fur, ym3812.fur and ymf262.fur to enable it.
+set(YANES_FURNACE_FIXTURE_DIR "" CACHE PATH "Directory containing per-chip Furnace parity fixtures")
+set(YANES_FURNACE_MIN_CORRELATION "0.4" CACHE STRING "Minimum Furnace envelope correlation")
+if(YANES_FURNACE_FIXTURE_DIR)
+  find_program(FURNACE_EXECUTABLE furnace REQUIRED)
+  foreach(chip ym2203 ym2608 ym2612 ym2151 ym3812 ymf262)
+    set(module "${YANES_FURNACE_FIXTURE_DIR}/${chip}.fur")
+    if(NOT EXISTS "${module}")
+      message(FATAL_ERROR "Missing Furnace parity fixture: ${module}")
+    endif()
+    add_test(NAME furnace_${chip}_parity COMMAND
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/compare_furnace.sh ${chip} ${module}
+      ${YANES_FURNACE_MIN_CORRELATION})
+    set_tests_properties(furnace_${chip}_parity PROPERTIES ENVIRONMENT
+      "PATH=$ENV{PATH};YANES_REGISTER_RENDER=$<TARGET_FILE:yanes-register-render>;YANES_VGM_EXTRACT=$<TARGET_FILE:yanes-vgm-extract>;YANES_AUDIO_COMPARE=$<TARGET_FILE:yanes-audio-compare>")
+  endforeach()
+endif()
+
+# Full chip-audio oracle suite. Point this at the Furnace version to certify;
+# the repository fixtures and the 0.80 composite thresholds remain fixed.
+set(YANES_FURNACE_EXECUTABLE "" CACHE FILEPATH "Furnace executable for the 21-chip audio parity suite")
+if(YANES_FURNACE_EXECUTABLE)
+  foreach(fixture ay-tone fds gameboy-noise gameboy-pulse gameboy-wave n163
+      nes-noise nes-pulse nes-triangle pce-wave pokey-tone saa1099 scc sid6581
+      sid8580 sms-noise sms-tone tia vrc6-pulse vrc6-saw vrc7)
+    add_test(NAME furnace_audio_${fixture} COMMAND
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/compare_furnace_audio.sh ${fixture}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/furnace/${fixture}.fur 0.8)
+    set_tests_properties(furnace_audio_${fixture} PROPERTIES ENVIRONMENT
+      "FURNACE=${YANES_FURNACE_EXECUTABLE};YANES_FIXTURE_RENDER=$<TARGET_FILE:yanes-fixture-render>;YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
+  endforeach()
+  foreach(fixture ay-tone fds gameboy-noise gameboy-pulse gameboy-wave n163
+      nes-noise nes-pulse nes-triangle pce-wave pokey-tone saa1099 scc sid6581
+      sid8580 sms-noise sms-tone tia vrc6-pulse vrc6-saw vrc7)
+    foreach(octave low high)
+      add_test(NAME furnace_audio_${fixture}_${octave} COMMAND
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/compare_furnace_audio.sh ${fixture}-${octave}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/furnace_holdout/${fixture}-${octave}.fur 0.8)
+      set_tests_properties(furnace_audio_${fixture}_${octave} PROPERTIES ENVIRONMENT
+        "FURNACE=${YANES_FURNACE_EXECUTABLE};YANES_FIXTURE_RENDER=$<TARGET_FILE:yanes-fixture-render>;YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
+    endforeach()
+  endforeach()
+endif()

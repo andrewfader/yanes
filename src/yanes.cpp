@@ -250,10 +250,12 @@ void install_dpcm_bank(Plugin* p,size_t slot,std::shared_ptr<const std::vector<u
 std::shared_ptr<const std::vector<uint8_t>> load_dpcm_file(const std::string& path){
   std::ifstream input(path,std::ios::binary);if(!input)return {};
   std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)),{});if(bytes.empty()||bytes.size()>64U*1024U*1024U)return {};
-  if(bytes.size()<44||std::memcmp(bytes.data(),"RIFF",4)||std::memcmp(bytes.data()+8,"WAVE",4)){
+  const bool riff=bytes.size()>=4&&!std::memcmp(bytes.data(),"RIFF",4);
+  if(!riff){
     if(bytes.size()>1024U*1024U)return {};
     return std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
   }
+  if(bytes.size()<44||std::memcmp(bytes.data()+8,"WAVE",4))return {};
   auto u16=[&](size_t p){return static_cast<uint16_t>(bytes[p]|(bytes[p+1]<<8U));};
   auto u32=[&](size_t p){return static_cast<uint32_t>(u16(p)|(static_cast<uint32_t>(u16(p+2))<<16U));};
   uint16_t format=0,channels=0,bits=0;uint32_t rate=0;size_t at=0,size=0;
@@ -267,7 +269,7 @@ std::shared_ptr<const std::vector<uint8_t>> load_dpcm_file(const std::string& pa
 }
 double db_gain(double db) { return std::exp(db * std::log(10.0) / 20.0); }
 
-void set_param(Plugin* p, clap_id id, double value) {
+void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
   if (id >= kParamCount) return;
   const auto& s = kSpecs[id];
   value = std::clamp(value, s.min, s.max);
@@ -276,7 +278,7 @@ void set_param(Plugin* p, clap_id id, double value) {
   if(previous!=value)p->ui_revision.fetch_add(1,std::memory_order_release);
   if (id == kGenesisAlgorithm || id == kGenesisFeedback || id == kFmBrightness ||
       (id >= kFmAttack && id <= kFmPmDepth)) p->fm_revision.fetch_add(1, std::memory_order_release);
-  if (id != kPreset || value < 0.5) return;
+  if (!apply_preset || id != kPreset || value < 0.5) return;
   auto put = [p](clap_id target, double v) { set_param(p, target, v); };
   // Presets only touch their relevant synthesis/output sections so they remain useful starting points.
   switch (static_cast<int>(value)) {
@@ -517,6 +519,11 @@ float render_voice(Plugin* p, Voice& v) {
     const double divider = waveform == 1 ? 32.0 : 16.0;
     const double timer = std::clamp(std::round(chip_clock / (divider * frequency) - 1.0), 0.0, 2047.0);
     frequency = chip_clock / (divider * (timer + 1.0));
+  } else if (waveform == 13 || waveform == 15) {
+    // SN76489 tone channels divide the master clock by 32 and a 10-bit period.
+    constexpr double sms_clock = 3579545.0;
+    const double period = std::clamp(std::round(sms_clock / (32.0 * frequency)), 1.0, 1023.0);
+    frequency = sms_clock / (32.0 * period);
   }
   const double increment = std::min(0.49, frequency / p->sample_rate);
   float value = 0.0f;
@@ -698,11 +705,14 @@ float render_voice(Plugin* p, Voice& v) {
       value = 0.55f * value + 0.45f * ((v.console_lfsr & 1U) ? 1.0f : -1.0f);
     }
   } else if (waveform == 44) {
-    const unsigned widths[] = {4, 5, 9, 5, 9, 4, 5, 9};
-    const unsigned width = widths[std::clamp(shape, 0, 7)];
-    v.noise_phase += frequency / p->sample_rate;
-    while (v.noise_phase >= 1.0) { v.console_lfsr = yanes::lfsr_clock(v.console_lfsr, width > 5 ? 4U : 1U, width); v.noise_phase -= 1.0; }
-    value = (v.console_lfsr & 1U) ? 1.0f : -1.0f;
+    if (shape == 0) value = yanes::pulse(v.phase, increment, 0.5);
+    else {
+      const unsigned widths[] = {4, 5, 9, 5, 9, 4, 5, 9};
+      const unsigned width = widths[std::clamp(shape, 0, 7)];
+      v.noise_phase += frequency / p->sample_rate;
+      while (v.noise_phase >= 1.0) { v.console_lfsr = yanes::lfsr_clock(v.console_lfsr, width > 5 ? 4U : 1U, width); v.noise_phase -= 1.0; }
+      value = (v.console_lfsr & 1U) ? 1.0f : -1.0f;
+    }
   } else if (waveform == 46) {
     value = yanes::morph_wavetable(v.phase, p->params[kWavetablePosition].load(std::memory_order_relaxed),
                                    p->params[kWavetableWarp].load(std::memory_order_relaxed));
@@ -886,7 +896,7 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
       else if (v.channel == 3) noise_dac += (bipolar * 0.5 + 0.5) * 15.0 * amplitude;
       else if (v.channel == 4) dpcm_dac += (bipolar * 0.5 + 0.5) * 127.0 * amplitude;
     }
-    if (nes_stack) {
+    if (nes_stack && (pulse_dac > 0.0 || triangle_dac > 0.0 || noise_dac > 0.0 || dpcm_dac > 0.0)) {
       const double pulse_out = pulse_dac > 0.0 ? 95.88 / (8128.0 / pulse_dac + 100.0) : 0.0;
       const double tnd_input = triangle_dac / 8227.0 + noise_dac / 12241.0 + dpcm_dac / 22638.0;
       const double tnd_out = tnd_input > 0.0 ? 159.79 / (1.0 / tnd_input + 100.0) : 0.0;
@@ -1050,7 +1060,9 @@ bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
     std::copy(std::begin(state.values), std::end(state.values), values.begin()); sizes[0] = state.dpcm_size;
   } else return false;
   for (uint32_t size : sizes) if (size > 1024U * 1024U) return false;
-  for (clap_id i = 0; i < kParamCount; ++i) set_param(self(plugin), i, values[i]);
+  // State is an exact parameter snapshot. Restoring the Preset selector must not
+  // execute its recipe and overwrite the other values in that snapshot.
+  for (clap_id i = 0; i < kParamCount; ++i) set_param(self(plugin), i, values[i], false);
   auto* p = self(plugin);
   for (size_t i = 0; i < 16; ++i) { auto bank=std::make_shared<std::vector<uint8_t>>(sizes[i]);if (!read_exact(bank->data(), sizes[i])) return false;install_dpcm_bank(p,i,std::move(bank)); }
   return true;
