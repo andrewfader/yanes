@@ -9,11 +9,12 @@ constexpr int width = 1600;
 constexpr int height = 1050;
 constexpr int pages = 5;
 constexpr int rows_per_page = 16;
-constexpr int tab_x=32,tab_y=72,tab_width=225,tab_height=54;
-constexpr int visual_y=132,visual_height=76;
-constexpr int label_x=44,module_x=230,slider_x=430,slider_width=690,value_x=1145;
-constexpr int rows_y=220,row_height=47,rail_y_offset=12,rail_height=24;
-constexpr int sequence_x=430,sequence_cell=116,mixer_x=430,mixer_cell=60,bank_x=1010,bank_cell=36;
+constexpr int tab_x=32,tab_y=72,tab_width=300,tab_height=54;
+constexpr int visual_x=32,visual_y=142,visual_width=1536,visual_height=92;
+constexpr int label_x=52,module_x=292,slider_x=470,slider_width=680,value_x=1180;
+constexpr int rows_y=254,row_height=45,rail_y_offset=14,rail_height=16;
+constexpr int sequence_x=470,sequence_cell=116,mixer_x=470,mixer_cell=60,bank_x=1000,bank_cell=35;
+constexpr int tooltip_x=32,tooltip_y=990,tooltip_width=1536,tooltip_height=42;
 constexpr int minimum_width=960,minimum_height=630;
 constexpr int base_font_pixels=32;
 
@@ -43,6 +44,13 @@ constexpr int param_at(int page, int x, int y, int param_count) {
   const int id = page * rows_per_page + row;
   return row >= 0 && contains(x, y, slider_x, rows_y, slider_width, rows_per_page * row_height) &&
                  id >= 0 && id < param_count ? id : -1;
+}
+
+constexpr int param_row_at(int page, int x, int y, int param_count) {
+  const int row = row_at(y);
+  const int id = page * rows_per_page + row;
+  return row >= 0 && contains(x, y, label_x - 12, rows_y, value_x + 360 - label_x,
+                              rows_per_page * row_height) && id >= 0 && id < param_count ? id : -1;
 }
 
 inline double value_from_x(int x, double minimum, double maximum, bool stepped) {

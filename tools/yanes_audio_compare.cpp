@@ -16,9 +16,9 @@ static Wav load(const char* path) {
   for (size_t p=12;p+8<=b.size();) { const uint32_t z=u32(b,p+4); if(p+8U+z>b.size()) break;
     if(!std::memcmp(b.data()+p,"fmt ",4) && z>=16){format=u16(b,p+8);channels=u16(b,p+10);w.rate=u32(b,p+12);bits=u16(b,p+22);}
     if(!std::memcmp(b.data()+p,"data",4)){at=p+8;n=z;} p+=8U+z+(z&1U); }
-  if(format!=1||bits!=16||!channels||at+n>b.size()) return {};
-  const size_t frames=n/(2U*channels);w.samples.reserve(frames);
-  for(size_t frame=0;frame<frames;++frame){double mono=0;for(uint16_t channel=0;channel<channels;++channel){const size_t p=at+(frame*channels+channel)*2U;mono+=static_cast<int16_t>(u16(b,p))/32768.0;}w.samples.push_back(mono/channels);}return w;
+  const size_t bytes=bits/8U;if((format!=1&&format!=3)||(bits!=16&&bits!=24&&bits!=32)||!channels||!bytes||at+n>b.size())return {};
+  const size_t frames=n/(bytes*channels);w.samples.reserve(frames);
+  for(size_t frame=0;frame<frames;++frame){double mono=0;for(uint16_t channel=0;channel<channels;++channel){const size_t p=at+(frame*channels+channel)*bytes;double sample=0;if(format==3&&bits==32){float value{};std::memcpy(&value,b.data()+p,4);sample=value;}else if(bits==16)sample=static_cast<int16_t>(u16(b,p))/32768.0;else if(bits==24){int32_t value=static_cast<int32_t>(b[p]|(b[p+1]<<8U)|(b[p+2]<<16U));if(value&0x800000)value|=~0xffffff;sample=value/8388608.0;}else sample=static_cast<int32_t>(u32(b,p))/2147483648.0;mono+=sample;}w.samples.push_back(mono/channels);}return w;
 }
 int main(int argc,char**argv){
   if(argc<3||argc>4){std::cerr<<"usage: yanes-audio-compare reference.wav candidate.wav [minimum-correlation]\n";return 2;}

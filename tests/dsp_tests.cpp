@@ -57,5 +57,9 @@ int main() {
     assert(std::abs(yanes::phase_distortion(phase, 0.8, 0.3)) <= 1.0f);
     assert(std::isfinite(yanes::additive(phase, 0.5, 0.4)));
     assert(std::abs(yanes::six_operator_fm(phase, 28, 4.0, 0.7)) <= 1.0f);
+    assert(std::abs(yanes::porta_fm(phase, 3.0, 2.7, 0.6)) <= 1.0f);
+    assert(std::abs(yanes::analog_poly(phase, std::fmod(phase * 1.0045, 1.0), 0.5)) <= 1.0f);
+    assert(std::abs(yanes::digital_ensemble(phase, 0.6)) <= 1.0f);
+    assert(std::abs(yanes::tine_piano(phase, 3.2, 0.65, 0.2)) <= 1.0f);
   }
 }

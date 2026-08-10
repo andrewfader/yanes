@@ -117,6 +117,13 @@ set_tests_properties(ymfm_register_render PROPERTIES FIXTURES_SETUP ymfm_tone)
 add_test(NAME audio_compare COMMAND yanes-audio-compare
   ${CMAKE_CURRENT_BINARY_DIR}/ym2612_tone.wav ${CMAKE_CURRENT_BINARY_DIR}/ym2612_tone.wav 0.9999)
 set_tests_properties(audio_compare PROPERTIES FIXTURES_REQUIRED ymfm_tone)
+find_program(REAPER_EXECUTABLE reaper)
+if(REAPER_EXECUTABLE)
+  add_test(NAME reaper_clap_integration COMMAND
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_reaper_integration.sh)
+  set_tests_properties(reaper_clap_integration PROPERTIES TIMEOUT 120 ENVIRONMENT
+    "REAPER=${REAPER_EXECUTABLE};YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_AUDIO_COMPARE=$<TARGET_FILE:yanes-audio-compare>")
+endif()
 add_test(NAME ymfm_opm_register_render COMMAND yanes-register-render ym2151
   ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ym2151_tone.reg
   ${CMAKE_CURRENT_BINARY_DIR}/ym2151_tone.wav)

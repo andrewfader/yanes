@@ -249,7 +249,8 @@ int main(int argc, char **argv) {
                     offset <= 0.03 && (noise || cents <= 20);
   std::cout << "envelope=" << env << " spectrum=" << spectral
             << " onset_delta_ms=" << onset * 1000
-            << " offset_delta_ms=" << offset * 1000;
+            << " offset_delta_ms=" << offset * 1000
+            << " candidate_offset_ms=" << (static_cast<double>(ab.last)-aa.last)*256/a.rate*1000;
   if (!noise)
     std::cout << " reference_hz=" << pa << " candidate_hz=" << pb
               << " pitch_cents=" << cents;

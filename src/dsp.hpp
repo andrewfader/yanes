@@ -203,6 +203,42 @@ inline float six_operator_fm(double phase, int algorithm, double index, double b
   return static_cast<float>(carrier);
 }
 
+// Original, parameterized voices inspired by broad 1980s/90s instrument families.
+// These deliberately avoid factory ROM data and proprietary preset parameters.
+inline float porta_fm(double phase, double ratio, double index, double brightness) {
+  constexpr double tau = 6.2831853071795864769;
+  const double p = tau * phase;
+  const double coarse_ratio = std::round(std::clamp(ratio, 0.5, 8.0) * 2.0) * 0.5;
+  const double mod = std::sin(p * coarse_ratio + 0.18 * std::sin(p * coarse_ratio));
+  const double carrier = std::sin(p + mod * index * (0.45 + brightness * 0.8));
+  return quantize_bipolar(carrier * 0.9 + std::sin(p * 2.0) * brightness * 0.1, 1024);
+}
+
+inline float analog_poly(double phase, double auxiliary_phase, double shape) {
+  const double blend = std::clamp(shape, 0.0, 1.0);
+  const double saw_a = phase * 2.0 - 1.0;
+  const double saw_b = auxiliary_phase * 2.0 - 1.0;
+  const double pulse = auxiliary_phase < 0.48 ? 1.0 : -1.0;
+  return static_cast<float>((saw_a * 0.52 + saw_b * 0.32 + pulse * 0.16) * (0.82 + blend * 0.18));
+}
+
+inline float digital_ensemble(double phase, double position) {
+  constexpr double tau = 6.2831853071795864769;
+  const double p = std::floor(phase * 128.0) / 128.0;
+  const double bright = std::clamp(position, 0.0, 1.0);
+  const double wave = std::sin(tau*p) + 0.34*std::sin(tau*p*2.01) +
+                      bright*0.22*std::sin(tau*p*5.0) + 0.12*std::sin(tau*p*7.02);
+  return quantize_bipolar(wave * 0.62, 256);
+}
+
+inline float tine_piano(double phase, double index, double brightness, double age_seconds) {
+  constexpr double tau = 6.2831853071795864769;
+  const double p = tau * phase;
+  const double strike = std::exp(-age_seconds * (4.0 + brightness * 5.0));
+  const double mod = std::sin(p * 3.0) * index * (0.16 + strike * 0.28);
+  return static_cast<float>(std::sin(p + mod) * 0.82 + std::sin(p * 2.0) * strike * 0.18);
+}
+
 struct NoiseLfsr {
   uint16_t bits{1};
 

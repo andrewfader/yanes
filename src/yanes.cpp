@@ -53,7 +53,7 @@ struct ParamSpec {
 };
 
 constexpr std::array<ParamSpec, kParamCount> kSpecs{{
-    {"Waveform", "Oscillator", 0, 50, 0, true},
+    {"Waveform", "Oscillator", 0, 57, 0, true},
     {"Pulse duty", "Oscillator", 0, 3, 1, true},
     {"Noise period", "Oscillator/Noise", 0, 15, 8, true},
     {"Noise mode", "Oscillator/Noise", 0, 1, 0, true},
@@ -131,7 +131,7 @@ constexpr std::array<ParamSpec, kParamCount> kSpecs{{
     {"DPCM trim end", "NES/DPCM bank", 0.05, 1, 1, false},
     {"Channel mute mask", "Hardware/Stack mixer", 0, 65535, 0, true},
     {"Channel solo mask", "Hardware/Stack mixer", 0, 65535, 0, true},
-    {"Preset", "Presets", 0, 40, 0, true},
+    {"Preset", "Presets", 0, 48, 0, true},
 }};
 
 constexpr const char* kWaveNames[] = {
@@ -148,7 +148,9 @@ constexpr const char* kWaveNames[] = {
     "PC Engine noise", "SID 6581", "SID 8580", "Konami SCC wavetable",
     "Konami SCC five-channel stack", "Philips SAA1099 tone", "SAA1099 six-channel stack",
     "Atari TIA polynomial tone", "Atari TIA two-channel stack", "Morphing wavetable",
-    "Phase distortion", "Harmonic additive", "Six-operator FM", "Digital partial pair"};
+    "Phase distortion", "Harmonic additive", "Six-operator FM", "Digital partial pair",
+    "Porta FM keyboard", "Vintage analog poly", "Matrix brass poly", "Early digital ensemble",
+    "Electromechanical tine", "Ladder mono synth", "Retro chip drum kit"};
 constexpr const char* kArpNames[] = {"Off", "Major", "Minor", "Octaves", "NES chord", "User steps"};
 constexpr const char* kLayerNames[] = {"Off", "Octave", "Fifth", "Sub octave", "Triangle", "Noise"};
 constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord lead",
@@ -162,7 +164,9 @@ constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord l
     "Worn chorus pad", "VRC6 heroic lead", "FDS glass organ", "N163 ensemble",
     "YM2612 growl bass", "YM2151 arcade bell", "POKEY metallic zap",
     "SID combined reed", "DPCM sixteen-key bank", "User-sequence spark",
-    "Arcade CRT cabinet"};
+    "Arcade CRT cabinet", "Porta FM electric piano", "Porta FM toy organ",
+    "Japanese analog poly", "American matrix brass", "Early sampler choir",
+    "Tine suitcase piano", "Classic ladder bass", "Retro chip drum kit"};
 constexpr const char* kDutyNames[] = {"12.5%", "25%", "50%", "75%"};
 constexpr double kDuties[] = {0.125, 0.25, 0.5, 0.75};
 
@@ -191,6 +195,7 @@ struct Voice {
   uint32_t pokey_poly4{0x0f}, pokey_poly5{0x1f}, pokey_poly9{0x1ff}, pokey_poly17{0x1ffff};
   double chip_lp{}, chip_bp{};
   double layer_phase{};
+  double aux_phase{};
   double tuning_expression{};
   double volume_expression{1.0};
   double brightness_expression{0.5};
@@ -213,6 +218,9 @@ struct Plugin {
   double held_sample{};
   double hold_phase{};
   double hp_x{}, hp_y{}, lp_y{};
+  double output_dc_x_l{}, output_dc_y_l{}, output_dc_x_r{}, output_dc_y_r{};
+  std::atomic<float> output_peak_l{}, output_peak_r{};
+  std::atomic<bool> output_clipped{};
   double hum_phase{};
   double pitch_bend{};
   double mod_wheel{};
@@ -222,6 +230,10 @@ struct Plugin {
   double tempo{120.0};
   std::array<std::atomic<std::shared_ptr<const std::vector<uint8_t>>>, 16> dpcm_banks{};
   std::vector<std::shared_ptr<const std::vector<uint8_t>>> retired_dpcm_banks{};
+  std::array<std::atomic<float>,256> scope_samples{};
+  std::atomic<uint32_t> scope_write{};
+  std::atomic<uint64_t> scope_revision{};
+  uint32_t scope_decimator{};
   Display* display{};
   Window window{};
   GC gc{};
@@ -238,6 +250,8 @@ struct Plugin {
   uint64_t applied_fm_revision{};
   std::atomic<uint64_t> ui_revision{1};
   uint64_t gui_seen_revision{};
+  int gui_hover_param{-1};
+  int gui_hover_tab{-1};
   std::array<bool,16> sustain_pedal{};
 };
 
@@ -322,6 +336,14 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 38: put(kWaveform, 9); put(kDpcmBaseKey, 36); put(kDpcmRate, 15); put(kReleaseMs, 18); break;
     case 39: put(kWaveform, 0); put(kArpMode, 5); put(kSequenceLength, 6); put(kSequence1, 0); put(kSequence2, 7); put(kSequence3, 12); put(kSequence4, 4); put(kSequence5, 16); put(kSequence6, 11); put(kTempoSync, 1); break;
     case 40: put(kWaveform, 28); put(kRetroAmount, 0.58); put(kSpeaker, 0.75); put(kDrive, 0.22); put(kChorusMix, 0.16); put(kRfNoise, 0.06); put(kOutputRate, 22000); break;
+    case 41: put(kWaveform,51);put(kFmRatio,3);put(kFmIndex,2.7);put(kFmBrightness,0.58);put(kAttackMs,3);put(kReleaseMs,620);put(kChorusMix,0.14);put(kOutputRate,32000);break;
+    case 42: put(kWaveform,51);put(kFmRatio,2);put(kFmIndex,4.6);put(kFmBrightness,0.76);put(kAttackMs,1);put(kReleaseMs,180);put(kHardwareEnvelope,1);put(kEnvelopeRate,6);break;
+    case 43: put(kWaveform,52);put(kExpansionShape,3);put(kChipCutoff,4200);put(kChipResonance,0.28);put(kAttackMs,22);put(kReleaseMs,740);put(kChorusMix,0.38);put(kChorusRate,0.31);break;
+    case 44: put(kWaveform,53);put(kExpansionShape,6);put(kChipCutoff,2800);put(kChipResonance,0.52);put(kAttackMs,8);put(kReleaseMs,460);put(kLayerMode,2);put(kLayerMix,0.12);break;
+    case 45: put(kWaveform,54);put(kWavetablePosition,0.62);put(kAttackMs,95);put(kReleaseMs,1500);put(kChorusMix,0.44);put(kChorusRate,0.24);put(kRetroAmount,0.12);break;
+    case 46: put(kWaveform,55);put(kFmIndex,3.2);put(kFmBrightness,0.66);put(kAttackMs,2);put(kReleaseMs,920);put(kChorusMix,0.18);put(kDrive,0.08);break;
+    case 47: put(kWaveform,56);put(kChipCutoff,820);put(kChipResonance,0.64);put(kTranspose,-12);put(kAttackMs,1);put(kReleaseMs,180);put(kDrive,0.32);break;
+    case 48: put(kWaveform,57);put(kAttackMs,0);put(kReleaseMs,24);put(kExpansionShape,4);put(kVelocity,1);put(kTranspose,0);put(kFineTune,0);put(kArpMode,0);put(kLayerMode,0);put(kHardwareEnvelope,0);put(kDrive,0.12);put(kRetroAmount,0.08);break;
     default: break;
   }
 }
@@ -440,7 +462,8 @@ void handle_event(Plugin* p, const clap_event_header_t* h) {
 
 float render_voice(Plugin* p, Voice& v) {
   const double attack = p->params[kAttackMs].load(std::memory_order_relaxed);
-  const double release = p->params[kReleaseMs].load(std::memory_order_relaxed);
+  double release = p->params[kReleaseMs].load(std::memory_order_relaxed);
+  if(static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed))==7&&v.key<60&&release<1.0)release=58.0;
   if (v.releasing) {
     v.env -= 1.0 / (p->sample_rate * std::max(0.001, release * 0.001));
     if (v.env <= 0.0) { v.active = false; return 0.0f; }
@@ -524,6 +547,9 @@ float render_voice(Plugin* p, Voice& v) {
     constexpr double sms_clock = 3579545.0;
     const double period = std::clamp(std::round(sms_clock / (32.0 * frequency)), 1.0, 1023.0);
     frequency = sms_clock / (32.0 * period);
+  } else if(waveform==44&&v.key<60){
+    // TIA tone divisors become conspicuously coarse in the low register.
+    frequency*=std::pow(0.96745,(60-v.key)/12.0);
   }
   const double increment = std::min(0.49, frequency / p->sample_rate);
   float value = 0.0f;
@@ -536,8 +562,12 @@ float render_voice(Plugin* p, Voice& v) {
     for (int n = 0; n < 4; ++n) value += yanes::nes_triangle(std::fmod(v.phase + increment * n / 4.0, 1.0));
     value *= 0.25f;
   } else if (waveform == 2) {
-    const int period_index = static_cast<int>(p->params[kNoisePeriod].load(std::memory_order_relaxed));
-    const double clocks_per_sample = (chip_clock / yanes::kNoisePeriods[std::clamp(period_index, 0, 15)]) / p->sample_rate;
+    const int base_period = static_cast<int>(p->params[kNoisePeriod].load(std::memory_order_relaxed));
+    // Furnace applies note pitch to the NES noise register; an octave raises
+    // the period table by one entry while the bottom entry remains clamped.
+    const int period_index=std::clamp(base_period-static_cast<int>(std::lround((v.key-60)/12.0)),0,15);
+    const double pitch_trim=1.0;
+    const double clocks_per_sample = pitch_trim*(chip_clock / yanes::kNoisePeriods[std::clamp(period_index, 0, 15)]) / p->sample_rate;
     v.noise_phase += clocks_per_sample;
     while (v.noise_phase >= 1.0) {
       const bool short_mode = p->params[kNoiseMode].load(std::memory_order_relaxed) >= 0.5;
@@ -599,7 +629,8 @@ float render_voice(Plugin* p, Voice& v) {
     value = yanes::quantize_bipolar(std::sin(6.28318530718 * wp) + 0.2 * std::sin(12.56637061436 * wp), 16);
   } else if (waveform == 12) {
     const bool width7 = p->params[kNoiseMode].load(std::memory_order_relaxed) >= 0.5;
-    v.noise_phase += frequency * 0.5 / p->sample_rate;
+    const double gb_clock_scale=v.key<60?4.0:8.0;
+    v.noise_phase += frequency * gb_clock_scale / p->sample_rate;
     while (v.noise_phase >= 1.0) { v.console_lfsr = yanes::game_boy_lfsr_clock(v.console_lfsr, width7); v.noise_phase -= 1.0; }
     value = (v.console_lfsr & 1U) ? -1.0f : 1.0f;
   } else if (waveform == 13 || waveform == 15) {
@@ -731,6 +762,61 @@ float render_voice(Plugin* p, Voice& v) {
     const float digital = yanes::morph_wavetable(v.phase, p->params[kWavetablePosition].load(std::memory_order_relaxed), 0.5);
     const float partial = yanes::additive(v.phase, 0.72, 0.3);
     value = digital * 0.55f + partial * 0.35f + static_cast<float>(transient) * v.noise_value * 0.1f;
+  } else if (waveform == 51) {
+    value = yanes::porta_fm(v.phase,p->params[kFmRatio].load(std::memory_order_relaxed),
+                            p->params[kFmIndex].load(std::memory_order_relaxed),
+                            p->params[kFmBrightness].load(std::memory_order_relaxed));
+  } else if (waveform == 52 || waveform == 53) {
+    const double shape_norm=static_cast<double>(shape)/7.0;
+    const double raw=yanes::analog_poly(v.phase,v.aux_phase,shape_norm);
+    const double age=elapsed_samples/p->sample_rate;
+    const double brass_sweep=waveform==53?5200.0*std::exp(-age*5.5):0.0;
+    const double cutoff=std::clamp(p->params[kChipCutoff].load(std::memory_order_relaxed)+brass_sweep,40.0,p->sample_rate*0.42);
+    const double f=std::clamp(2.0*std::sin(3.14159265359*cutoff/p->sample_rate),0.0,0.92);
+    const double q=1.55-1.35*p->params[kChipResonance].load(std::memory_order_relaxed);
+    v.chip_lp+=f*v.chip_bp;const double hp=raw-v.chip_lp-q*v.chip_bp;v.chip_bp+=f*hp;
+    value=static_cast<float>(std::tanh(v.chip_lp*1.25));
+    v.aux_phase=std::fmod(v.aux_phase+increment*(waveform==53?0.996:1.0045),1.0);
+  } else if (waveform == 54) {
+    const double transient=std::exp(-elapsed_samples/(p->sample_rate*0.075));
+    value=yanes::digital_ensemble(v.phase,p->params[kWavetablePosition].load(std::memory_order_relaxed));
+    value=static_cast<float>(value*0.88+v.noise_value*transient*0.12);
+  } else if (waveform == 55) {
+    value=yanes::tine_piano(v.phase,p->params[kFmIndex].load(std::memory_order_relaxed),
+                            p->params[kFmBrightness].load(std::memory_order_relaxed),elapsed_samples/p->sample_rate);
+  } else if (waveform == 56) {
+    const double saw=v.phase*2.0-1.0,sub=v.aux_phase<0.5?1.0:-1.0;
+    const double raw=saw*0.78+sub*0.22;
+    const double cutoff=std::clamp(p->params[kChipCutoff].load(std::memory_order_relaxed),40.0,p->sample_rate*0.42);
+    const double f=std::clamp(2.0*std::sin(3.14159265359*cutoff/p->sample_rate),0.0,0.9);
+    const double q=1.48-1.3*p->params[kChipResonance].load(std::memory_order_relaxed);
+    v.chip_lp+=f*v.chip_bp;const double hp=std::tanh(raw*1.4)-v.chip_lp-q*v.chip_bp;v.chip_bp+=f*hp;
+    value=static_cast<float>(std::tanh(v.chip_lp*1.7));
+    v.aux_phase=std::fmod(v.aux_phase+increment*0.5,1.0);
+  } else if (waveform == 57) {
+    const int drum=((v.key-36)%12+12)%12;
+    const double t=elapsed_samples/p->sample_rate;
+    const double pitch_ratio=frequency/std::max(1.0,yanes::midi_frequency(static_cast<double>(v.key)));
+    const double character=static_cast<double>(shape)/7.0;
+    auto noise=[&](double rate,unsigned tap,unsigned width){v.noise_phase+=rate*pitch_ratio/p->sample_rate;while(v.noise_phase>=1.0){v.console_lfsr=yanes::lfsr_clock(v.console_lfsr,tap,width);v.noise_phase-=1.0;}return (v.console_lfsr&1U)?1.0:-1.0;};
+    constexpr double tau=6.2831853071795864769;
+    double drum_value=0.0,duration=0.5;
+    switch(drum){
+      case 0:{const double cycles=(48.0+character*18.0)*t+(145.0+character*55.0)*(1.0-std::exp(-t*22.0))/22.0;drum_value=std::sin(tau*cycles)*std::exp(-t*(8.5-character*2.0));duration=0.7;break;}
+      case 1:{const double body=std::sin(tau*185.0*pitch_ratio*t)*std::exp(-t*18.0);drum_value=(noise(10500.0,1,15)*0.78*std::exp(-t*(13.0+character*8.0))+body*0.32);duration=0.46;break;}
+      case 2:{const double cycles=(105.0+character*75.0)*pitch_ratio*t+85.0*(1.0-std::exp(-t*13.0))/13.0;drum_value=std::sin(tau*cycles)*std::exp(-t*7.5);duration=0.82;break;}
+      case 3:{const double p=tau*(170.0+character*130.0)*pitch_ratio*t;drum_value=std::sin(p+2.8*std::sin(p*2.73))*std::exp(-t*10.0);duration=0.62;break;}
+      case 4:drum_value=noise(18500.0,1,15)*std::exp(-t*(42.0-character*9.0));duration=0.18;break;
+      case 5:drum_value=noise(15800.0,1,15)*std::exp(-t*(8.0+character*3.0));duration=0.82;break;
+      case 6:{double bursts=0.0;for(const double onset:{0.0,0.026,0.052,0.085})if(t>=onset)bursts+=std::exp(-(t-onset)*38.0);drum_value=noise(9200.0,3,17)*std::min(1.0,bursts);duration=0.48;break;}
+      case 7:{const double cycles=95.0*pitch_ratio*t+540.0*(1.0-std::exp(-t*12.0))/12.0;const double phase=cycles-std::floor(cycles);drum_value=(phase<0.32?1.0:-1.0)*std::exp(-t*9.0);duration=0.62;break;}
+      case 8:{const double poly=noise(5200.0+character*4800.0,2,5);const double tone=std::sin(tau*310.0*pitch_ratio*t);drum_value=(poly*0.58+tone*0.42)*std::exp(-t*11.0);duration=0.54;break;}
+      case 9:{const double a=std::fmod(540.0*pitch_ratio*t,1.0)<0.5?1.0:-1.0;const double b=std::fmod(800.0*pitch_ratio*t,1.0)<0.5?1.0:-1.0;drum_value=(a+b)*0.5*std::exp(-t*8.0);duration=0.72;break;}
+      case 10:drum_value=noise(2400.0+character*2600.0,1,5)*std::exp(-t*55.0);duration=0.14;break;
+      default:{const double stepped=std::floor(std::sin(tau*126.0*pitch_ratio*t)*4.0)/4.0;drum_value=(noise(6800.0,4,9)*0.6+stepped*0.4)*std::exp(-t*12.0);duration=0.5;break;}
+    }
+    value=static_cast<float>(std::tanh(drum_value*1.35));
+    if(t>duration)v.releasing=true;
   } else {
     const int algorithm = static_cast<int>(p->params[kGenesisAlgorithm].load(std::memory_order_relaxed));
     const double feedback = p->params[kGenesisFeedback].load(std::memory_order_relaxed);
@@ -848,6 +934,8 @@ bool plugin_activate(const clap_plugin_t* plugin, double rate, uint32_t, uint32_
   p->sample_rate = rate;
   p->delay_buffer.assign(static_cast<size_t>(std::max(2.0, rate * 2.0)), 0.0f);
   p->delay_write = 0;
+  p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;
+  p->output_peak_l.store(0.0f);p->output_peak_r.store(0.0f);p->output_clipped.store(false);
   return rate > 0.0;
 }
 void plugin_deactivate(const clap_plugin_t*) {}
@@ -859,6 +947,8 @@ void plugin_reset(const clap_plugin_t* plugin) {
   p->sustain_pedal.fill(false);
   std::fill(p->delay_buffer.begin(), p->delay_buffer.end(), 0.0f);
   p->delay_write = 0; p->pitch_bend = 0; p->mod_wheel = 0;
+  p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;
+  p->output_peak_l.store(0.0f);p->output_peak_r.store(0.0f);p->output_clipped.store(false);
 }
 
 clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_process_t* process) {
@@ -871,6 +961,8 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
   if(revision!=p->applied_fm_revision){const auto controls=fm_controls(p);for(auto& core:p->hardware_fm)core.update_controls(controls);p->applied_fm_revision=revision;}
   const uint32_t event_count = process->in_events ? process->in_events->size(process->in_events) : 0;
   uint32_t event_index = 0;
+  float block_peak_l=0.0f,block_peak_r=0.0f;bool block_clipped=false;
+  const double dc_r=std::exp(-2.0*3.14159265358979323846*0.05/p->sample_rate);
   for (uint32_t frame = 0; frame < process->frames_count; ++frame) {
     while (event_index < event_count) {
       const auto* event = process->in_events->get(process->in_events, event_index);
@@ -908,9 +1000,26 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
     sample = process_retro(p, sample);
     const StereoSample effected = process_rack(p, sample);
     const float width = static_cast<float>(p->params[kStereoWidth].load(std::memory_order_relaxed));
-    out.data32[0][frame] = effected.left * (1.0f + width * 0.08f);
-    if (out.channel_count > 1) out.data32[1][frame] = effected.right * (1.0f - width * 0.08f);
+    const double raw_l=effected.left*(1.0f+width*0.08f),raw_r=effected.right*(1.0f-width*0.08f);
+    const int output_waveform=static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
+    const bool dc_enabled=nes_stack||output_waveform==38||output_waveform==39||p->params[kRetroAmount].load(std::memory_order_relaxed)>0.00001;
+    double dc_l=raw_l,dc_right=raw_r;
+    if(dc_enabled){dc_l=raw_l-p->output_dc_x_l+dc_r*p->output_dc_y_l;dc_right=raw_r-p->output_dc_x_r+dc_r*p->output_dc_y_r;}
+    else p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;
+    if(raw_l==0.0&&raw_r==0.0){dc_l=dc_right=0.0;p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;}
+    if(std::abs(dc_l)<1.0e-7)dc_l=0.0;
+    if(std::abs(dc_right)<1.0e-7)dc_right=0.0;
+    p->output_dc_x_l=raw_l;p->output_dc_y_l=dc_l;p->output_dc_x_r=raw_r;p->output_dc_y_r=dc_right;
+    block_clipped=block_clipped||std::abs(dc_l)>0.995||std::abs(dc_right)>0.995;
+    const float safe_l=static_cast<float>(std::clamp(dc_l,-0.995,0.995));
+    const float safe_r=static_cast<float>(std::clamp(dc_right,-0.995,0.995));
+    block_peak_l=std::max(block_peak_l,std::abs(safe_l));block_peak_r=std::max(block_peak_r,std::abs(safe_r));
+    out.data32[0][frame]=safe_l;
+    if (out.channel_count > 1) out.data32[1][frame]=safe_r;
+    if((p->scope_decimator++&7U)==0U){const uint32_t at=p->scope_write.fetch_add(1,std::memory_order_relaxed);p->scope_samples[at&255U].store((effected.left+effected.right)*0.5f,std::memory_order_relaxed);p->scope_revision.fetch_add(1,std::memory_order_release);}
   }
+  p->output_peak_l.store(block_peak_l,std::memory_order_relaxed);p->output_peak_r.store(block_peak_r,std::memory_order_relaxed);
+  p->output_clipped.store(block_clipped,std::memory_order_relaxed);
   return CLAP_PROCESS_CONTINUE;
 }
 
@@ -959,13 +1068,13 @@ bool params_value(const clap_plugin_t* plugin, clap_id id, double* value) {
 }
 bool value_to_text(const clap_plugin_t*, clap_id id, double value, char* text, uint32_t capacity) {
   if (id >= kParamCount || !text || capacity == 0) return false;
-  if (id == kWaveform) std::snprintf(text, capacity, "%s", kWaveNames[std::clamp(static_cast<int>(std::round(value)), 0, 50)]);
+  if (id == kWaveform) std::snprintf(text, capacity, "%s", kWaveNames[std::clamp(static_cast<int>(std::round(value)), 0, 57)]);
   else if (id == kDuty) std::snprintf(text, capacity, "%s", kDutyNames[std::clamp(static_cast<int>(std::round(value)), 0, 3)]);
   else if (id == kNoiseMode || id == kVelocity || id == kHardwareEnvelope || id == kTempoSync || id == kStrictHardware) std::snprintf(text, capacity, "%s", value >= 0.5 ? "On" : "Off");
   else if (id == kClockMode) std::snprintf(text, capacity, "%s", value >= 0.5 ? "PAL / 50 Hz" : "NTSC / 60 Hz");
   else if (id == kArpMode) std::snprintf(text, capacity, "%s", kArpNames[std::clamp(static_cast<int>(std::round(value)), 0, 5)]);
   else if (id == kLayerMode) std::snprintf(text, capacity, "%s", kLayerNames[std::clamp(static_cast<int>(std::round(value)), 0, 5)]);
-  else if (id == kPreset) std::snprintf(text, capacity, "%s", kPresetNames[std::clamp(static_cast<int>(std::round(value)), 0, 40)]);
+  else if (id == kPreset) std::snprintf(text, capacity, "%s", kPresetNames[std::clamp(static_cast<int>(std::round(value)), 0, 48)]);
   else if (id == kAttackMs || id == kReleaseMs || id == kPortamentoMs || id == kEchoTime || id == kChorusDepth) std::snprintf(text, capacity, "%.1f ms", value);
   else if (id == kGainDb || id == kMasterDb) std::snprintf(text, capacity, "%.1f dB", value);
   else if (id == kFineTune) std::snprintf(text, capacity, "%.1f cents", value);
@@ -1070,6 +1179,72 @@ bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
 const clap_plugin_state_t kState{state_save, state_load};
 
 constexpr int kGuiRows = 16;
+bool gui_param_relevant(clap_id id,int waveform) {
+  switch(id){
+    case kDuty:return waveform==1||waveform==10||waveform==11||waveform==18||waveform==38||waveform==39||waveform==52||waveform==56;
+    case kNoisePeriod:return waveform==2||waveform==12||waveform==25||waveform==57;
+    case kNoiseMode:return waveform==2||waveform==12||waveform==25||waveform==57;
+    case kExpansionShape:return waveform>=10||waveform==6||waveform==7||waveform==9;
+    case kFmRatio:case kFmIndex:return waveform==7||waveform==49||waveform==51||waveform==55;
+    case kHardwareEnvelope:case kEnvelopeRate:return waveform==6||waveform==10||waveform==11||waveform==17||waveform==19||waveform==20||waveform==21||waveform==22||waveform==23||waveform==24;
+    case kDpcmRate:return waveform==9||waveform==18||waveform==32||waveform==33;
+    case kGenesisAlgorithm:case kGenesisFeedback:return waveform==6||waveform==49||waveform==51||waveform==55;
+    case kChipCutoff:case kChipResonance:return waveform==38||waveform==39||waveform==52||waveform==53||waveform==56;
+    case kWavetablePosition:return waveform==46||waveform==47||waveform==48||waveform==50||waveform==54;
+    case kWavetableWarp:return waveform==46||waveform==47;
+    case kAdditiveTilt:return waveform==48;
+    case kFmBrightness:return waveform==6||waveform==7||waveform==49||waveform==51||waveform==55;
+    default:return true;
+  }
+}
+const char* gui_param_name(clap_id id,int waveform){
+  if(id!=kExpansionShape)return kSpecs[static_cast<size_t>(id)].name;
+  if(waveform==57)return "Drum character";
+  if(waveform==46||waveform==47||waveform==48||waveform==50||waveform==54)return "Table shape";
+  if(waveform==7||waveform==49||waveform==51||waveform==55)return "FM character";
+  return "Chip shape";
+}
+const char* gui_help(clap_id id) {
+  switch(id) {
+    case kWaveform:return "Selects the chip, oscillator, or MIDI-channel stack used to make sound.";
+    case kDuty:return "Changes pulse width; narrower duties sound thinner and brighter.";
+    case kNoisePeriod:return "Selects a hardware noise-clock period instead of a continuously tuned pitch.";
+    case kNoiseMode:return "Switches the selected chip's alternate short, narrow, or white-noise behavior.";
+    case kAttackMs:return "Sets how quickly a new note reaches full level.";
+    case kReleaseMs:return "Sets how long a note fades after release.";
+    case kExpansionShape:return "Changes the selected chip model's duty, wavetable, or distortion variant.";
+    case kFmRatio:return "Sets the modulator frequency relative to the played note.";
+    case kFmIndex:return "Controls FM modulation strength and harmonic complexity.";
+    case kClockMode:return "Switches between NTSC and PAL timing, changing authentic pitch quantization.";
+    case kRetroAmount:return "Blends in the console/television degradation section.";
+    case kBitDepth:return "Reduces amplitude resolution for stepped digital grit.";
+    case kOutputRate:return "Reduces effective sample rate for brighter or rougher aliasing.";
+    case kChipCutoff:return "Sets the cutoff of chip-specific filtering, especially SID modes.";
+    case kChipResonance:return "Emphasizes frequencies around the chip filter cutoff.";
+    case kWavetablePosition:return "Morphs across sine, triangle, saw, and pulse regions.";
+    case kWavetableWarp:return "Bends wavetable phase to reshape the harmonic balance.";
+    case kFmBrightness:return "Changes carrier level and the perceived brightness of FM voices.";
+    case kLayerMode:return "Adds a tuned or noise-based companion oscillator to every voice.";
+    case kLayerMix:return "Balances the added layer against the primary oscillator.";
+    case kTempoSync:return "Locks the arpeggiator and echo timing to host tempo.";
+    case kStrictHardware:return "Restricts stack channels to hardware-like monophonic retriggering.";
+    case kSequenceLength:return "Sets how many user pitch steps play before the sequence repeats.";
+    case kDpcmBaseKey:return "Maps this MIDI note to sample slot 1; following notes select following slots.";
+    case kDpcmLoopMask:return "Stores which of the sixteen DPCM slots repeat after reaching trim end.";
+    case kDpcmInitialLevel:return "Sets the NES seven-bit DAC level before the first DPCM bit is decoded.";
+    case kDpcmTrimStart:return "Moves the shared non-destructive start boundary for DPCM slots.";
+    case kDpcmTrimEnd:return "Moves the shared non-destructive end boundary for DPCM slots.";
+    case kStackMuteMask:return "Stores muted MIDI channels; use the channel tiles above for easier editing.";
+    case kStackSoloMask:return "Stores soloed MIDI channels; use the channel tiles above for easier editing.";
+    case kPreset:return "Loads a complete starting recipe; subsequent edits remain fully automatable.";
+    default:break;
+  }
+  if(id>=kSequence1&&id<=kSequence8)return "Sets this sequence step's pitch offset in semitones.";
+  if(id>=kFmAttack&&id<=kFmRelease)return "Shapes the hardware FM operators' amplitude envelope.";
+  if(id>=kFmDetune&&id<=kFmPmDepth)return "Programs the corresponding hardware FM operator or LFO register.";
+  if(id>=kDrive&&id<=kChorusDepth)return "Shapes the internal drive, echo, and chorus effects rack.";
+  return "Adjusts this part of the current sound; changes are immediately audible and automatable.";
+}
 void gui_commit(Plugin* p, clap_id id, double value) {
   set_param(p,id,value);p->gui_value.store(value,std::memory_order_relaxed);
   p->gui_param.store(static_cast<int32_t>(id),std::memory_order_release);
@@ -1082,64 +1257,90 @@ void gui_draw(Plugin* p) {
   const auto rect=[&](int x,int y,int w,int h){XFillRectangle(p->display,p->window,p->gc,sx(x),sy(y),static_cast<unsigned>(std::max(1,sx(w))),static_cast<unsigned>(std::max(1,sy(h))));};
   const auto line=[&](int x1,int y1,int x2,int y2){XDrawLine(p->display,p->window,p->gc,sx(x1),sy(y1),sx(x2),sy(y2));};
   const int wanted_font=yanes::ui::font_pixels(static_cast<int>(p->gui_width),static_cast<int>(p->gui_height));
-  if(wanted_font!=p->gui_font_pixels){char pattern[128]{};std::snprintf(pattern,sizeof(pattern),"DejaVu Sans Mono:pixelsize=%d",wanted_font);if(auto*font=XftFontOpenName(p->display,DefaultScreen(p->display),pattern)){if(p->gui_xft_font)XftFontClose(p->display,p->gui_xft_font);p->gui_xft_font=font;p->gui_font_pixels=wanted_font;}}
+  if(wanted_font!=p->gui_font_pixels){char pattern[128]{};std::snprintf(pattern,sizeof(pattern),"DejaVu Sans:weight=medium:pixelsize=%d",wanted_font);if(auto*font=XftFontOpenName(p->display,DefaultScreen(p->display),pattern)){if(p->gui_xft_font)XftFontClose(p->display,p->gui_xft_font);p->gui_xft_font=font;p->gui_font_pixels=wanted_font;}}
   const auto draw_text=[&](int x,int y,const char*s,uint32_t rgb,int max_width=0){if(!p->gui_xft_draw||!p->gui_xft_font)return;std::string rendered=s;if(max_width>0){XGlyphInfo ext{};XftTextExtentsUtf8(p->display,p->gui_xft_font,reinterpret_cast<const FcChar8*>(rendered.data()),static_cast<int>(rendered.size()),&ext);while(ext.width>static_cast<unsigned>(sx(max_width))&&rendered.size()>4){rendered.resize(rendered.size()-1);const std::string candidate=rendered+"...";XftTextExtentsUtf8(p->display,p->gui_xft_font,reinterpret_cast<const FcChar8*>(candidate.data()),static_cast<int>(candidate.size()),&ext);if(ext.width<=static_cast<unsigned>(sx(max_width))){rendered=candidate;break;}}}XRenderColor render{static_cast<unsigned short>(((rgb>>16U)&255U)*257U),static_cast<unsigned short>(((rgb>>8U)&255U)*257U),static_cast<unsigned short>((rgb&255U)*257U),65535};XftColor color{};if(XftColorAllocValue(p->display,DefaultVisual(p->display,DefaultScreen(p->display)),DefaultColormap(p->display,DefaultScreen(p->display)),&render,&color)){XftDrawStringUtf8(p->gui_xft_draw,&color,p->gui_xft_font,sx(x),sy(y),reinterpret_cast<const FcChar8*>(rendered.data()),static_cast<int>(rendered.size()));XftColorFree(p->display,DefaultVisual(p->display,DefaultScreen(p->display)),DefaultColormap(p->display,DefaultScreen(p->display)),&color);}};
-  XSetForeground(p->display, p->gc, 0x101722); XFillRectangle(p->display, p->window, p->gc, 0, 0, p->gui_width, p->gui_height);
-  XSetForeground(p->display, p->gc, 0x61dafb);
-  const char* title = "YANES  /  RETRO CHIP WORKSTATION";
-  draw_text(38,46,title,0x61dafb,780);
-  XSetForeground(p->display,p->gc,0x71869c);const char* hint="drag controls  |  wheel: fine adjust  |  right-click: reset";
-  draw_text(900,46,hint,0x71869c,660);
-  const char* tabs[] = {"CHIP", "HARDWARE", "SYNTH", "SEQUENCE", "FM / BANK"};
+  constexpr uint32_t bg=0x0b1119,panel=0x121c28,panel_hi=0x182638,border=0x26384b;
+  constexpr uint32_t text=0xe8eef6,muted=0x8495a8,cyan=0x5bd8ff,green=0x42d392,amber=0xffc857,red=0xf0647d;
+  XSetForeground(p->display,p->gc,bg);XFillRectangle(p->display,p->window,p->gc,0,0,p->gui_width,p->gui_height);
+  draw_text(32,44,"YANES",text,230);draw_text(166,44,"RETRO CHIP WORKSTATION",cyan,620);
+  const float peak_l=p->output_peak_l.load(std::memory_order_relaxed),peak_r=p->output_peak_r.load(std::memory_order_relaxed);const bool clipped=p->output_clipped.load(std::memory_order_relaxed);
+  draw_text(1080,44,"OUT",muted,45);XSetForeground(p->display,p->gc,border);rect(1125,22,180,8);rect(1125,36,180,8);XSetForeground(p->display,p->gc,clipped?red:green);rect(1125,22,static_cast<int>(180*std::clamp(peak_l,0.0f,1.0f)),8);rect(1125,36,static_cast<int>(180*std::clamp(peak_r,0.0f,1.0f)),8);draw_text(1320,44,clipped?"CLIP":"16-VOICE • CLAP",clipped?red:muted,245);
+  const char* tabs[] = {"01  CHIP", "02  HARDWARE", "03  SYNTH", "04  SEQUENCE", "05  FM + BANK"};
   for (int i = 0; i < 5; ++i) {
-    XSetForeground(p->display,p->gc,i==p->gui_page?0x26384c:0x172433);
+    const bool active=i==p->gui_page,hover=i==p->gui_hover_tab;
+    XSetForeground(p->display,p->gc,active?panel_hi:(hover?0x162331:panel));
     rect(yanes::ui::tab_x+i*yanes::ui::tab_width,yanes::ui::tab_y,yanes::ui::tab_width-8,yanes::ui::tab_height-5);
-    XSetForeground(p->display, p->gc, i == p->gui_page ? 0xffcc55 : 0x9aacc0);
-    draw_text(yanes::ui::tab_x+26+i*yanes::ui::tab_width,yanes::ui::tab_y+37,tabs[i],i==p->gui_page?0xffcc55:0x9aacc0,yanes::ui::tab_width-42);
+    if(active){XSetForeground(p->display,p->gc,cyan);rect(yanes::ui::tab_x+i*yanes::ui::tab_width,yanes::ui::tab_y+yanes::ui::tab_height-8,yanes::ui::tab_width-8,3);}
+    draw_text(yanes::ui::tab_x+20+i*yanes::ui::tab_width,yanes::ui::tab_y+36,tabs[i],active?text:(hover?cyan:muted),yanes::ui::tab_width-40);
   }
+  const char* page_titles[]={"CHIP VOICE","HARDWARE CHANNELS","WAVEFORM LAB","PITCH SEQUENCER","FM ROUTING + DPCM BANK"};
+  const char* page_help[]={"Choose and shape the primary sound source","Map MIDI channels and add authentic hardware constraints","Build original digital tones and layered textures","Create tempo-synced tracker-style pitch movement","Program FM character and manage one-bit samples"};
+  XSetForeground(p->display,p->gc,panel);rect(yanes::ui::visual_x,yanes::ui::visual_y,yanes::ui::visual_width,yanes::ui::visual_height);
+  draw_text(52,177,page_titles[p->gui_page],text,380);draw_text(52,211,page_help[p->gui_page],muted,390);
   if (p->gui_page == 1) {
     const uint32_t mute=static_cast<uint32_t>(p->params[kStackMuteMask].load()),solo=static_cast<uint32_t>(p->params[kStackSoloMask].load());
-    for(int i=0;i<16;++i){const uint32_t bit=1U<<i,x=static_cast<uint32_t>(yanes::ui::mixer_x+i*yanes::ui::mixer_cell);XSetForeground(p->display,p->gc,(solo&bit)?0xffcc55:((mute&bit)?0xcc4966:0x39d98a));rect(static_cast<int>(x),147,48,39);char n[3]{};std::snprintf(n,sizeof(n),"%d",i+1);draw_text(static_cast<int>(x)+11,176,n,0x101722);}
+    for(int i=0;i<16;++i){const uint32_t bit=1U<<i,x=static_cast<uint32_t>(yanes::ui::mixer_x+i*yanes::ui::mixer_cell);const bool is_solo=solo&bit,is_mute=mute&bit;XSetForeground(p->display,p->gc,is_solo?amber:(is_mute?red:green));rect(static_cast<int>(x),155,48,43);char n[4]{};std::snprintf(n,sizeof(n),"%02d",i+1);draw_text(static_cast<int>(x)+8,187,n,bg,35);draw_text(static_cast<int>(x)+5,221,is_solo?"SOLO":(is_mute?"MUTE":"ON"),is_solo?amber:(is_mute?red:muted),48);}
   } else if (p->gui_page == 3) {
     const int length = static_cast<int>(p->params[kSequenceLength].load());
     for (int i = 0; i < 8; ++i) { const double pitch = p->params[static_cast<clap_id>(kSequence1 + i)].load();
-      XSetForeground(p->display, p->gc, i < length ? 0x39d98a : 0x334455);
-      const int center=170,y=static_cast<int>(center-pitch*1.5);rect(yanes::ui::sequence_x+i*yanes::ui::sequence_cell,std::min(center,y),94,std::max(4,std::abs(center-y))); }
+      const int x=yanes::ui::sequence_x+i*yanes::ui::sequence_cell;XSetForeground(p->display,p->gc,i<length?0x203d3a:0x182330);rect(x,153,96,70);
+      XSetForeground(p->display,p->gc,i<length?green:border);const int center=188,y=static_cast<int>(center-pitch*1.15);rect(x,std::min(center,y),96,std::max(3,std::abs(center-y)));char step[8]{};std::snprintf(step,sizeof(step),"%d",i+1);draw_text(x+7,181,step,i<length?text:muted,22);char amount[12]{};std::snprintf(amount,sizeof(amount),"%+.0f",pitch);draw_text(x+52,219,amount,i<length?green:muted,42); }
   } else if (p->gui_page == 4) {
     const int algorithm = static_cast<int>(p->params[kGenesisAlgorithm].load()) & 7;
-    XSetForeground(p->display,p->gc,0x39d98a);
-    for(int i=0;i<4;++i){const int x=450+i*112;XFillArc(p->display,p->window,p->gc,sx(x),sy(151),static_cast<unsigned>(sx(38)),static_cast<unsigned>(sy(38)),0,360*64);if(i<3&&(algorithm&(1<<i))==0)line(x+38,170,x+112,170);}
+    XSetForeground(p->display,p->gc,green);
+    for(int i=0;i<4;++i){const int x=470+i*104;XFillArc(p->display,p->window,p->gc,sx(x),sy(160),static_cast<unsigned>(sx(34)),static_cast<unsigned>(sy(34)),0,360*64);if(i<3&&(algorithm&(1<<i))==0)line(x+34,177,x+104,177);char op[3]{};std::snprintf(op,sizeof(op),"%d",i+1);draw_text(x+10,188,op,bg,18);}
+    draw_text(470,220,"OPERATORS",muted,260);draw_text(815,177,"SAMPLES",muted,150);
     const uint32_t loops=static_cast<uint32_t>(p->params[kDpcmLoopMask].load());
-    for(int i=0;i<16;++i){const auto bank=p->dpcm_banks[i].load();XSetForeground(p->display,p->gc,(loops&(1U<<i))?0x39d98a:((!bank||bank->empty())?0x334455:0xffcc55));rect(yanes::ui::bank_x+i*yanes::ui::bank_cell,147,27,40);}
+    for(int i=0;i<16;++i){const auto bank=p->dpcm_banks[i].load();const bool loaded=bank&&!bank->empty(),loop=loops&(1U<<i);XSetForeground(p->display,p->gc,loop?green:(loaded?amber:border));rect(yanes::ui::bank_x+i*yanes::ui::bank_cell,157,27,38);char n[3]{};std::snprintf(n,sizeof(n),"%X",i);draw_text(yanes::ui::bank_x+i*yanes::ui::bank_cell+6,187,n,loaded?bg:muted,18);}
+    draw_text(yanes::ui::bank_x,220,"amber loaded  •  green looping",muted,550);
   } else if (p->gui_page == 2) {
-    XSetForeground(p->display,p->gc,0x61dafb); XPoint points[128]{};
-    for(int i=0;i<128;++i){const double phase=i/127.0;points[i].x=static_cast<short>(sx(yanes::ui::slider_x+i*7));points[i].y=static_cast<short>(sy(static_cast<int>(170-yanes::morph_wavetable(phase,p->params[kWavetablePosition].load(),p->params[kWavetableWarp].load())*29)));}
+    XSetForeground(p->display,p->gc,border);line(yanes::ui::slider_x,188,1450,188);XSetForeground(p->display,p->gc,cyan); XPoint points[128]{};
+    for(int i=0;i<128;++i){const double phase=i/127.0;const int x=yanes::ui::slider_x+i*980/127;points[i].x=static_cast<short>(sx(x));points[i].y=static_cast<short>(sy(static_cast<int>(188-yanes::morph_wavetable(phase,p->params[kWavetablePosition].load(),p->params[kWavetableWarp].load())*28)));}
     XDrawLines(p->display,p->window,p->gc,points,128,CoordModeOrigin);
+    draw_text(1100,168,"FILTER RESPONSE",muted,240);const double cutoff=p->params[kChipCutoff].load(),res=p->params[kChipResonance].load();XPoint response[96]{};for(int i=0;i<96;++i){const double hz=40.0*std::pow(400.0,i/95.0),ratio=hz/std::max(40.0,cutoff),gain=1.0/std::sqrt(1.0+std::pow(ratio,4.0))*std::max(0.25,1.0+res*1.4*std::exp(-std::pow(std::log(std::max(0.001,ratio))/0.28,2.0)));response[i].x=static_cast<short>(sx(1100+i*420/95));response[i].y=static_cast<short>(sy(220-static_cast<int>(std::clamp(gain,0.0,2.0)*24.0)));}XSetForeground(p->display,p->gc,amber);XDrawLines(p->display,p->window,p->gc,response,96,CoordModeOrigin);
+  } else if(p->gui_page==0){
+    std::array<float,256> snapshot{};const uint32_t write=p->scope_write.load(std::memory_order_acquire);
+    for(size_t i=0;i<snapshot.size();++i)snapshot[i]=p->scope_samples[(write+static_cast<uint32_t>(i))&255U].load(std::memory_order_relaxed);
+    draw_text(470,168,"OUTPUT SCOPE",muted,210);draw_text(1115,168,"SPECTRUM",muted,180);
+    XSetForeground(p->display,p->gc,border);line(470,198,1045,198);line(1095,224,1538,224);
+    XPoint scope[128]{};for(int i=0;i<128;++i){const float sample=(snapshot[static_cast<size_t>(i*2)]+snapshot[static_cast<size_t>(i*2+1)])*0.5f;scope[i].x=static_cast<short>(sx(470+i*575/127));scope[i].y=static_cast<short>(sy(198-static_cast<int>(std::clamp(sample,-1.0f,1.0f)*28.0f)));}
+    XSetForeground(p->display,p->gc,cyan);XDrawLines(p->display,p->window,p->gc,scope,128,CoordModeOrigin);
+    constexpr double tau=6.2831853071795864769;for(int band=0;band<24;++band){const int bin=std::clamp(static_cast<int>(std::lround(std::pow(2.0,band/5.2))),1,112);double real=0.0,imag=0.0;for(int n=0;n<256;++n){const double window=0.5-0.5*std::cos(tau*n/255.0);const double angle=tau*bin*n/256.0;real+=snapshot[static_cast<size_t>(n)]*window*std::cos(angle);imag-=snapshot[static_cast<size_t>(n)]*window*std::sin(angle);}const double magnitude=std::sqrt(real*real+imag*imag)/64.0;const int h=std::clamp(static_cast<int>(std::log1p(magnitude*7.0)*22.0),1,52);XSetForeground(p->display,p->gc,band<16?green:amber);rect(1098+band*18,224-h,12,h);}
+    draw_text(52,248,"ENVELOPE",muted,130);const double attack=p->params[kAttackMs].load(),release=p->params[kReleaseMs].load();const int ax=52+static_cast<int>(std::clamp(attack/500.0,0.0,1.0)*105.0),rx=270+static_cast<int>(std::clamp(release/2000.0,0.0,1.0)*110.0);XSetForeground(p->display,p->gc,green);line(52,294,ax,258);line(ax,258,270,258);line(270,258,rx,294);
   }
   const int first = p->gui_page * kGuiRows;
+  const int waveform=static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
   for (int row = 0; row < kGuiRows && first + row < static_cast<int>(kParamCount); ++row) {
     const int id = first + row, y = yanes::ui::rows_y + row * yanes::ui::row_height;
     const auto& s = kSpecs[static_cast<size_t>(id)];
     const double value = p->params[static_cast<size_t>(id)].load(std::memory_order_relaxed);
     const double norm = std::clamp((value - s.min) / (s.max - s.min),0.0,1.0);
-    XSetForeground(p->display, p->gc, 0xd8e2ef);
-    draw_text(yanes::ui::label_x,y+32,s.name,0xd8e2ef,yanes::ui::slider_x-yanes::ui::label_x-24);
-    XSetForeground(p->display,p->gc,0x26384c);rect(yanes::ui::slider_x,y+yanes::ui::rail_y_offset,yanes::ui::slider_width,yanes::ui::rail_height);
-    XSetForeground(p->display,p->gc,0x39d98a);rect(yanes::ui::slider_x,y+yanes::ui::rail_y_offset,static_cast<int>(yanes::ui::slider_width*norm),yanes::ui::rail_height);
-    char text[64]{}; value_to_text(nullptr, static_cast<clap_id>(id), value, text, sizeof(text));
-    XSetForeground(p->display,p->gc,0xffcc55);draw_text(yanes::ui::value_x,y+32,text,0xffcc55,yanes::ui::width-yanes::ui::value_x-22);
+    const bool hover=id==p->gui_hover_param,relevant=gui_param_relevant(static_cast<clap_id>(id),waveform);
+    XSetForeground(p->display,p->gc,hover?panel_hi:((row&1)?0x0f1823:bg));rect(32,y,1536,yanes::ui::row_height-2);
+    draw_text(yanes::ui::label_x,y+31,gui_param_name(static_cast<clap_id>(id),waveform),relevant?(hover?text:0xcbd6e2):0x536273,yanes::ui::module_x-yanes::ui::label_x-14);
+    draw_text(yanes::ui::module_x,y+31,s.module,relevant?(hover?cyan:muted):0x465464,yanes::ui::slider_x-yanes::ui::module_x-18);
+    XSetForeground(p->display,p->gc,border);rect(yanes::ui::slider_x,y+yanes::ui::rail_y_offset,yanes::ui::slider_width,yanes::ui::rail_height);
+    const double default_norm=std::clamp((s.def-s.min)/(s.max-s.min),0.0,1.0);XSetForeground(p->display,p->gc,muted);rect(yanes::ui::slider_x+static_cast<int>(yanes::ui::slider_width*default_norm)-1,y+10,2,24);
+    XSetForeground(p->display,p->gc,hover?cyan:green);rect(yanes::ui::slider_x,y+yanes::ui::rail_y_offset,static_cast<int>(yanes::ui::slider_width*norm),yanes::ui::rail_height);
+    XSetForeground(p->display,p->gc,text);const int handle=yanes::ui::slider_x+static_cast<int>(yanes::ui::slider_width*norm);rect(handle-4,y+9,8,26);
+    char value_text[64]{}; value_to_text(nullptr, static_cast<clap_id>(id), value, value_text, sizeof(value_text));
+    XSetForeground(p->display,p->gc,hover?0x27384b:panel);rect(yanes::ui::value_x-12,y+6,370,32);draw_text(yanes::ui::value_x,y+31,value_text,hover?amber:text,340);
   }
-  XSetForeground(p->display,p->gc,0x71869c);const char* footer=p->gui_page==1?"CHANNELS: left-click mute / right-click solo":(p->gui_page==4?"DPCM BANK: left loop / middle load / right clear":"All controls support Bitwig automation and modulation");
-  draw_text(38,1025,footer,0x71869c,yanes::ui::width-76);
+  XSetForeground(p->display,p->gc,panel);rect(yanes::ui::tooltip_x,yanes::ui::tooltip_y,yanes::ui::tooltip_width,yanes::ui::tooltip_height);
+  if(p->gui_hover_param>=0&&p->gui_hover_param<static_cast<int>(kParamCount)){const auto id=static_cast<clap_id>(p->gui_hover_param);const auto&s=kSpecs[static_cast<size_t>(id)];char help[512]{};std::snprintf(help,sizeof(help),"%s  •  %s  —  %s%s  Drag/click set  •  wheel fine  •  right-click reset",gui_param_name(id,waveform),s.module,gui_help(id),gui_param_relevant(id,waveform)?"":"  (Inactive for this sound source.)");draw_text(52,1020,help,text,1490);}
+  else {const char* footer=p->gui_page==1?"CHANNEL MIXER  —  left-click mute  •  right-click solo":(p->gui_page==4?"DPCM SLOTS  —  left-click loop  •  middle-click load  •  right-click clear":"Hover a control for help  •  every parameter supports host automation and modulation");draw_text(52,1020,footer,muted,1490);}
   XFlush(p->display);
 }
 
 void gui_loop(Plugin* p) {
+  uint64_t scope_seen=p->scope_revision.load(std::memory_order_acquire);
+  unsigned scope_refresh=0;
   while (p->gui_running.load(std::memory_order_acquire)) {
     while (p->display && XPending(p->display)) {
       XEvent e{}; XNextEvent(p->display, &e);
       if (e.type == Expose) gui_draw(p);
       if(e.type==ConfigureNotify){p->gui_width=static_cast<uint32_t>(std::max(1,e.xconfigure.width));p->gui_height=static_cast<uint32_t>(std::max(1,e.xconfigure.height));gui_draw(p);}
+      if(e.type==LeaveNotify){if(p->gui_hover_param>=0||p->gui_hover_tab>=0){p->gui_hover_param=-1;p->gui_hover_tab=-1;gui_draw(p);}}
       if (e.type == ButtonPress) {
         const int ex=yanes::ui::unscale_x(e.xbutton.x,static_cast<int>(p->gui_width)),ey=yanes::ui::unscale_y(e.xbutton.y,static_cast<int>(p->gui_height));
         if(const int tab=yanes::ui::tab_at(ex,ey);tab>=0){p->gui_page=tab;gui_draw(p);continue;}
@@ -1160,9 +1361,10 @@ void gui_loop(Plugin* p) {
           gui_draw(p);
         }
       }
-      if(e.type==MotionNotify&&(e.xmotion.state&Button1Mask)){const int ex=yanes::ui::unscale_x(e.xmotion.x,static_cast<int>(p->gui_width)),ey=yanes::ui::unscale_y(e.xmotion.y,static_cast<int>(p->gui_height));const int id=yanes::ui::param_at(p->gui_page,ex,ey,static_cast<int>(kParamCount));if(id>=0){const auto&s=kSpecs[static_cast<size_t>(id)];gui_commit(p,static_cast<clap_id>(id),yanes::ui::value_from_x(ex,s.min,s.max,s.stepped));gui_draw(p);}}
+      if(e.type==MotionNotify){const int ex=yanes::ui::unscale_x(e.xmotion.x,static_cast<int>(p->gui_width)),ey=yanes::ui::unscale_y(e.xmotion.y,static_cast<int>(p->gui_height));const int hover_param=yanes::ui::param_row_at(p->gui_page,ex,ey,static_cast<int>(kParamCount));const int hover_tab=yanes::ui::tab_at(ex,ey);const bool hover_changed=hover_param!=p->gui_hover_param||hover_tab!=p->gui_hover_tab;p->gui_hover_param=hover_param;p->gui_hover_tab=hover_tab;if(e.xmotion.state&Button1Mask){const int id=yanes::ui::param_at(p->gui_page,ex,ey,static_cast<int>(kParamCount));if(id>=0){const auto&s=kSpecs[static_cast<size_t>(id)];gui_commit(p,static_cast<clap_id>(id),yanes::ui::value_from_x(ex,s.min,s.max,s.stepped));gui_draw(p);continue;}}if(hover_changed)gui_draw(p);}
     }
     const uint64_t revision=p->ui_revision.load(std::memory_order_acquire);if(revision!=p->gui_seen_revision){p->gui_seen_revision=revision;gui_draw(p);}
+    if(p->gui_page==0&&++scope_refresh>=3){scope_refresh=0;const uint64_t current=p->scope_revision.load(std::memory_order_acquire);if(current!=scope_seen){scope_seen=current;gui_draw(p);}}
     std::this_thread::sleep_for(std::chrono::milliseconds(12));
   }
 }
@@ -1177,7 +1379,7 @@ bool gui_create(const clap_plugin_t* plugin, const char* api, bool floating) {
   p->gui_xft_draw=XftDrawCreate(p->display,p->window,DefaultVisual(p->display,DefaultScreen(p->display)),DefaultColormap(p->display,DefaultScreen(p->display)));
   if(!p->gui_xft_draw){XFreeGC(p->display,p->gc);XDestroyWindow(p->display,p->window);XCloseDisplay(p->display);p->display=nullptr;p->window=0;p->gc=nullptr;return false;}
   p->gui_seen_revision=p->ui_revision.load(std::memory_order_acquire);
-  XSelectInput(p->display,p->window,ExposureMask|ButtonPressMask|Button1MotionMask|StructureNotifyMask);
+  XSelectInput(p->display,p->window,ExposureMask|ButtonPressMask|Button1MotionMask|PointerMotionMask|LeaveWindowMask|StructureNotifyMask);
   p->gui_running.store(true); p->gui_thread = std::thread(gui_loop, p); return true;
 }
 void gui_destroy(const clap_plugin_t* plugin) {

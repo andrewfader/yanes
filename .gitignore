@@ -30,7 +30,6 @@ Testing/
 .DS_Store
 .idea/
 .vscode/
-.github/
 *~
 *.swp
 

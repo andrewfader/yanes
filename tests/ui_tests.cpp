@@ -9,6 +9,8 @@ int main() {
   static_assert(width >= 1600 && height >= 1050);
   static_assert(rows_y + rows_per_page * row_height < height);
   static_assert(slider_x + slider_width < value_x);
+  static_assert(tab_x + pages * tab_width <= width);
+  static_assert(tooltip_y + tooltip_height <= height);
   static_assert(base_font_pixels>=32);
   assert(font_pixels(width,height)==32);
   assert(font_pixels(minimum_width,minimum_height)>=22);
@@ -36,7 +38,12 @@ int main() {
       const int expected = page * rows_per_page + row;
       const int y = rows_y + row * row_height + row_height / 2;
       const int actual = param_at(page, slider_x + slider_width / 2, y, param_count);
-      if (expected < param_count) { assert(actual == expected); reached[expected] = true; }
+      if (expected < param_count) {
+        assert(actual == expected);
+        assert(param_row_at(page, label_x, y, param_count) == expected);
+        assert(param_row_at(page, value_x + 200, y, param_count) == expected);
+        reached[expected] = true;
+      }
       else assert(actual == -1);
     }
   }
@@ -45,6 +52,8 @@ int main() {
   assert(param_at(0, slider_x + slider_width, rows_y, param_count) == -1);
   assert(param_at(0, slider_x, rows_y - 1, param_count) == -1);
   assert(param_at(4, slider_x, rows_y + 15 * row_height, param_count) == -1);
+  assert(param_row_at(0, label_x - 13, rows_y, param_count) == -1);
+  assert(param_row_at(0, value_x + 360, rows_y, param_count) == -1);
 
   assert(value_from_x(slider_x, -10.0, 10.0, false) == -10.0);
   assert(value_from_x(slider_x + slider_width, -10.0, 10.0, false) == 10.0);

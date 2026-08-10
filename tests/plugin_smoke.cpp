@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
   std::array<float, 512> left{}, right{};
   std::array<float*, 2> channels{left.data(), right.data()};
   clap_audio_buffer_t output{channels.data(), nullptr, 2, 0, 0};
-  for (int waveform = 0; waveform <= 50; ++waveform) {
+  for (int waveform = 0; waveform <= 57; ++waveform) {
     clap_event_param_value_t param{};
     param.header = {sizeof(param), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0};
     param.param_id = 0;
@@ -101,11 +101,17 @@ int main(int argc, char** argv) {
     float peak = 0.0f;
     for (float sample : left) { finite = finite && std::isfinite(sample); peak = std::max(peak, std::abs(sample)); }
     assert(finite);
-    if (waveform == 17 || (waveform >= 27 && waveform <= 30)) {
-      if (!(peak > 1.0e-4f)) std::fprintf(stderr, "inaudible hardware FM waveform %d (peak %.8f)\n", waveform,peak);
+    if (waveform == 17 || (waveform >= 27 && waveform <= 30) || waveform >= 51) {
+      if (!(peak > 1.0e-4f)) std::fprintf(stderr, "inaudible synthesis waveform %d (peak %.8f)\n", waveform,peak);
       assert(peak > 1.0e-4f);
     }
     plugin->reset(plugin);
+  }
+  for(int key=36;key<48;++key){
+    clap_event_param_value_t kit{};kit.header={sizeof(kit),0,CLAP_CORE_EVENT_SPACE_ID,CLAP_EVENT_PARAM_VALUE,0};kit.param_id=0;kit.note_id=-1;kit.port_index=-1;kit.channel=-1;kit.key=-1;kit.value=57;
+    clap_event_note_t hit{};hit.header={sizeof(hit),0,CLAP_CORE_EVENT_SPACE_ID,CLAP_EVENT_NOTE_ON,0};hit.note_id=1000+key;hit.port_index=0;hit.channel=9;hit.key=static_cast<int16_t>(key);hit.velocity=1.0;
+    EventList events{{&kit.header,&hit.header},2};clap_input_events_t input{&events,event_count,event_get};clap_process_t process{};process.frames_count=512;process.in_events=&input;process.audio_outputs=&output;process.audio_outputs_count=1;assert(plugin->process(plugin,&process)==CLAP_PROCESS_CONTINUE);
+    float peak=0.0f;for(float sample:left)peak=std::max(peak,std::abs(sample));if(!(peak>1.0e-4f))std::fprintf(stderr,"inaudible retro drum key %d (peak %.8f)\n",key,peak);assert(peak>1.0e-4f);plugin->reset(plugin);
   }
   clap_event_note_t held{};held.header={sizeof(held),0,CLAP_CORE_EVENT_SPACE_ID,CLAP_EVENT_NOTE_ON,0};held.note_id=900;held.port_index=0;held.channel=0;held.key=60;held.velocity=1.0;
   clap_event_param_value_t initial{};initial.header={sizeof(initial),0,CLAP_CORE_EVENT_SPACE_ID,CLAP_EVENT_PARAM_VALUE,0};initial.param_id=0;initial.note_id=-1;initial.port_index=-1;initial.channel=-1;initial.key=-1;initial.value=0;
