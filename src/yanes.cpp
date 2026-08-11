@@ -172,6 +172,48 @@ constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord l
 constexpr const char* kDutyNames[] = {"12.5%", "25%", "50%", "75%"};
 constexpr double kDuties[] = {0.125, 0.25, 0.5, 0.75};
 
+// Apple's libc++ still does not implement std::atomic<std::shared_ptr<T>> (P0718R2), so the DPCM
+// bank slots go through this wrapper: the standard specialisation where the library has it, and a
+// spinlock-guarded shared_ptr everywhere else. A slot is only written when the user loads or clears
+// a bank and only read when a voice starts, so the fallback lock is uncontended in practice.
+#if defined(__cpp_lib_atomic_shared_ptr) && __cpp_lib_atomic_shared_ptr >= 201711L
+template <typename T> using AtomicSharedPtr = std::atomic<std::shared_ptr<T>>;
+#else
+template <typename T> class AtomicSharedPtr {
+ public:
+  AtomicSharedPtr() = default;
+  AtomicSharedPtr(const AtomicSharedPtr&) = delete;
+  AtomicSharedPtr& operator=(const AtomicSharedPtr&) = delete;
+
+  std::shared_ptr<T> load(std::memory_order = std::memory_order_seq_cst) const {
+    const Guard guard(lock_);
+    return value_;
+  }
+  std::shared_ptr<T> exchange(std::shared_ptr<T> next, std::memory_order = std::memory_order_seq_cst) {
+    const Guard guard(lock_);
+    value_.swap(next);
+    return next;
+  }
+
+ private:
+  class Guard {
+   public:
+    explicit Guard(std::atomic_flag& flag) : flag_(flag) {
+      while (flag_.test_and_set(std::memory_order_acquire)) {}
+    }
+    ~Guard() { flag_.clear(std::memory_order_release); }
+    Guard(const Guard&) = delete;
+    Guard& operator=(const Guard&) = delete;
+
+   private:
+    std::atomic_flag& flag_;
+  };
+
+  mutable std::atomic_flag lock_{};
+  std::shared_ptr<T> value_{};
+};
+#endif
+
 struct Voice {
   bool active{};
   bool releasing{};
@@ -231,12 +273,19 @@ struct Plugin {
   size_t delay_write{};
   double chorus_phase{};
   double tempo{120.0};
-  std::array<std::atomic<std::shared_ptr<const std::vector<uint8_t>>>, 16> dpcm_banks{};
+  std::array<AtomicSharedPtr<const std::vector<uint8_t>>, 16> dpcm_banks{};
   std::vector<std::shared_ptr<const std::vector<uint8_t>>> retired_dpcm_banks{};
   std::array<std::atomic<float>,256> scope_samples{};
   std::atomic<uint32_t> scope_write{};
   std::atomic<uint64_t> scope_revision{};
   uint32_t scope_decimator{};
+  // Touched by the audio thread and by parameter changes on every platform, so these live outside
+  // the X11 block below: the editor is Linux-only, but process() and params_flush() are not.
+  std::atomic<int32_t> gui_param{-1};
+  std::atomic<double> gui_value{};
+  std::atomic<uint64_t> fm_revision{1};
+  uint64_t applied_fm_revision{};
+  std::atomic<uint64_t> ui_revision{1};
 #ifdef __linux__
   Display* display{};
   Window window{};
@@ -246,13 +295,8 @@ struct Plugin {
   int gui_font_pixels{};
   std::thread gui_thread{};
   std::atomic<bool> gui_running{};
-  std::atomic<int32_t> gui_param{-1};
-  std::atomic<double> gui_value{};
   uint32_t gui_width{yanes::ui::width}, gui_height{yanes::ui::height};
   int gui_page{};
-  std::atomic<uint64_t> fm_revision{1};
-  uint64_t applied_fm_revision{};
-  std::atomic<uint64_t> ui_revision{1};
   uint64_t gui_seen_revision{};
   int gui_hover_param{-1};
   int gui_hover_tab{-1};
