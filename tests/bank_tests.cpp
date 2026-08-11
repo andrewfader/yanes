@@ -268,7 +268,7 @@ void test_matches_command_line_tool(const Library& library) {
     const std::string wav = write_file(name + ".wav", make_wav(spec));
     const std::string out = (g_dir / (name + ".ydmc")).string();
     const std::string command = "\"" + std::string(tool) + "\" \"" + wav + "\" \"" + out + "\" > " + test_platform::null_device();
-    assert(std::system(command.c_str()) == 0);
+    assert(std::system(test_platform::shell_command(command).c_str()) == 0);
     const std::vector<uint8_t> from_tool = read_file(out);
 
     // The plug-in encodes the same WAV; the resulting bank must be identical, and the
@@ -292,8 +292,8 @@ void test_matches_command_line_tool(const Library& library) {
   // The tool reports failure rather than writing nonsense.
   const std::string bad = write_file("bad_for_tool.wav", std::vector<uint8_t>(64, 0x00));
   const std::string out = (g_dir / "bad.ydmc").string();
-  assert(std::system(("\"" + std::string(tool) + "\" \"" + bad + "\" \"" + out + "\" 2> " + test_platform::null_device()).c_str()) != 0);
-  assert(std::system(("\"" + std::string(tool) + "\" 2> " + test_platform::null_device()).c_str()) != 0);
+  assert(std::system(test_platform::shell_command("\"" + std::string(tool) + "\" \"" + bad + "\" \"" + out + "\" 2> " + test_platform::null_device()).c_str()) != 0);
+  assert(std::system(test_platform::shell_command("\"" + std::string(tool) + "\" 2> " + test_platform::null_device()).c_str()) != 0);
 }
 
 // --- playback -----------------------------------------------------------------------

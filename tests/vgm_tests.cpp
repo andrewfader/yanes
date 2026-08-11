@@ -17,7 +17,8 @@ void put32(std::vector<uint8_t>& bytes, size_t at, uint32_t value) {
 }
 
 int run(const std::string& command) {
-  return std::system((command + " >" + test_platform::null_device() + " 2>&1").c_str());
+  return std::system(
+      test_platform::shell_command(command + " >" + test_platform::null_device() + " 2>&1").c_str());
 }
 
 int main(int argc, char** argv) {
