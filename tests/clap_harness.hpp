@@ -5,6 +5,14 @@
 
 #include <clap/clap.h>
 #ifdef _WIN32
+// windows.h defines min/max as macros unless asked not to, which breaks every std::min/std::max
+// call in the tests that include this header.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #else
 #include <dlfcn.h>

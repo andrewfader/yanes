@@ -4,6 +4,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <string>
 #include <vector>
 
 static uint16_t u16(const std::vector<uint8_t>& b, size_t p) { return static_cast<uint16_t>(b[p] | (b[p + 1] << 8U)); }
