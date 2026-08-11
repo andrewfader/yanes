@@ -1,7 +1,9 @@
 # YANES — Yet Another NES Audio Plugin
 
-YANES is a clean-room, native Linux CLAP instrument for NES and other retro console, computer, and
-arcade sounds. It is designed for Bitwig Studio and other CLAP hosts.
+YANES is a clean-room CLAP instrument for NES and other retro console, computer, and arcade sounds.
+It builds on Linux, Windows, and macOS and is designed for Bitwig Studio and other CLAP hosts. The
+custom editor is currently available on Linux/X11; Windows and macOS builds use the host's generic
+parameter interface.
 
 ## What is implemented
 
@@ -205,8 +207,9 @@ and register-driven voices.
 
 ## Build
 
-YANES requires CMake 3.20 or newer, a C++20 compiler, X11 development headers, Xft, and pkg-config.
-On Debian or Ubuntu, install the system dependencies with:
+YANES requires CMake 3.20 or newer and a C++20 compiler. Linux additionally requires X11
+development headers, Xft, and pkg-config. On Debian or Ubuntu, install the system dependencies
+with:
 
 ```sh
 sudo apt install build-essential cmake pkg-config libx11-dev libxft-dev
@@ -225,6 +228,11 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
+
+The same commands work from a Visual Studio developer shell on Windows and from a current Xcode
+command-line-tools environment on macOS. Use `--config Release` for a multi-configuration CMake
+generator. Cross-platform CI and release-promotion details are in
+[`docs/CROSS_PLATFORM_RELEASES.md`](docs/CROSS_PLATFORM_RELEASES.md).
 
 CMake downloads the small official CLAP headers. For an offline build, pass
 `-DCLAP_ROOT=/path/to/clap`. It also fetches the pinned `ymfm` source used by the hardware FM

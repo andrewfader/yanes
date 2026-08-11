@@ -4,7 +4,11 @@
 #pragma once
 
 #include <clap/clap.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 
 #include <algorithm>
 #include <cassert>
@@ -17,6 +21,20 @@
 
 namespace harness {
 
+#ifdef _WIN32
+using LibraryHandle = HMODULE;
+inline LibraryHandle open_library(const char* path) { return LoadLibraryA(path); }
+inline void* find_symbol(LibraryHandle handle, const char* name) {
+  return reinterpret_cast<void*>(GetProcAddress(handle, name));
+}
+inline void close_library(LibraryHandle handle) { FreeLibrary(handle); }
+#else
+using LibraryHandle = void*;
+inline LibraryHandle open_library(const char* path) { return dlopen(path, RTLD_NOW | RTLD_LOCAL); }
+inline void* find_symbol(LibraryHandle handle, const char* name) { return dlsym(handle, name); }
+inline void close_library(LibraryHandle handle) { dlclose(handle); }
+#endif
+
 inline const void* host_extension(const clap_host_t*, const char*) { return nullptr; }
 inline void host_noop(const clap_host_t*) {}
 
@@ -25,15 +43,15 @@ inline const clap_host_t kHost{CLAP_VERSION_INIT, nullptr, "YANES test host", "Y
 
 // Owns the dlopen handle and the CLAP entry point for one test process.
 struct Library {
-  void* handle{};
+  LibraryHandle handle{};
   const clap_plugin_entry_t* entry{};
   const clap_plugin_factory_t* factory{};
   const clap_plugin_descriptor_t* descriptor{};
 
   explicit Library(const char* path) {
-    handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-    assert(handle && "failed to dlopen the plug-in");
-    entry = static_cast<const clap_plugin_entry_t*>(dlsym(handle, "clap_entry"));
+    handle = open_library(path);
+    assert(handle && "failed to load the plug-in");
+    entry = static_cast<const clap_plugin_entry_t*>(find_symbol(handle, "clap_entry"));
     assert(entry && clap_version_is_compatible(entry->clap_version));
     assert(entry->init(path));
     factory = static_cast<const clap_plugin_factory_t*>(entry->get_factory(CLAP_PLUGIN_FACTORY_ID));
@@ -41,7 +59,7 @@ struct Library {
     descriptor = factory->get_plugin_descriptor(factory, 0);
     assert(descriptor);
   }
-  ~Library() { entry->deinit(); dlclose(handle); }
+  ~Library() { entry->deinit(); close_library(handle); }
   Library(const Library&) = delete;
   Library& operator=(const Library&) = delete;
 

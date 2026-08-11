@@ -1,3 +1,5 @@
+#include "platform_test.hpp"
+
 #include <array>
 #include <cassert>
 #include <cstdint>
@@ -6,7 +8,6 @@
 #include <fstream>
 #include <sstream>
 #include <string>
-#include <unistd.h>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -15,7 +16,9 @@ void put32(std::vector<uint8_t>& bytes, size_t at, uint32_t value) {
   for (int i = 0; i < 4; ++i) bytes[at + static_cast<size_t>(i)] = static_cast<uint8_t>(value >> (8 * i));
 }
 
-int run(const std::string& command) { return std::system((command + " >/dev/null 2>&1").c_str()); }
+int run(const std::string& command) {
+  return std::system((command + " >" + test_platform::null_device() + " 2>&1").c_str());
+}
 
 int main(int argc, char** argv) {
   assert(argc == 2);
@@ -24,7 +27,7 @@ int main(int argc, char** argv) {
       Chip{"ym2203", 0x55, 0, 4000000, 72}, Chip{"ym2608", 0x56, 0x57, 8000000, 144},
       Chip{"ym2612", 0x52, 0x53, 7670454, 144}, Chip{"ym2151", 0x54, 0, 3579545, 64},
       Chip{"ym3812", 0x5a, 0, 3579545, 72}, Chip{"ymf262", 0x5e, 0x5f, 14318180, 288}};
-  const fs::path dir = fs::temp_directory_path() / ("yanes-vgm-tests-" + std::to_string(::getpid()));
+  const fs::path dir = fs::temp_directory_path() / ("yanes-vgm-tests-" + std::to_string(test_platform::process_id()));
   fs::create_directories(dir);
 
   for (const Chip& chip : chips) {

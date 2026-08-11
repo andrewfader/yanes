@@ -3,13 +3,13 @@
 // state, playback through the DPCM voice, and agreement between the plug-in's encoder
 // and the yanes-dpcm command line tool.
 #include "clap_harness.hpp"
+#include "platform_test.hpp"
 
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <numeric>
 #include <array>
-#include <unistd.h>
 
 using namespace harness;
 
@@ -113,11 +113,11 @@ std::array<uint32_t, 16> bank_sizes(const clap_plugin_t* plugin) {
   return sizes;
 }
 
-// Creates an instance with YANES_DPCM_BANK set to the given colon separated list.
+// Creates an instance with YANES_DPCM_BANK set to the platform path-list syntax.
 const clap_plugin_t* create_with_bank(const Library& library, const std::string& list) {
-  assert(setenv("YANES_DPCM_BANK", list.c_str(), 1) == 0);
+  assert(test_platform::set_environment("YANES_DPCM_BANK", list));
   const clap_plugin_t* plugin = library.create();
-  unsetenv("YANES_DPCM_BANK");
+  test_platform::unset_environment("YANES_DPCM_BANK");
   return plugin;
 }
 
@@ -133,7 +133,9 @@ void test_wav_and_ydmc_loading(const Library& library) {
   const std::string ydmc = write_file("raw.ydmc", raw);
 
   const clap_plugin_t* plugin =
-      create_with_bank(library, mono + ":" + stereo + ":" + ydmc + ":" + high_rate);
+      create_with_bank(library, mono + test_platform::path_list_separator() + stereo +
+                                    test_platform::path_list_separator() + ydmc +
+                                    test_platform::path_list_separator() + high_rate);
   const auto sizes = bank_sizes(plugin);
   assert(sizes[0] == expected_encoded_bytes(1000, 8000));
   assert(sizes[1] == expected_encoded_bytes(4410, 44100));
@@ -149,7 +151,8 @@ void test_all_sixteen_slots(const Library& library) {
   for (int slot = 0; slot < 16; ++slot) {
     std::vector<uint8_t> raw(static_cast<size_t>(16 + slot));
     std::iota(raw.begin(), raw.end(), static_cast<uint8_t>(slot));
-    list += (slot ? ":" : "") + write_file("slot" + std::to_string(slot) + ".ydmc", raw);
+    if (slot) list += test_platform::path_list_separator();
+    list += write_file("slot" + std::to_string(slot) + ".ydmc", raw);
   }
   const clap_plugin_t* plugin = create_with_bank(library, list);
   const auto sizes = bank_sizes(plugin);
@@ -161,7 +164,9 @@ void test_all_sixteen_slots(const Library& library) {
 void test_empty_entries_and_overflow(const Library& library) {
   std::vector<uint8_t> raw(64, 0x11);
   const std::string one = write_file("one.ydmc", raw);
-  const clap_plugin_t* plugin = create_with_bank(library, ":" + one + "::" + one);
+  const std::string separators(2, test_platform::path_list_separator());
+  const clap_plugin_t* plugin = create_with_bank(
+      library, std::string(1, test_platform::path_list_separator()) + one + separators + one);
   const auto sizes = bank_sizes(plugin);
   assert(sizes[0] == 0);
   assert(sizes[1] == raw.size());
@@ -170,7 +175,10 @@ void test_empty_entries_and_overflow(const Library& library) {
   plugin->destroy(plugin);
 
   std::string overflow;
-  for (int i = 0; i < 20; ++i) overflow += (i ? ":" : "") + one;
+  for (int i = 0; i < 20; ++i) {
+    if (i) overflow += test_platform::path_list_separator();
+    overflow += one;
+  }
   const clap_plugin_t* wide = create_with_bank(library, overflow);
   const auto wide_sizes = bank_sizes(wide);
   for (size_t slot = 0; slot < 16; ++slot) assert(wide_sizes[slot] == raw.size());
@@ -213,7 +221,8 @@ void test_rejected_inputs(const Library& library) {
   std::vector<uint8_t> raw(48, 0x22);
   const std::string good = write_file("good.ydmc", raw);
   const clap_plugin_t* plugin =
-      create_with_bank(library, (g_dir / "missing.ydmc").string() + ":" + good);
+      create_with_bank(library, (g_dir / "missing.ydmc").string() +
+                                    test_platform::path_list_separator() + good);
   const auto sizes = bank_sizes(plugin);
   assert(sizes[0] == 0 && sizes[1] == raw.size());
   plugin->destroy(plugin);
@@ -231,7 +240,8 @@ void test_size_limits(const Library& library) {
 void test_chunk_walking(const Library& library) {
   const std::string even = write_file("chunky.wav", make_wav({1, 1, 8000, 16, 1000, true, false, false}));
   const std::string odd = write_file("chunky_odd.wav", make_wav({1, 1, 8000, 16, 1000, true, true, false}));
-  const clap_plugin_t* plugin = create_with_bank(library, even + ":" + odd);
+  const clap_plugin_t* plugin = create_with_bank(
+      library, even + test_platform::path_list_separator() + odd);
   const auto sizes = bank_sizes(plugin);
   const uint32_t expected = expected_encoded_bytes(1000, 8000);
   assert(sizes[0] == expected);
@@ -257,13 +267,14 @@ void test_matches_command_line_tool(const Library& library) {
     const std::string name = "tool" + std::to_string(index++);
     const std::string wav = write_file(name + ".wav", make_wav(spec));
     const std::string out = (g_dir / (name + ".ydmc")).string();
-    const std::string command = "\"" + std::string(tool) + "\" \"" + wav + "\" \"" + out + "\" > /dev/null";
+    const std::string command = "\"" + std::string(tool) + "\" \"" + wav + "\" \"" + out + "\" > " + test_platform::null_device();
     assert(std::system(command.c_str()) == 0);
     const std::vector<uint8_t> from_tool = read_file(out);
 
     // The plug-in encodes the same WAV; the resulting bank must be identical, and the
     // pre-encoded file must load back unchanged.
-    const clap_plugin_t* plugin = create_with_bank(library, wav + ":" + out);
+    const clap_plugin_t* plugin = create_with_bank(
+        library, wav + test_platform::path_list_separator() + out);
     const auto sizes = bank_sizes(plugin);
     assert(sizes[0] == from_tool.size());
     assert(sizes[1] == from_tool.size());
@@ -281,8 +292,8 @@ void test_matches_command_line_tool(const Library& library) {
   // The tool reports failure rather than writing nonsense.
   const std::string bad = write_file("bad_for_tool.wav", std::vector<uint8_t>(64, 0x00));
   const std::string out = (g_dir / "bad.ydmc").string();
-  assert(std::system(("\"" + std::string(tool) + "\" \"" + bad + "\" \"" + out + "\" 2> /dev/null").c_str()) != 0);
-  assert(std::system(("\"" + std::string(tool) + "\" 2> /dev/null").c_str()) != 0);
+  assert(std::system(("\"" + std::string(tool) + "\" \"" + bad + "\" \"" + out + "\" 2> " + test_platform::null_device()).c_str()) != 0);
+  assert(std::system(("\"" + std::string(tool) + "\" 2> " + test_platform::null_device()).c_str()) != 0);
 }
 
 // --- playback -----------------------------------------------------------------------
@@ -294,7 +305,8 @@ void test_bank_playback(const Library& library) {
   for (int slot = 0; slot < 16; ++slot) {
     std::vector<uint8_t> raw(256);
     for (size_t i = 0; i < raw.size(); ++i) raw[i] = static_cast<uint8_t>((i * (slot + 3)) & 0xff);
-    list += (slot ? ":" : "") + write_file("play" + std::to_string(slot) + ".ydmc", raw);
+    if (slot) list += test_platform::path_list_separator();
+    list += write_file("play" + std::to_string(slot) + ".ydmc", raw);
   }
   const clap_plugin_t* plugin = create_with_bank(library, list);
   {
@@ -355,7 +367,7 @@ void test_bank_playback(const Library& library) {
 
 // With no bank loaded the generated kick/snare fallback must still sound.
 void test_generated_fallback(const Library& library) {
-  unsetenv("YANES_DPCM_BANK");
+  test_platform::unset_environment("YANES_DPCM_BANK");
   const clap_plugin_t* plugin = library.create();
   {
     Runner runner(plugin, 48000.0, 512);
@@ -403,7 +415,7 @@ void test_bank_replacement_during_playback(const Library& library) {
 
 int main(int argc, char** argv) {
   assert(argc == 2);
-  g_dir = fs::temp_directory_path() / ("yanes-bank-tests-" + std::to_string(::getpid()));
+  g_dir = fs::temp_directory_path() / ("yanes-bank-tests-" + std::to_string(test_platform::process_id()));
   fs::create_directories(g_dir);
 
   {

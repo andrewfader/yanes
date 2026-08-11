@@ -1,5 +1,5 @@
 #include <clap/clap.h>
-#include <dlfcn.h>
+#include "clap_harness.hpp"
 #include <cassert>
 #include <array>
 #include <algorithm>
@@ -40,9 +40,9 @@ const clap_event_header_t* event_get(const clap_input_events_t* list, uint32_t i
 
 int main(int argc, char** argv) {
   assert(argc == 2);
-  void* library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+  harness::LibraryHandle library = harness::open_library(argv[1]);
   assert(library);
-  const auto* entry = static_cast<const clap_plugin_entry_t*>(dlsym(library, "clap_entry"));
+  const auto* entry = static_cast<const clap_plugin_entry_t*>(harness::find_symbol(library, "clap_entry"));
   assert(entry && clap_version_is_compatible(entry->clap_version));
   assert(entry->init(argv[1]));
   const auto* factory = static_cast<const clap_plugin_factory_t*>(entry->get_factory(CLAP_PLUGIN_FACTORY_ID));
@@ -61,6 +61,7 @@ int main(int argc, char** argv) {
   assert(audio && audio->count(plugin, false) == 1 && audio->count(plugin, true) == 0);
   assert(notes && notes->count(plugin, true) == 1);
   assert(params && params->count(plugin) == 79);
+#ifdef __linux__
   assert(gui && gui->is_api_supported(plugin, CLAP_WINDOW_API_X11, false));
   assert(!gui->is_api_supported(plugin, CLAP_WINDOW_API_X11, true));
   uint32_t gui_width=0,gui_height=0;assert(gui->get_size(plugin,&gui_width,&gui_height));
@@ -71,6 +72,9 @@ int main(int argc, char** argv) {
   assert(!gui->set_size(plugin,800,600));assert(gui->set_size(plugin,1600,1050));
   for(uint32_t i=0;i<params->count(plugin);++i){clap_param_info_t info{};assert(params->get_info(plugin,i,&info));assert(info.id==i);assert(info.name[0]&&info.module[0]);char text[128]{};assert(params->value_to_text(plugin,i,info.default_value,text,sizeof(text)));assert(text[0]);}
   if(std::getenv("YANES_TEST_GUI")){assert(gui->create(plugin,CLAP_WINDOW_API_X11,false));gui->suggest_title(plugin,"YANES automated GUI test");assert(gui->show(plugin));assert(gui->set_size(plugin,1200,700));std::this_thread::sleep_for(std::chrono::milliseconds(50));assert(gui->set_size(plugin,1900,1000));std::this_thread::sleep_for(std::chrono::milliseconds(50));if(const char*hold=std::getenv("YANES_TEST_GUI_HOLD_MS"))std::this_thread::sleep_for(std::chrono::milliseconds(std::max(0,std::atoi(hold))));assert(gui->hide(plugin));gui->destroy(plugin);}
+#else
+  assert(!gui);
+#endif
   const auto* state=static_cast<const clap_plugin_state_t*>(plugin->get_extension(plugin,CLAP_EXT_STATE));
   assert(state);
   assert(plugin->activate(plugin, 48000.0, 1, 512));
@@ -128,5 +132,5 @@ int main(int argc, char** argv) {
   plugin->deactivate(plugin);
   plugin->destroy(plugin);
   entry->deinit();
-  dlclose(library);
+  harness::close_library(library);
 }

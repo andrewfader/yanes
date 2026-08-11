@@ -359,6 +359,50 @@ void test_state_load_during_playback(const Library& library) {
   plugin->destroy(plugin);
 }
 
+// Selecting a preset must produce the same patch no matter which preset preceded it.
+// Presets used to apply only their own edits, so browsing through them accumulated the
+// earlier selections' console noise, arpeggios, and effects on top of the new sound.
+void test_presets_do_not_accumulate(const Library& library) {
+  const clap_plugin_t* plugin = library.create();
+  const clap_id preset = find_param(plugin, "Preset");
+  const clap_param_info_t preset_info = param_info(plugin, preset);
+  const uint32_t count = params_of(plugin)->count(plugin);
+
+  // The reference patch for each preset is the one a freshly created instance produces.
+  std::vector<std::vector<double>> reference;
+  for (int choice = 0; choice <= static_cast<int>(preset_info.max_value); ++choice) {
+    const clap_plugin_t* fresh = library.create();
+    set_param(fresh, preset, choice);
+    std::vector<double> values(count);
+    for (clap_id i = 0; i < count; ++i) values[i] = param(fresh, i);
+    reference.push_back(std::move(values));
+    fresh->destroy(fresh);
+  }
+
+  // Walking every preset in both directions through one instance must reproduce them.
+  for (int pass = 0; pass < 2; ++pass) {
+    for (int step = 0; step <= static_cast<int>(preset_info.max_value); ++step) {
+      const int choice = pass == 0 ? step : static_cast<int>(preset_info.max_value) - step;
+      set_param(plugin, preset, choice);
+      for (clap_id i = 0; i < count; ++i) {
+        if (param(plugin, i) == reference[static_cast<size_t>(choice)][i]) continue;
+        std::fprintf(stderr,
+                     "preset %d left '%s' at %.17g, a freshly loaded instance gives %.17g\n",
+                     choice, param_info(plugin, i).name, param(plugin, i),
+                     reference[static_cast<size_t>(choice)][i]);
+        assert(false);
+      }
+    }
+  }
+
+  // Master is the user's output level rather than part of a recipe, so it must survive.
+  const clap_id master = find_param(plugin, "Master");
+  set_param(plugin, master, -24.0);
+  set_param(plugin, preset, 8);
+  assert(param(plugin, master) == -24.0);
+  plugin->destroy(plugin);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -373,5 +417,6 @@ int main(int argc, char** argv) {
   test_state_values_are_clamped(library);
   test_partial_stream_transfers(library);
   test_state_load_during_playback(library);
+  test_presets_do_not_accumulate(library);
   std::printf("state_tests: all checks passed\n");
 }

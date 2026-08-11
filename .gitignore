@@ -2,6 +2,7 @@
 # below available as a convenience for users who do not want to build first.
 /build/*
 !/build/YANES.clap
+/build-*/
 /cmake-build-*/
 CMakeCache.txt
 CMakeFiles/

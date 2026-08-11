@@ -1,6 +1,8 @@
 #include <clap/clap.h>
+#ifdef __linux__
 #include <X11/Xlib.h>
 #include <X11/Xft/Xft.h>
+#endif
 
 #include "dsp.hpp"
 #include "hardware_fm.hpp"
@@ -221,6 +223,7 @@ struct Plugin {
   double output_dc_x_l{}, output_dc_y_l{}, output_dc_x_r{}, output_dc_y_r{};
   std::atomic<float> output_peak_l{}, output_peak_r{};
   std::atomic<bool> output_clipped{};
+  std::atomic<bool> params_rescan_pending{};
   double hum_phase{};
   double pitch_bend{};
   double mod_wheel{};
@@ -234,6 +237,7 @@ struct Plugin {
   std::atomic<uint32_t> scope_write{};
   std::atomic<uint64_t> scope_revision{};
   uint32_t scope_decimator{};
+#ifdef __linux__
   Display* display{};
   Window window{};
   GC gc{};
@@ -252,6 +256,7 @@ struct Plugin {
   uint64_t gui_seen_revision{};
   int gui_hover_param{-1};
   int gui_hover_tab{-1};
+#endif
   std::array<bool,16> sustain_pedal{};
 };
 
@@ -293,6 +298,17 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
   if (id == kGenesisAlgorithm || id == kGenesisFeedback || id == kFmBrightness ||
       (id >= kFmAttack && id <= kFmPmDepth)) p->fm_revision.fetch_add(1, std::memory_order_release);
   if (!apply_preset || id != kPreset || value < 0.5) return;
+  // A preset is a complete recipe, so every other parameter returns to its default before the
+  // recipe runs. Without this, selecting a preset only layered its own edits on top of whatever
+  // the previous one left behind: leaving a preset that enables console noise, an arpeggio, or an
+  // effect kept that setting audible under every preset chosen afterwards.
+  // Master is the user's output level rather than part of any recipe, so it survives the reset.
+  for (clap_id target = 0; target < kParamCount; ++target)
+    if (target != kPreset && target != kMasterDb) set_param(p, target, kSpecs[target].def, false);
+  // Preset recipes change many parameters at once; ask the host to re-read them all so its
+  // generic panel and automation lanes do not keep showing the previous preset's values.
+  p->params_rescan_pending.store(true, std::memory_order_release);
+  if (p->host && p->host->request_callback) p->host->request_callback(p->host);
   auto put = [p](clap_id target, double v) { set_param(p, target, v); };
   // Presets only touch their relevant synthesis/output sections so they remain useful starting points.
   switch (static_cast<int>(value)) {
@@ -301,15 +317,15 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 3: put(kWaveform, 9); put(kDpcmRate, 12); put(kReleaseMs, 40); break;
     case 4: put(kWaveform, 11); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 5); break;
     case 5: put(kWaveform, 13); put(kTranspose, -12); put(kAttackMs, 0); break;
-    case 6: put(kWaveform, 17); put(kGenesisAlgorithm, 4); put(kGenesisFeedback, 4); put(kReleaseMs, 650); break;
+    case 6: put(kWaveform, 17); put(kGenesisAlgorithm, 4); put(kGenesisFeedback, 4); put(kFmBrightness, 0.85); put(kReleaseMs, 650); break;
     case 7: put(kRetroAmount, 0.75); put(kSpeaker, 0.8); put(kOutputRate, 18000); put(kBitDepth, 11); break;
     case 8: put(kRetroAmount, 1); put(kSpeaker, 1); put(kOutputRate, 11000); put(kBitDepth, 8); put(kRfNoise, 0.35); put(kHum, 0.25); break;
     case 9: put(kWaveform, 26); put(kExpansionShape, 2); put(kReleaseMs, 300); break;
-    case 10: put(kWaveform, 27); put(kFmRatio, 2); put(kFmIndex, 3.8); put(kGenesisFeedback, 2); break;
-    case 11: put(kWaveform, 28); put(kGenesisAlgorithm, 4); put(kGenesisFeedback, 5); break;
-    case 12: put(kWaveform, 31); put(kGenesisAlgorithm, 2); put(kRetroAmount, 0.15); break;
+    case 10: put(kWaveform, 27); put(kFmRatio, 2); put(kFmIndex, 3.8); put(kGenesisFeedback, 2); put(kFmBrightness, 0.95); break;
+    case 11: put(kWaveform, 28); put(kGenesisAlgorithm, 4); put(kGenesisFeedback, 5); put(kFmBrightness, 0.95); break;
+    case 12: put(kWaveform, 31); put(kGenesisAlgorithm, 2); put(kFmBrightness, 0.95); put(kRetroAmount, 0.15); break;
     case 13: put(kWaveform, 32); put(kGenesisAlgorithm, 5); put(kReleaseMs, 450); break;
-    case 14: put(kWaveform, 33); put(kGenesisAlgorithm, 1); put(kGenesisFeedback, 6); break;
+    case 14: put(kWaveform, 33); put(kGenesisAlgorithm, 1); put(kGenesisFeedback, 6); put(kFmBrightness, 0.95); break;
     case 15: put(kWaveform, 25); put(kNoiseMode, 1); put(kSweepDepth, 18); put(kSweepTime, 90); break;
     case 16: put(kWaveform, 38); put(kDuty, 1); put(kChipCutoff, 900); put(kChipResonance, 0.72); put(kTranspose, -12); break;
     case 17: put(kWaveform, 39); put(kDuty, 2); put(kChipCutoff, 5200); put(kChipResonance, 0.48); break;
@@ -913,14 +929,21 @@ StereoSample process_rack(Plugin* p, float input) {
           echoed * (1.0f - chorus_mix) + chorus_r * chorus_mix};
 }
 
+#ifdef __linux__
 void gui_destroy(const clap_plugin_t* plugin);
+#endif
 bool plugin_init(const clap_plugin_t* plugin) {
   auto* p = self(plugin);
   const char* paths = std::getenv("YANES_DPCM_BANK");
   if (!paths || !*paths) return true;
   std::string_view list(paths);
   for (size_t slot = 0, at = 0; slot < p->dpcm_banks.size() && at <= list.size(); ++slot) {
-    const size_t end = list.find(':', at);
+#ifdef _WIN32
+    constexpr char bank_separator = ';';
+#else
+    constexpr char bank_separator = ':';
+#endif
+    const size_t end = list.find(bank_separator, at);
     const std::string path(list.substr(at, end == std::string_view::npos ? list.size() - at : end - at));
     if (!path.empty()) if(auto bank=load_dpcm_file(path))install_dpcm_bank(p,slot,std::move(bank));
     if (end == std::string_view::npos) break;
@@ -928,7 +951,12 @@ bool plugin_init(const clap_plugin_t* plugin) {
   }
   return true;
 }
-void plugin_destroy(const clap_plugin_t* plugin) { if (self(plugin)->display) gui_destroy(plugin); delete self(plugin); }
+void plugin_destroy(const clap_plugin_t* plugin) {
+#ifdef __linux__
+  if (self(plugin)->display) gui_destroy(plugin);
+#endif
+  delete self(plugin);
+}
 bool plugin_activate(const clap_plugin_t* plugin, double rate, uint32_t, uint32_t) {
   auto* p = self(plugin);
   p->sample_rate = rate;
@@ -1179,6 +1207,14 @@ bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
 const clap_plugin_state_t kState{state_save, state_load};
 
 constexpr int kGuiRows = 16;
+#ifdef __linux__
+// The ymfm-backed modes, including the stacks that route MIDI channels onto them. Their
+// algorithm, feedback, and carrier level are exactly the controls those chips respond to,
+// so the editor has to offer them here as well as for the compact FM models.
+bool hardware_fm_waveform(int waveform) {
+  return waveform==17||(waveform>=27&&waveform<=30)||waveform==21||waveform==31||
+         waveform==32||waveform==33||waveform==36;
+}
 bool gui_param_relevant(clap_id id,int waveform) {
   switch(id){
     case kDuty:return waveform==1||waveform==10||waveform==11||waveform==18||waveform==38||waveform==39||waveform==52||waveform==56;
@@ -1188,12 +1224,12 @@ bool gui_param_relevant(clap_id id,int waveform) {
     case kFmRatio:case kFmIndex:return waveform==7||waveform==49||waveform==51||waveform==55;
     case kHardwareEnvelope:case kEnvelopeRate:return waveform==6||waveform==10||waveform==11||waveform==17||waveform==19||waveform==20||waveform==21||waveform==22||waveform==23||waveform==24;
     case kDpcmRate:return waveform==9||waveform==18||waveform==32||waveform==33;
-    case kGenesisAlgorithm:case kGenesisFeedback:return waveform==6||waveform==49||waveform==51||waveform==55;
+    case kGenesisAlgorithm:case kGenesisFeedback:return waveform==6||waveform==49||waveform==51||waveform==55||hardware_fm_waveform(waveform);
     case kChipCutoff:case kChipResonance:return waveform==38||waveform==39||waveform==52||waveform==53||waveform==56;
     case kWavetablePosition:return waveform==46||waveform==47||waveform==48||waveform==50||waveform==54;
     case kWavetableWarp:return waveform==46||waveform==47;
     case kAdditiveTilt:return waveform==48;
-    case kFmBrightness:return waveform==6||waveform==7||waveform==49||waveform==51||waveform==55;
+    case kFmBrightness:return waveform==6||waveform==7||waveform==49||waveform==51||waveform==55||hardware_fm_waveform(waveform);
     default:return true;
   }
 }
@@ -1400,22 +1436,33 @@ bool gui_show(const clap_plugin_t* plugin) { auto* p = self(plugin); if (!p->dis
 bool gui_hide(const clap_plugin_t* plugin) { auto* p = self(plugin); if (!p->display) return false; XUnmapWindow(p->display, p->window); return true; }
 const clap_plugin_gui_t kGui{gui_supported, gui_preferred, gui_create, gui_destroy, gui_scale, gui_get_size,
   gui_can_resize, gui_resize_hints, gui_adjust, gui_set_size, gui_parent, gui_transient, gui_title, gui_show, gui_hide};
+#endif
 
 const void* get_extension(const clap_plugin_t*, const char* id) {
   if (!std::strcmp(id, CLAP_EXT_AUDIO_PORTS)) return &kAudioPorts;
   if (!std::strcmp(id, CLAP_EXT_NOTE_PORTS)) return &kNotePorts;
   if (!std::strcmp(id, CLAP_EXT_PARAMS)) return &kParams;
   if (!std::strcmp(id, CLAP_EXT_STATE)) return &kState;
+#ifdef __linux__
   if (!std::strcmp(id, CLAP_EXT_GUI)) return &kGui;
+#endif
   return nullptr;
 }
-void on_main_thread(const clap_plugin_t*) {}
+void on_main_thread(const clap_plugin_t* plugin) {
+  // Applying a preset rewrites most parameters; the host only learns about that here, on the
+  // thread where rescan is legal to call.
+  auto* p = self(plugin);
+  if (!p->params_rescan_pending.exchange(false, std::memory_order_acq_rel) || !p->host) return;
+  if (const auto* hp = static_cast<const clap_host_params_t*>(
+          p->host->get_extension(p->host, CLAP_EXT_PARAMS)))
+    hp->rescan(p->host, CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT);
+}
 
 const char* kFeatures[] = {CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_SYNTHESIZER,
                            CLAP_PLUGIN_FEATURE_STEREO, nullptr};
 const clap_plugin_descriptor_t kDescriptor{
     CLAP_VERSION_INIT, "org.yanes.native", "YANES", "YANES contributors",
-    "", "", "", "0.2.0", "Native multi-console chiptune synthesizer for Linux", kFeatures};
+    "", "", "", "0.2.0", "Native multi-console chiptune synthesizer", kFeatures};
 
 const clap_plugin_t* create_plugin(const clap_host_t* host) {
   auto* p = new (std::nothrow) Plugin;
@@ -1435,7 +1482,13 @@ const clap_plugin_t* factory_create(const clap_plugin_factory_t*, const clap_hos
 }
 const clap_plugin_factory_t kFactory{factory_count, factory_descriptor, factory_create};
 
-bool entry_init(const char*) { return XInitThreads() != 0; }
+bool entry_init(const char*) {
+#ifdef __linux__
+  return XInitThreads() != 0;
+#else
+  return true;
+#endif
+}
 void entry_deinit() {}
 const void* entry_factory(const char* id) { return id && !std::strcmp(id, CLAP_PLUGIN_FACTORY_ID) ? &kFactory : nullptr; }
 
