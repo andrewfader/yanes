@@ -12,10 +12,20 @@
 #include <vector>
 
 namespace {
-const void* host_extension(const clap_host_t*, const char*) { return nullptr; }
-void request_restart(const clap_host_t*) {}
-void request_process(const clap_host_t*) {}
-void request_callback(const clap_host_t*) {}
+bool g_creating_plugin = false;
+const void* host_extension(const clap_host_t*, const char*) {
+  assert(!g_creating_plugin && "Host get_extension must not be called during create_plugin");
+  return nullptr;
+}
+void request_restart(const clap_host_t*) {
+  assert(!g_creating_plugin && "Host request_restart must not be called during create_plugin");
+}
+void request_process(const clap_host_t*) {
+  assert(!g_creating_plugin && "Host request_process must not be called during create_plugin");
+}
+void request_callback(const clap_host_t*) {
+  assert(!g_creating_plugin && "Host request_callback must not be called during create_plugin before plugin->init()");
+}
 struct EventList {
   std::array<const clap_event_header_t*, 2> events{};
   uint32_t count{};
@@ -52,7 +62,9 @@ int main(int argc, char** argv) {
 
   const clap_host_t host{CLAP_VERSION_INIT, nullptr, "YANES test host", "YANES", "", "1",
                          host_extension, request_restart, request_process, request_callback};
+  g_creating_plugin = true;
   const clap_plugin_t* plugin = factory->create_plugin(factory, &host, descriptor->id);
+  g_creating_plugin = false;
   assert(plugin && plugin->init(plugin));
   const auto* audio = static_cast<const clap_plugin_audio_ports_t*>(plugin->get_extension(plugin, CLAP_EXT_AUDIO_PORTS));
   const auto* notes = static_cast<const clap_plugin_note_ports_t*>(plugin->get_extension(plugin, CLAP_EXT_NOTE_PORTS));

@@ -43,8 +43,15 @@ inline void* find_symbol(LibraryHandle handle, const char* name) { return dlsym(
 inline void close_library(LibraryHandle handle) { dlclose(handle); }
 #endif
 
-inline const void* host_extension(const clap_host_t*, const char*) { return nullptr; }
-inline void host_noop(const clap_host_t*) {}
+inline bool g_creating_plugin = false;
+
+inline const void* host_extension(const clap_host_t*, const char*) {
+  assert(!g_creating_plugin && "Host get_extension must not be called during create_plugin");
+  return nullptr;
+}
+inline void host_noop(const clap_host_t*) {
+  assert(!g_creating_plugin && "Host callbacks must not be called during create_plugin before plugin->init()");
+}
 
 inline const clap_host_t kHost{CLAP_VERSION_INIT, nullptr, "YANES test host", "YANES", "", "1",
                                host_extension, host_noop, host_noop, host_noop};
@@ -72,7 +79,9 @@ struct Library {
   Library& operator=(const Library&) = delete;
 
   const clap_plugin_t* create() const {
+    g_creating_plugin = true;
     const clap_plugin_t* plugin = factory->create_plugin(factory, &kHost, descriptor->id);
+    g_creating_plugin = false;
     assert(plugin && plugin->init(plugin));
     return plugin;
   }

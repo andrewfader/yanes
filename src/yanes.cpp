@@ -284,6 +284,7 @@ struct Voice {
 struct Plugin {
   clap_plugin_t api{};
   const clap_host_t* host{};
+  bool initialized{false};
   std::array<std::atomic<double>, kParamCount> params{};
   std::array<Voice, 16> voices{};
   std::array<yanes::HardwareFmVoice, 16> hardware_fm{};
@@ -430,8 +431,10 @@ void apply_voice_defaults(Plugin* p, int waveform) {
       if (setting >= 0.0) set_param(p, target, setting, false);
     // The voice brought several parameters with it, so the host has to re-read
     // them or its panel and automation lanes keep showing the old voice's values.
-    p->params_rescan_pending.store(true, std::memory_order_release);
-    if (p->host && p->host->request_callback) p->host->request_callback(p->host);
+    if (p->initialized) {
+      p->params_rescan_pending.store(true, std::memory_order_release);
+      if (p->host && p->host->request_callback) p->host->request_callback(p->host);
+    }
     return;
   }
 }
@@ -459,8 +462,10 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
   apply_voice_defaults(p, static_cast<int>(kSpecs[kWaveform].def));
   // Preset recipes change many parameters at once; ask the host to re-read them all so its
   // generic panel and automation lanes do not keep showing the previous preset's values.
-  p->params_rescan_pending.store(true, std::memory_order_release);
-  if (p->host && p->host->request_callback) p->host->request_callback(p->host);
+  if (p->initialized) {
+    p->params_rescan_pending.store(true, std::memory_order_release);
+    if (p->host && p->host->request_callback) p->host->request_callback(p->host);
+  }
   auto put = [p](clap_id target, double v) { set_param(p, target, v, false); };
   // Presets only touch their relevant synthesis/output sections so they remain useful starting points.
   switch (static_cast<int>(value)) {
@@ -1223,6 +1228,7 @@ bool gui_is_open(const Plugin* p);
 #endif
 bool plugin_init(const clap_plugin_t* plugin) {
   auto* p = self(plugin);
+  p->initialized = true;
   const char* paths = std::getenv("YANES_DPCM_BANK");
   if (!paths || !*paths) return true;
   std::string_view list(paths);
@@ -1241,10 +1247,12 @@ bool plugin_init(const clap_plugin_t* plugin) {
   return true;
 }
 void plugin_destroy(const clap_plugin_t* plugin) {
+  auto* p = self(plugin);
+  p->initialized = false;
 #ifdef YANES_HAS_EDITOR
-  if (gui_is_open(self(plugin))) gui_destroy(plugin);
+  if (gui_is_open(p)) gui_destroy(plugin);
 #endif
-  delete self(plugin);
+  delete p;
 }
 bool plugin_activate(const clap_plugin_t* plugin, double rate, uint32_t, uint32_t) {
   auto* p = self(plugin);
@@ -1519,10 +1527,12 @@ void on_main_thread(const clap_plugin_t* plugin) {
   // Applying a preset rewrites most parameters; the host only learns about that here, on the
   // thread where rescan is legal to call.
   auto* p = self(plugin);
-  if (!p->params_rescan_pending.exchange(false, std::memory_order_acq_rel) || !p->host) return;
+  if (!p->initialized || !p->params_rescan_pending.exchange(false, std::memory_order_acq_rel) || !p->host) return;
+  if (!p->host->get_extension) return;
   if (const auto* hp = static_cast<const clap_host_params_t*>(
-          p->host->get_extension(p->host, CLAP_EXT_PARAMS)))
-    hp->rescan(p->host, CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT);
+          p->host->get_extension(p->host, CLAP_EXT_PARAMS))) {
+    if (hp->rescan) hp->rescan(p->host, CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT);
+  }
 }
 
 const char* kFeatures[] = {CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_SYNTHESIZER,
