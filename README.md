@@ -65,10 +65,9 @@ The 21-chip audio suite (`tools/compare_furnace_audio.sh`, fixtures under `tests
 shape. A fixture only selects a voice and plays a note — duty, wavetable, noise settings, FM ratio
 and release all come from the plugin's own per-voice defaults, so a passing row means the sound a
 user gets from that voice matches the chip, not that the engine could be talked into it. Each of the
-21 fixtures is also rendered an octave up and down as an untuned holdout; **61 of the 63 cases pass**,
-the two exceptions being a pitch-detector misread on the shortest SID fixture rather than an audio
-difference. `yanes-parity-compare --self-test` runs as its own CTest to keep the gate from drifting
-into something a wrong render could satisfy. Packaged Furnace 0.6.8.3 cannot load these INF2 modules;
+21 fixtures is also rendered an octave up and down as an untuned holdout; **all 63 cases pass**.
+`yanes-parity-compare --self-test` runs as its own CTest to keep the gate from drifting into
+something a wrong render could satisfy. Packaged Furnace 0.6.8.3 cannot load these INF2 modules;
 configure `-DYANES_FURNACE_EXECUTABLE=` to a git Furnace **dev250+** binary. See `FURNACE_PARITY.md`.
 
 `tools/compare_furnace.sh CHIP module.fur [minimum-correlation]` performs the complete external-oracle

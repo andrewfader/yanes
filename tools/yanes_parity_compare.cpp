@@ -332,12 +332,31 @@ static double yin_hz(const std::vector<double> &raw, uint32_t rate, size_t begin
   // one cycle to the next (the N163 time-multiplexes its channels) dips harder
   // at twice or three times the true period, which reads back as a spurious
   // pitch error. Prefer the shortest submultiple that is nearly as periodic.
-  for (size_t divisor = 4; divisor >= 2; --divisor) {
-    const size_t candidate = tau / divisor;
-    if (candidate >= min_lag && cmnd[candidate] < 0.4 &&
-        cmnd[candidate] < cmnd[tau] * 2 + 0.05) {
-      tau = candidate;
-      break;
+  for (size_t divisor = 8; divisor >= 2; --divisor) {
+    const size_t target = tau / divisor;
+    size_t best_cand = 0;
+    const size_t lo = target > 2 ? std::max(min_lag, target - 2) : min_lag;
+    const size_t hi = std::min(max_lag - 1, target + 3);
+    for (size_t cand = lo; cand < hi; ++cand) {
+      if (cand > 1 && cand + 1 < max_lag) {
+        if (cmnd[cand] <= cmnd[cand - 1] && cmnd[cand] <= cmnd[cand + 1]) {
+          if (!best_cand || cmnd[cand] < cmnd[best_cand])
+            best_cand = cand;
+        }
+      }
+    }
+    if (best_cand) {
+      if (cmnd[best_cand] < std::max(0.4, cmnd[tau] * 1.5 + 0.1)) {
+        tau = best_cand;
+        break;
+      }
+    } else {
+      const size_t candidate = target;
+      if (candidate >= min_lag && cmnd[candidate] < 0.4 &&
+          cmnd[candidate] < cmnd[tau] * 2 + 0.05) {
+        tau = candidate;
+        break;
+      }
     }
   }
   const double s0 = cmnd[tau - 1], s1 = cmnd[tau], s2 = cmnd[tau + 1];

@@ -448,7 +448,7 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
   // Only on an actual change, so re-sending the current voice never overwrites
   // edits the player has made on top of it.
   if (id == kWaveform && previous != value) apply_voice_defaults(p, static_cast<int>(value));
-  if (!apply_preset || id != kPreset || value < 0.5) return;
+  if (!apply_preset || id != kPreset) return;
   // A preset is a complete recipe, so every other parameter returns to its default before the
   // recipe runs. Without this, selecting a preset only layered its own edits on top of whatever
   // the previous one left behind: leaving a preset that enables console noise, an arpeggio, or an
@@ -456,6 +456,7 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
   // Master is the user's output level rather than part of any recipe, so it survives the reset.
   for (clap_id target = 0; target < kParamCount; ++target)
     if (target != kPreset && target != kMasterDb) set_param(p, target, kSpecs[target].def, false);
+  apply_voice_defaults(p, static_cast<int>(kSpecs[kWaveform].def));
   // Preset recipes change many parameters at once; ask the host to re-read them all so its
   // generic panel and automation lanes do not keep showing the previous preset's values.
   p->params_rescan_pending.store(true, std::memory_order_release);

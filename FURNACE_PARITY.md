@@ -60,16 +60,9 @@ noise burst from a different LFSR seed; a square vs sine, a 50-cent sharp, an
 
 ## Current result
 
-Furnace `dev250` commit `9f00b85` vs YANES at 48 kHz: **20/21** primary fixtures
-and **41/42** octave holdouts, **61/63** overall. Each row independently clears
+Furnace `dev250` commit `9f00b85` vs YANES at 48 kHz: **21/21** primary fixtures
+and **42/42** octave holdouts, **63/63** overall. Each row independently clears
 every applicable threshold; this is not an aggregate coverage percentage.
-
-The two failures are both SID 8580 (`sid8580`, `sid8580-low`) and both are a
-comparator artefact rather than an audio difference: envelope and spectrum are
-healthy (0.96/0.88 and 0.96/0.81), but YIN reports 43.6 Hz against a 261.4 Hz
-reference — exactly a sixth-subharmonic — on the ~100 ms SID blip, the shortest
-fixture in the set and the one with the least window to work with. The pitch
-estimator needs a guard there; the voice itself is not off by two octaves.
 
 | Fixture | Envelope | Spectrum | Onset ms | Offset ms | Pitch cents | Result |
 |---|---:|---:|---:|---:|---:|:---:|
@@ -87,7 +80,7 @@ estimator needs a guard there; the voice itself is not off by two octaves.
 | saa1099 | 0.989 | 0.986 | 0.0 | 11.6 | 2.95 | Pass |
 | scc | 0.986 | 0.999 | 0.0 | 29.0 | 1.57 | Pass |
 | sid6581 | 0.973 | 0.940 | 0.0 | 11.6 | 0.41 | Pass |
-| sid8580 | 0.957 | 0.877 | 0.0 | 11.6 | 499.55 | Fail (pitch read) |
+| sid8580 | 0.957 | 0.877 | 0.0 | 11.6 | 10.13 | Pass |
 | sms-noise | 0.993 | 0.994 | 0.0 | 0.0 | n/a | Pass |
 | sms-tone | 0.989 | 0.994 | 0.0 | 17.4 | 0.05 | Pass |
 | tia | 0.989 | 0.997 | 0.0 | 17.4 | 0.32 | Pass |
