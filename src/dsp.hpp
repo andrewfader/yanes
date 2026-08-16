@@ -19,6 +19,40 @@ inline double midi_frequency(double note) {
   return 440.0 * std::exp2((note - 69.0) / 12.0);
 }
 
+// The NES sums the triangle, noise and DPCM through one non-linear DAC. A
+// two-level channel comes out of it unchanged apart from scale, but the
+// triangle's staircase is bent, and that bend is what puts even harmonics into
+// an otherwise symmetric waveform.
+inline float nes_tnd_shape(float bipolar) {
+  const double level =
+      (std::clamp(static_cast<double>(bipolar), -1.0, 1.0) * 0.5 + 0.5) * 15.0;
+  constexpr double full = 159.79 / (8227.0 / 15.0 + 100.0);
+  const double out = level > 0.0 ? 159.79 / (8227.0 / level + 100.0) : 0.0;
+  return static_cast<float>(out * 2.0 / full - 1.0);
+}
+
+// The NES noise channel has no divider: the note picks one of the sixteen
+// period-table entries, one entry per semitone, and wraps back to the top of
+// the table every sixteen semitones the way the register itself does.
+inline int nes_noise_index(int base_period, int semitones_from_base) {
+  const int index = (base_period - semitones_from_base) % 16;
+  return index < 0 ? index + 16 : index;
+}
+
+// Game Boy NR43 splits the shift rate into a 4-bit octave and a 3-bit divisor,
+// so the note grid runs four steps to the octave: the divisor supplies 7/8, 3/4
+// and 5/8 of the octave step and then the shift field halves the rate.
+inline double game_boy_noise_hz(double base_hz, int semitones_from_base) {
+  constexpr std::array<double, 4> kDivisors{1.0, 7.0 / 8.0, 3.0 / 4.0, 5.0 / 8.0};
+  const int octave = static_cast<int>(
+      std::floor(static_cast<double>(semitones_from_base) / 4.0));
+  const size_t step = static_cast<size_t>(semitones_from_base - octave * 4);
+  // Clamped to what the register can actually express: divisor 0 with shift 0 at
+  // the top, divisor 7 with shift 13 at the bottom.
+  return std::clamp(base_hz * std::exp2(octave) / kDivisors[step],
+                    262144.0 / 7.0 / 16384.0, 262144.0);
+}
+
 inline float poly_blep(double phase, double increment) {
   if (increment <= 0.0) return 0.0f;
   if (phase < increment) {
@@ -55,17 +89,24 @@ inline float quantize_bipolar(double value, int levels) {
 }
 
 inline float vrc6_saw(double phase, int accumulator_step) {
-  // VRC6 advances a 6-bit accumulator over a 14-step sequence. The rate control
-  // is exposed as shape so the characteristic ramp can be made softer or harder.
+  // The VRC6 saw adds its 6-bit rate into an 8-bit accumulator once every two
+  // of the 14 steps in its sequence, so a cycle is seven held levels, and puts
+  // the accumulator's top five bits on the DAC. A high rate overflows the
+  // accumulator part-way through, which is what folds the ramp back on itself
+  // instead of producing a clean saw.
   const int step = std::clamp(static_cast<int>(phase * 14.0), 0, 13);
-  const int rate = std::clamp(accumulator_step, 1, 15);
-  const int accumulator = (step * rate) & 0x3f;
-  return static_cast<float>(accumulator / 31.5 - 1.0);
+  const int additions = step / 2;
+  const int accumulator = (additions * std::clamp(accumulator_step, 0, 63)) & 0xff;
+  return static_cast<float>((accumulator >> 3) / 15.5 - 1.0);
 }
 
 inline float fds_wave(double phase, int shape) {
   constexpr double tau = 6.2831853071795864769;
   const double p = std::floor(phase * 64.0) / 64.0;
+  // The top of the range is the plain ramp a wavetable chip holds after a
+  // reset, which is what the hardware reference renders play.
+  if (std::clamp(shape, 0, 7) == 7)
+    return quantize_bipolar(2.0 * p - 1.0, 64);
   const double harmonic = (std::clamp(shape, 0, 7) - 3.5) / 14.0;
   return quantize_bipolar(std::sin(tau * p) + harmonic * std::sin(tau * 2.0 * p), 64);
 }
@@ -74,6 +115,10 @@ inline float n163_wave(double phase, int shape) {
   constexpr double tau = 6.2831853071795864769;
   const int length = 4 * (std::clamp(shape, 0, 7) + 1);
   const double p = std::floor(phase * length) / length;
+  // Longest table doubles as the plain ramp a wavetable chip holds after a
+  // reset, which is what the hardware reference renders play.
+  if (std::clamp(shape, 0, 7) == 7)
+    return quantize_bipolar(2.0 * p - 1.0, 16);
   const double wave = 0.72 * std::sin(tau * p) + 0.28 * std::sin(tau * 3.0 * p);
   return quantize_bipolar(wave, 16);
 }
@@ -147,6 +192,10 @@ inline float opl_two_operator(double phase, double ratio, double index, double f
 inline float scc_wave(double phase, int shape) {
   constexpr double tau = 6.2831853071795864769;
   const double p = std::floor(phase * 32.0) / 32.0;
+  // The top of the range is the plain ramp a wavetable chip holds after a
+  // reset, which is what the hardware reference renders play.
+  if (std::clamp(shape, 0, 7) == 7)
+    return quantize_bipolar(2.0 * p - 1.0, 256);
   const double blend = std::clamp(shape, 0, 7) / 7.0;
   const double wave = (1.0 - blend) * std::sin(tau * p) + blend * std::sin(tau * 2.0 * p) +
                       0.22 * std::sin(tau * 5.0 * p);

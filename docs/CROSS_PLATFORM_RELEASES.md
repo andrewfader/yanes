@@ -1,9 +1,8 @@
 # Cross-platform build and release process
 
-YANES builds its audio engine, CLAP interface, parameters, automation, state, and command-line
-tools on Linux, Windows, and macOS. The custom editor currently remains a Linux/X11 feature;
-Windows and macOS builds use the host's generic parameter interface until native Win32 and Cocoa
-editor backends are implemented.
+YANES builds its audio engine, CLAP interface, parameters, automation, state, custom editor, and
+command-line tools on Linux, Windows, and macOS. The editor uses X11/Xft on Linux, GDI on Windows,
+and Cocoa on macOS.
 
 ## Continuous integration
 
@@ -45,7 +44,6 @@ self-hosted runners should be reserved for licensed DAWs and GUI/installer accep
 not route pull requests from forks to those machines. Recommended labels are
 `[self-hosted, windows, x64, audio-host]` and `[self-hosted, macOS, ARM64, audio-host]`.
 
-The next product milestone is to extract the existing drawing operations behind a small editor
-backend, retain X11/Xft on Linux, and implement Win32 plus Cocoa versions. Platform-neutral layout
-tests should remain shared; native smoke tests should verify window embedding, resize behavior,
-file selection, DPI/Retina scaling, and editor teardown in a real host.
+The next product milestone is host-side GUI certification: window embedding, resize behavior,
+file selection, DPI/Retina scaling, and editor teardown in a real DAW on each platform.
+Platform-neutral layout tests remain shared.

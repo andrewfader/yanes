@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(YANES VERSION 0.1.0 LANGUAGES CXX)
+project(YANES VERSION 0.2.0 LANGUAGES CXX)
 
 # Keep windows.h from defining the min/max macros no matter which header pulls it in.
 add_compile_definitions($<$<CXX_COMPILER_ID:MSVC>:NOMINMAX>)
@@ -55,6 +55,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(yanes_clap PRIVATE X11::X11 PkgConfig::XFT)
 endif()
 target_link_libraries(yanes_clap PRIVATE yanes_ymfm)
+if(WIN32)
+  target_link_libraries(yanes_clap PRIVATE user32 gdi32 comdlg32)
+endif()
+if(APPLE)
+  enable_language(OBJCXX)
+  set_source_files_properties(src/yanes.cpp PROPERTIES LANGUAGE OBJCXX)
+  target_link_libraries(yanes_clap PRIVATE "-framework Cocoa")
+endif()
 target_compile_options(yanes_clap PRIVATE
   $<$<CXX_COMPILER_ID:MSVC>:/W4>
   $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Wconversion>)
@@ -106,6 +114,7 @@ yanes_enable_assertions(vgm_tests)
 install(PROGRAMS tools/compare_furnace.sh DESTINATION bin RENAME yanes-compare-furnace)
 
 enable_testing()
+add_test(NAME parity_compare_fairness COMMAND yanes-parity-compare --self-test)
 add_executable(yanes-fixture-render tests/furnace_render.cpp)
 target_compile_features(yanes-fixture-render PRIVATE cxx_std_20)
 yanes_warnings(yanes-fixture-render)
@@ -186,9 +195,12 @@ if(YANES_FURNACE_FIXTURE_DIR)
   endforeach()
 endif()
 
-# Full chip-audio oracle suite. Point this at the Furnace version to certify;
-# the repository fixtures and the 0.80 composite thresholds remain fixed.
+# Full chip-audio oracle suite. Furnace 0.6.8.3 cannot load these INF2 fixtures;
+# use git furnace >= dev250. Pass -DYANES_FURNACE_EXECUTABLE=... or rely on PATH.
 set(YANES_FURNACE_EXECUTABLE "" CACHE FILEPATH "Furnace executable for the 21-chip audio parity suite")
+if(NOT YANES_FURNACE_EXECUTABLE)
+  find_program(YANES_FURNACE_EXECUTABLE furnace)
+endif()
 if(YANES_FURNACE_EXECUTABLE)
   foreach(fixture ay-tone fds gameboy-noise gameboy-pulse gameboy-wave n163
       nes-noise nes-pulse nes-triangle pce-wave pokey-tone saa1099 scc sid6581

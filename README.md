@@ -1,9 +1,8 @@
 # YANES — Yet Another NES Audio Plugin
 
 YANES is a clean-room CLAP instrument for NES and other retro console, computer, and arcade sounds.
-It builds on Linux, Windows, and macOS and is designed for Bitwig Studio and other CLAP hosts. The
-custom editor is currently available on Linux/X11; Windows and macOS builds use the host's generic
-parameter interface.
+It builds on Linux, Windows, and macOS and is designed for Bitwig Studio and other CLAP hosts. A
+custom editor is included on all three platforms (X11 on Linux, Win32, and Cocoa).
 
 ## What is implemented
 
@@ -29,7 +28,7 @@ and **FM index** parameters are exposed for automation. These are compact musica
 chip's characteristic synthesis method, not register- or cycle-perfect emulators.
 
 The plug-in also provides NES DPCM kick/snare synthesis, Game Boy pulse/wave/noise, Master System
-tone/noise, Genesis PSG, and an eight-algorithm four-operator Genesis FM model. The console stack
+tone/noise, Genesis PSG, and a register-driven four-operator Genesis FM model through ymfm. The console stack
 modes route MIDI channels to hardware-style channels:
 
 - NES channels 1–5: pulse 1, pulse 2, triangle, noise, DPCM
@@ -61,9 +60,21 @@ error. It resamples differing source rates and also reports 1024-frame energy-en
 which is stable across different chip-core phase and resampling implementations. An optional
 minimum envelope-correlation threshold is suitable for CI.
 
-`tools/compare_furnace.sh module.fur [minimum-correlation]` performs the complete external-oracle
-workflow: Furnace per-system WAV and VGM export, YM2612 register extraction, native ymfm replay,
-and aligned audio comparison. It uses temporary files and does not copy Furnace modules or audio
+The 21-chip audio suite (`tools/compare_furnace_audio.sh`, fixtures under `tests/furnace/`) uses
+`yanes-parity-compare`: onset alignment, log-band spectrum, octave-folded YIN pitch, and envelope
+shape. A fixture only selects a voice and plays a note — duty, wavetable, noise settings, FM ratio
+and release all come from the plugin's own per-voice defaults, so a passing row means the sound a
+user gets from that voice matches the chip, not that the engine could be talked into it. Each of the
+21 fixtures is also rendered an octave up and down as an untuned holdout; **61 of the 63 cases pass**,
+the two exceptions being a pitch-detector misread on the shortest SID fixture rather than an audio
+difference. `yanes-parity-compare --self-test` runs as its own CTest to keep the gate from drifting
+into something a wrong render could satisfy. Packaged Furnace 0.6.8.3 cannot load these INF2 modules;
+configure `-DYANES_FURNACE_EXECUTABLE=` to a git Furnace **dev250+** binary. See `FURNACE_PARITY.md`.
+
+`tools/compare_furnace.sh CHIP module.fur [minimum-correlation]` performs the complete external-oracle
+workflow: Furnace per-system WAV and VGM export, register extraction, native ymfm replay,
+and aligned audio comparison. `CHIP` is one of `ym2203`, `ym2608`, `ym2612`, `ym2151`, `ym3812`,
+or `ymf262`. It uses temporary files and does not copy Furnace modules or audio
 into YANES. The bundled Furnace `Equinox Intro` demo produced 61,323 YM2612 writes and an envelope
 correlation of 0.940756 in the development environment; this observation is deliberately not a
 hardcoded universal threshold because Furnace core selection and module features can differ.
@@ -86,15 +97,16 @@ bedroom-CRT, and noisy-RF starting points without requiring a plugin-owned windo
 The computer/arcade chip lab adds AY-3-8910/SSG tone and noise, Atari POKEY tone and 17-bit
 polynomial noise, PC Engine 32-sample/5-bit wavetable sound, OPL2 two-operator FM, OPL3
 four-operator FM, OPN/OPNA, and OPM. Stack modes provide useful channel layouts for PC-88,
-PC-98, X68000, Atari, PC Engine, and Sound Blaster OPL3. These FM modes preserve operator count,
-algorithm routing, feedback, and coarse chip character while remaining playable synthesizer
-models; they do not execute original chip register streams.
+PC-98, X68000, Atari, PC Engine, and Sound Blaster OPL3. Yamaha FM modes (YM2612, OPL2, OPL3,
+OPN/OPNA, OPM) write registers through ymfm. The remaining chip names are compact musical models
+of each synthesis method, not register- or cycle-perfect emulators.
 
 The PC Engine stack routes channels 1–4 to wavetable voices and channels 5–6 to its 18-bit noise
-generator. PC-98 routes channels 1–6 to FM, 7–9 to SSG, 10–15 to rhythm, and 16 to ADPCM.
-X68000 routes channels 1–8 to OPM and channel 9 to ADPCM. Since MIDI has sixteen channels, the
-OPL3 stack exposes sixteen simultaneously addressable parts rather than all eighteen hardware
-channels.
+generator. PC-98 routes channels 1–6 to FM, 7–9 to SSG, 10–15 to synthesized rhythm (kick, snare,
+tom, hats, cymbal), and 16 to the DPCM/sample bank used as an ADPCM stand-in. X68000 routes
+channels 1–8 to OPM and channel 9 to the same sample bank. Since MIDI has sixteen channels, the
+OPL3 stack exposes sixteen simultaneously addressable 2-operator parts rather than all eighteen
+hardware channels. The dedicated OPL3 four-operator mode programs a true 4-operator channel pair.
 
 Four additional families are included because they add synthesis methods not already covered:
 
@@ -157,8 +169,8 @@ Trick, Hyper Arpeggio Lead, Duty-Cycle Lead, Fake Echo Lead, Octave Power Bass, 
 They are inspired by general tracker and cartridge-era techniques and contain no game samples or
 extracted instrument data.
 
-The embedded X11 editor opens at 1600 x 1050 under XWayland and can be freely resized down to
-960 x 630. Its Xft-rendered 32-pixel default font scales continuously with the window (with a
+The embedded editor opens at 1600 x 1050 and can be freely resized down to
+960 x 630. Its default 32-pixel font scales continuously with the window (with a
 22-pixel minimum), and its controls, visualizations, and mouse hit-testing scale with it. It presents five spacious pages: Chip, Hardware,
 Synth, Sequence, and FM/Bank. It includes a lock-free live output oscilloscope and compact spectrum
 display, a wavetable preview, clickable eight-step pitch editor, FM routing display, and sixteen-slot
@@ -169,7 +181,8 @@ or bank targets make the editor easier to scan and operate. Host automation and 
 parameter changes update the same atomic parameter state and trigger an editor redraw, so both
 views remain synchronized. Bitwig also
 renders every CLAP parameter in its native device panel, which remains a dependable fallback and
-provides its usual modulation and automation workflow.
+provides its usual modulation and automation workflow. Linux uses X11/Xft (including under
+XWayland). Windows uses GDI. macOS uses a flipped Cocoa view.
 
 ## NES DPCM sample bank
 
@@ -191,14 +204,14 @@ project, all sixteen bank slots are included in CLAP state, so reopening that pr
 depend on the environment variable or original files. DPCM Base Key maps consecutive MIDI keys to
 slots; each file is limited to 1 MiB. Empty slots retain the generated, copyright-free kick/snare
 fallback. State versions 8 and 9 migrate their former single sample into slot one, while versions
-10 through 12 retain all sixteen slots and receive defaults for newer mixer, loop, DAC, and trim
-controls.
+10 through 13 retain all sixteen slots and receive defaults for newer mixer, loop, DAC, trim,
+and later controls.
 Each slot can loop independently through the DPCM Loop Mask, and DPCM Initial Level exposes the
 2A03 DAC starting value used before the first delta bit. DPCM Trim Start and Trim End provide
 normalized, non-destructive start/end boundaries shared by the bank; they are not per-sample loop
 points or a waveform editor. The FM/Bank header shows loaded slots in amber and looping slots in
-green. The graphical file chooser currently invokes `zenity`; the environment-variable workflow
-does not require it.
+green. The graphical file chooser uses `zenity` on Linux, `GetOpenFileName` on Windows, and
+`NSOpenPanel` on macOS; the environment-variable workflow does not require a chooser.
 
 The Hardware page includes a sixteen-channel stack mixer strip. Left-clicking a channel toggles
 mute and right-clicking toggles solo, with both masks exposed to Bitwig automation and stored in

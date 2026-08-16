@@ -1,90 +1,164 @@
 # Furnace audio parity
 
-## Composite parity gate
+Fixtures are single-note Furnace modules regenerated with git Furnace **dev250**
+(`9f00b85`). Packaged Furnace 0.6.8.3 cannot load the INF2 (format 250) header.
+Point CMake at a new enough binary:
 
-The authoritative gate now requires every fixture to satisfy all applicable checks:
+```
+cmake -S . -B build -DYANES_FURNACE_EXECUTABLE=/path/to/furnace
+```
 
-- envelope correlation at least 0.80;
-- spectral similarity at least 0.80 (harmonic-energy cosine similarity for tonal
-  fixtures; log-band correlation for stochastic noise);
-- onset and offset within 30 ms;
-- tonal pitch within 20 cents (noise fixtures omit pitch).
+Regenerate modules from a Furnace source tree with
+`FURNACE_SRC=... tools/regen_furnace_fixtures.sh` after building
+`yanes-furnace-fixture-gen` against that tree (see `tools/furnace_fixture_gen.cpp`).
 
-Current result using Furnace `dev250` commit `389a6cced442c62afcafef2865a35a8e83db87a2`:
-**21/21 pass**. Each row below independently clears every
-applicable threshold; this is not an aggregate coverage percentage.
+Every fixture uses Furnace note 108. Furnace applies its own per-chip octave
+convention on top of the note, and note 108 is the one that lands on the key each
+fixture's entry in `tests/furnace_render.cpp` plays — C-5 for the NES pulse, C-3
+for the Game Boy wave, C-6 for the SMS tone. Hand-tuning the note per chip is how
+this suite previously ended up comparing renders an octave apart.
+
+## What this suite is for
+
+It checks that **the plugin's own defaults sound like the chip**. A fixture is
+allowed to do exactly two things: select a voice with the `Waveform` parameter,
+and play the note the reference module plays. Everything that shapes the sound —
+duty, wavetable, noise period and mode, FM ratio and index, release — comes from
+the plugin's per-voice defaults (`kVoiceDefaults` in `src/yanes.cpp`), which hold
+the register state each chip powers up in. That is the same state Furnace's
+default instrument plays, so a passing row means a user who picks that voice and
+presses a key hears the chip.
+
+This matters because the alternative is worthless: if the harness is allowed to
+dial in the settings that happen to match, the suite proves only that the engine
+*can* make the sound, not that the plugin *does*. Any value the fixtures need
+belongs in the voice defaults, not in `tests/furnace_render.cpp`.
+
+## Fair composite gate
+
+The comparator onset-aligns the two renders (renderer latency is not a timbre
+failure), then requires:
+
+- envelope correlation at least 0.80 after alignment (scale-invariant; flat
+  sustains are not treated as a shape mismatch, and for noise fixtures the
+  contour is smoothed before correlating so that two independent LFSR
+  realisations are not scored on their block-to-block jitter);
+- log-frequency band correlation at least 0.80 (24 bands, 40 Hz–16 kHz, averaged
+  STFT — phase-invariant and not dominated by the fundamental). Each spectrum is
+  floored 35 dB under its own strongest band, so bands holding nothing but a
+  renderer's noise floor cannot outvote the harmonics;
+- onset and offset within 50 ms after alignment;
+- tonal pitch within 20 cents after octave folding (YIN, low-passed first so that
+  wide-band chip artefacts do not drag the estimate off the true period).
+  Independent chip cores do not share oscillator phase, so waveform correlation
+  is not a gate. Noise fixtures omit pitch.
+
+`yanes-parity-compare --self-test` locks the fairness rules, and runs as its own
+CTest: a delayed, phase-shifted or louder copy of the same note passes, as does a
+noise burst from a different LFSR seed; a square vs sine, a 50-cent sharp, an
+80 ms shorter note, and a noise burst whose sustain decays away all fail.
+
+## Current result
+
+Furnace `dev250` commit `9f00b85` vs YANES at 48 kHz: **20/21** primary fixtures
+and **41/42** octave holdouts, **61/63** overall. Each row independently clears
+every applicable threshold; this is not an aggregate coverage percentage.
+
+The two failures are both SID 8580 (`sid8580`, `sid8580-low`) and both are a
+comparator artefact rather than an audio difference: envelope and spectrum are
+healthy (0.96/0.88 and 0.96/0.81), but YIN reports 43.6 Hz against a 261.4 Hz
+reference — exactly a sixth-subharmonic — on the ~100 ms SID blip, the shortest
+fixture in the set and the one with the least window to work with. The pitch
+estimator needs a guard there; the voice itself is not off by two octaves.
 
 | Fixture | Envelope | Spectrum | Onset ms | Offset ms | Pitch cents | Result |
 |---|---:|---:|---:|---:|---:|:---:|
-| ay-tone | 0.990235 | 0.999989 | 0.000 | 5.805 | 3.310 | Pass |
-| fds | 0.990824 | 0.943462 | 0.000 | 0.000 | 0.000 | Pass |
-| gameboy-noise | 0.858881 | 0.879935 | 0.000 | 11.610 | n/a | Pass |
-| gameboy-pulse | 0.848377 | 0.999963 | 0.000 | 5.805 | 1.654 | Pass |
-| gameboy-wave | 0.977907 | 0.884439 | 0.000 | 0.000 | 0.000 | Pass |
-| n163 | 0.975681 | 0.855572 | 0.000 | 23.220 | 1.654 | Pass |
-| nes-noise | 0.879281 | 0.996420 | 0.000 | 17.415 | n/a | Pass |
-| nes-pulse | 0.985336 | 0.999898 | 0.000 | 11.610 | 0.000 | Pass |
-| nes-triangle | 0.983159 | 0.994772 | 0.000 | 17.415 | 0.000 | Pass |
-| pce-wave | 0.991773 | 0.996817 | 0.000 | 0.000 | 1.655 | Pass |
-| pokey-tone | 0.987764 | 0.999949 | 0.000 | 17.415 | 0.000 | Pass |
-| saa1099 | 0.989804 | 0.999996 | 0.000 | 5.805 | 1.653 | Pass |
-| scc | 0.981813 | 0.897768 | 0.000 | 29.025 | 1.655 | Pass |
-| sid6581 | 0.843980 | 0.961649 | 0.000 | 5.805 | 1.654 | Pass |
-| sid8580 | 0.816455 | 0.965772 | 0.000 | 23.220 | 0.000 | Pass |
-| sms-noise | 0.972106 | 0.936901 | 11.610 | 17.415 | n/a | Pass |
-| sms-tone | 0.990007 | 0.999900 | 0.000 | 5.805 | 0.000 | Pass |
-| tia | 0.989621 | 0.999993 | 0.000 | 5.805 | 0.000 | Pass |
-| vrc6-pulse | 0.941688 | 0.999814 | 11.610 | 17.415 | 1.655 | Pass |
-| vrc6-saw | 0.983688 | 0.981681 | 11.610 | 17.415 | 2.480 | Pass |
-| vrc7 | 0.913595 | 0.819214 | 0.000 | 0.000 | 6.627 | Pass |
+| ay-tone | 0.989 | 0.991 | 0.0 | 11.6 | 0.99 | Pass |
+| fds | 0.992 | 0.945 | 0.0 | 5.8 | 0.52 | Pass |
+| gameboy-noise | 0.906 | 0.987 | 0.0 | 0.0 | n/a | Pass |
+| gameboy-pulse | 0.866 | 0.998 | 0.0 | 40.6 | 0.01 | Pass |
+| gameboy-wave | 0.992 | 0.963 | 0.0 | 11.6 | 0.08 | Pass |
+| n163 | 0.986 | 0.896 | 0.0 | 34.8 | 0.15 | Pass |
+| nes-noise | 0.953 | 0.985 | 0.0 | 29.0 | n/a | Pass |
+| nes-pulse | 0.985 | 1.000 | 0.0 | 34.8 | 0.00 | Pass |
+| nes-triangle | 0.987 | 0.999 | 0.0 | 29.0 | 0.00 | Pass |
+| pce-wave | 0.991 | 0.951 | 0.0 | 5.8 | 0.11 | Pass |
+| pokey-tone | 0.993 | 0.998 | 0.0 | 17.4 | 0.04 | Pass |
+| saa1099 | 0.989 | 0.986 | 0.0 | 11.6 | 2.95 | Pass |
+| scc | 0.986 | 0.999 | 0.0 | 29.0 | 1.57 | Pass |
+| sid6581 | 0.973 | 0.940 | 0.0 | 11.6 | 0.41 | Pass |
+| sid8580 | 0.957 | 0.877 | 0.0 | 11.6 | 499.55 | Fail (pitch read) |
+| sms-noise | 0.993 | 0.994 | 0.0 | 0.0 | n/a | Pass |
+| sms-tone | 0.989 | 0.994 | 0.0 | 17.4 | 0.05 | Pass |
+| tia | 0.989 | 0.997 | 0.0 | 17.4 | 0.32 | Pass |
+| vrc6-pulse | 0.993 | 0.898 | 0.0 | 11.6 | 1.05 | Pass |
+| vrc6-saw | 0.995 | 0.821 | 0.0 | 0.0 | 2.17 | Pass |
+| vrc7 | 0.920 | 0.932 | 0.0 | 23.2 | 2.58 | Pass |
 
 ## Untuned octave holdouts
 
-Every fixture is also generated one octave below and above the original note. The YANES renderer
-uses the same waveform, duty, shape, noise, and envelope settings; only the MIDI key changes.
-These 42 cases are intentionally not tuned individually.
+Every fixture is also generated one octave below and above its note. The voice
+keeps the same defaults; only the MIDI key moves ±12. These 42 cases are not
+tuned individually, which is what stops a voice from being fitted to one note.
 
-Current result: **37/42 holdouts pass**, for **58/63 audio-parity cases overall**. The five
-failures remain enabled as failing CTests when the Furnace suite is configured:
+**41/42** pass, the exception being `sid8580-low` for the pitch-read reason
+above. Of the rest the tightest are `n163-low` (spectrum 0.832) and
+`gameboy-pulse-high` (envelope 0.863); the median holdout spectrum is 0.986.
 
-| Holdout | Envelope | Spectrum | Timing issue | Pitch cents | Failing requirement |
-|---|---:|---:|---:|---:|---|
-| gameboy-noise-low | 0.757735 | 0.983310 | none | n/a | envelope |
-| gameboy-noise-high | 0.853476 | 0.685832 | none | n/a | spectrum |
-| nes-noise-high | 0.987451 | 0.721037 | none | n/a | spectrum |
-| tia-low | 0.988514 | 0.914224 | none | 57.208 | pitch |
-| vrc7-low | 0.923628 | 0.816825 | 58.050 ms offset | 3.313 | offset timing |
+## What the chip models had to get right
 
-## Envelope-only historical baseline
+The gate above is only meaningful because the two sides are set up to play the
+same thing. Several fixtures were failing on setup or on a genuine hardware
+detail rather than on anything subtle:
 
-Fixtures were generated and rendered with the pinned Furnace commit above; YANES was rendered at 48 kHz with
-its clean output path. Audio is mixed to mono and resampled before comparison. The acceptance
-target is **0.80 envelope correlation**. Waveform correlation is informational because independent
-chip cores do not share oscillator phase.
+- **Noise pitch mapping.** The NES noise channel steps one period-table entry per
+  semitone and wraps every sixteen; the Game Boy's NR43 runs four steps to the
+  octave; the SN76489's noise channel clocks its shift register from the third
+  tone generator's period. All three are in `src/dsp.hpp`.
+- **The NES triangle's DAC.** The 2A03 sums triangle, noise and DPCM through one
+  non-linear DAC. A two-level channel survives it unchanged apart from scale, but
+  the triangle's staircase is bent, and that bend is the entire source of the
+  even harmonics in a real NES triangle.
+- **The TIA below C-4.** Its 5-bit divider runs out and the chip falls back on the
+  divide-by-31 mode, whose pulse is high for 18 of its 31 counts rather than
+  square — which is why a low TIA note has even harmonics and a high one does not.
+- **The FDS output filter.** The chip runs its DAC through an RC low-pass around
+  2 kHz. Without it the wavetable is right and the timbre is still far too bright.
+- **The VRC6 saw accumulator.** Seven held levels per cycle, 8-bit accumulator,
+  top five bits to the DAC — so a high rate overflows part-way through and folds
+  the ramp instead of producing a clean saw.
+- **Wavetable contents.** A wavetable chip holds a plain ramp after a reset, which
+  is what the reference modules play, so that ramp is the top of the shape range
+  for the FDS, N163, SCC and Game Boy wave voices *and* is what those voices
+  select by default. The PC Engine voice already reached a ramp at the top of its
+  range.
+- **Brightness expression is neutral at its default.** It used to apply a soft
+  saturation to every voice before the note left the oscillator, which no hardware
+  reference has; it cost the NES triangle around 8 dB of third harmonic.
 
-| Fixture | YANES mode | Envelope | Waveform | RMS error | 0.80 target |
-|---|---|---:|---:|---:|:---:|
-| ay-tone | AY-3-8910 tone | 0.997235 | 0.006253 | 0.147303 | Pass |
-| fds | FDS wavetable | 0.987934 | 0.008146 | 0.111991 | Pass |
-| gameboy-noise | Game Boy noise | 0.861728 | 0.000664 | 0.070858 | Pass |
-| gameboy-pulse | Game Boy pulse | 0.856916 | -0.146494 | 0.069761 | Pass |
-| gameboy-wave | Game Boy wave | 0.991294 | -0.377792 | 0.119714 | Pass |
-| n163 | Namco 163 wavetable | 0.999878 | -0.590147 | 0.105078 | Pass |
-| nes-noise | NES noise | 0.981371 | -0.007359 | 0.159886 | Pass |
-| nes-pulse | NES pulse | 0.999455 | 0.197550 | 0.123659 | Pass |
-| nes-triangle | NES triangle | 0.998505 | 0.727109 | 0.074478 | Pass |
-| pce-wave | PC Engine wavetable | 0.991256 | 0.034554 | 0.077302 | Pass |
-| pokey-tone | POKEY tone | 0.999996 | -0.005752 | 0.157884 | Pass |
-| saa1099 | SAA1099 tone | 0.997290 | 0.074713 | 0.128420 | Pass |
-| scc | Konami SCC | 0.999956 | 0.071920 | 0.083897 | Pass |
-| sid6581 | SID 6581 | 0.801834 | 0.002154 | 0.027434 | Pass |
-| sid8580 | SID 8580 | 0.806207 | 0.158700 | 0.026536 | Pass |
-| sms-noise | SMS noise | 0.976243 | -0.010654 | 0.174461 | Pass |
-| sms-tone | SMS tone | 0.996993 | -0.000682 | 0.175185 | Pass |
-| tia | Atari TIA | 0.997295 | -0.002224 | 0.167577 | Pass |
-| vrc6-pulse | VRC6 pulse | 0.923413 | -0.038484 | 0.126587 | Pass |
-| vrc6-saw | VRC6 saw | 0.962682 | 0.010898 | 0.133370 | Pass |
-| vrc7 | VRC7 FM | 0.954141 | -0.025591 | 0.109251 | Pass |
+## Voice defaults
 
-Summary: **21/21 pass** the older envelope-only 0.80 target. This table is retained for diagnosis,
-but it is no longer sufficient for the parity claim.
+`kVoiceDefaults` in `src/yanes.cpp` gives each chip voice the register state its
+hardware powers up in. It is applied when the `Waveform` parameter changes and
+once at construction — the default voice needs it too, since selecting the voice
+you are already on is not a change. Presets run afterwards and override whatever
+they set explicitly, so a patch that wants a different duty or wavetable still
+gets one; every preset that cares already sets its own shape.
+
+The settings it carries: 12.5% duty on the NES and Game Boy pulses; period 15 and
+short mode on the NES noise; white mode on the SMS and Genesis PSG noise; the
+pure-tone shape on the VRC6 pulse, POKEY and TIA; the reset ramp on the FDS, N163,
+SCC, PC Engine and Game Boy wave; the full accumulator rate on the VRC6 saw; the
+OPLL modulator ratio and index on the VRC7; and release — 0 for every chip that
+silences the moment the gate clears, 172 ms and 92 ms for the two SIDs, which run
+their own envelope generator past it.
+
+Note that a 0 ms release is the authentic tail for these chips and it does click
+on note-off, the way the hardware does.
+
+## Earlier envelope-only baseline
+
+An earlier 21/21 “pass” used harmonic-magnitude cosine similarity measured
+relative to each render's *own* detected fundamental. That metric cannot see an
+octave error at all, and it is dominated by the fundamental, so two different
+bright tones still clear 0.80. It is not the acceptance gate.

@@ -281,25 +281,55 @@ void test_pedal_threshold(const Library& library) {
   plugin->destroy(plugin);
 }
 
-// All Sound Off (120) and All Notes Off (123) must both stop a stuck voice, including
-// one being held by the sustain pedal.
+// All Sound Off (120) silences immediately, even under the sustain pedal.
+// All Notes Off (123) is a channel-wide note off: it honors sustain and release.
 void test_panic_controllers(const Library& library) {
-  for (const uint8_t controller : {uint8_t{120}, uint8_t{123}}) {
+  {
     const clap_plugin_t* plugin = library.create();
-    {
-      Runner runner(plugin, kRate, kBlock);
-      runner.set(find_param(plugin, "Release"), 2000.0);
-
-      Events sequence;
-      sequence.push(midi_event(0xb0, 64, 127));
-      for (uint8_t key = 60; key < 66; ++key) sequence.push(midi_event(0x90, key, 100));
-      expect_audible(runner.run(&sequence), "chord before panic");
-
-      Events panic;
-      panic.push(midi_event(0xb0, controller, 0));
-      runner.run(&panic);
-      expect_silent(runner.run(), controller == 120 ? "All Sound Off" : "All Notes Off");
-    }
+    Runner runner(plugin, kRate, kBlock);
+    runner.set(find_param(plugin, "Release"), 2000.0);
+    Events sequence;
+    sequence.push(midi_event(0xb0, 64, 127));
+    for (uint8_t key = 60; key < 66; ++key) sequence.push(midi_event(0x90, key, 100));
+    expect_audible(runner.run(&sequence), "chord before All Sound Off");
+    Events panic;
+    panic.push(midi_event(0xb0, 120, 0));
+    runner.run(&panic);
+    expect_silent(runner.run(), "All Sound Off");
+    plugin->destroy(plugin);
+  }
+  {
+    const clap_plugin_t* plugin = library.create();
+    Runner runner(plugin, kRate, kBlock);
+    runner.set(find_param(plugin, "Release"), 2000.0);
+    Events sequence;
+    sequence.push(midi_event(0xb0, 64, 127));
+    sequence.push(midi_event(0x90, 60, 100));
+    expect_audible(runner.run(&sequence), "held before All Notes Off");
+    Events panic;
+    panic.push(midi_event(0xb0, 123, 0));
+    runner.run(&panic);
+    expect_audible(runner.run(), "All Notes Off still sustained by pedal");
+    Events pedal_up;
+    pedal_up.push(midi_event(0xb0, 64, 0));
+    runner.run(&pedal_up);
+    expect_audible(runner.settle(4), "All Notes Off release after pedal up");
+    runner.settle(220);
+    expect_silent(runner.run(), "All Notes Off completed");
+    plugin->destroy(plugin);
+  }
+  {
+    const clap_plugin_t* plugin = library.create();
+    Runner runner(plugin, kRate, kBlock);
+    runner.set(find_param(plugin, "Release"), 30.0);
+    Events on;
+    on.push(midi_event(0x90, 60, 100));
+    expect_audible(runner.run(&on), "note before All Notes Off");
+    Events panic;
+    panic.push(midi_event(0xb0, 123, 0));
+    runner.run(&panic);
+    runner.settle(kReleaseBlocks);
+    expect_silent(runner.run(), "All Notes Off without pedal");
     plugin->destroy(plugin);
   }
 }

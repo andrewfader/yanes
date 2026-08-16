@@ -9,7 +9,7 @@ struct FmControls {
 };
 class HardwareFmVoice {
 public:
-  enum class Kind { Ym2612, Opn, Opna, Opl2, Opl3, Opm };
+  enum class Kind { Ym2612, Opn, Opna, Opl2, Opl3, Opm, Opl3FourOp };
   HardwareFmVoice();
   ~HardwareFmVoice();
   HardwareFmVoice(HardwareFmVoice&&) noexcept;

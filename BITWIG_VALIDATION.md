@@ -1,7 +1,7 @@
 # Bitwig acceptance checklist
 
-YANES is a native Linux CLAP instrument. Its editor uses X11 embedding, which Bitwig hosts through
-XWayland in a Wayland session. The audio engine itself has no display-server dependency.
+YANES is a native CLAP instrument with a custom editor on Linux (X11, including XWayland),
+Windows, and macOS. The audio engine itself has no display-server dependency.
 
 1. Restart Bitwig or open **Settings > Locations > Plug-in Locations** and rescan plug-ins.
 2. Add **YANES** from the CLAP instrument list and open its editor.

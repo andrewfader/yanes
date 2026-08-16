@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -14,10 +15,12 @@ static uint16_t u16(const std::vector<uint8_t> &b, size_t p) {
 static uint32_t u32(const std::vector<uint8_t> &b, size_t p) {
   return static_cast<uint32_t>(u16(b, p) | (u16(b, p + 2) << 16U));
 }
+
 struct Wav {
   uint32_t rate{};
   std::vector<double> mono;
 };
+
 static Wav load(const char *path) {
   std::ifstream in(path, std::ios::binary);
   std::vector<uint8_t> b((std::istreambuf_iterator<char>(in)), {});
@@ -55,9 +58,11 @@ static Wav load(const char *path) {
   }
   return w;
 }
+
 static std::vector<double> resample(const Wav &source, uint32_t rate,
                                     size_t frames) {
-  if (source.mono.empty()) return {};
+  if (source.mono.empty())
+    return {};
   std::vector<double> out(frames);
   for (size_t i = 0; i < frames; ++i) {
     const double pos = i * static_cast<double>(source.rate) / rate;
@@ -67,17 +72,46 @@ static std::vector<double> resample(const Wav &source, uint32_t rate,
   }
   return out;
 }
-static std::vector<double> envelope(const std::vector<double> &x,
-                                    size_t block) {
+
+static void dc_block(std::vector<double> &x) {
+  double prev_x = 0, prev_y = 0;
+  for (double &s : x) {
+    const double y = s - prev_x + 0.995 * prev_y;
+    prev_x = s;
+    prev_y = y;
+    s = y;
+  }
+}
+
+static std::vector<double> envelope(const std::vector<double> &x, size_t hop) {
   std::vector<double> out;
-  for (size_t p = 0; p + block <= x.size(); p += block) {
+  if (!hop)
+    return out;
+  for (size_t p = 0; p + hop <= x.size(); p += hop) {
     double e = 0;
-    for (size_t i = 0; i < block; ++i)
+    for (size_t i = 0; i < hop; ++i)
       e += x[p + i] * x[p + i];
-    out.push_back(std::sqrt(e / block));
+    out.push_back(std::sqrt(e / static_cast<double>(hop)));
   }
   return out;
 }
+
+// Centred moving average over 2*half+1 envelope blocks.
+static std::vector<double> smooth(const std::vector<double> &x, size_t half) {
+  if (!half || x.size() < 2 * half + 1)
+    return x;
+  std::vector<double> out(x.size());
+  for (size_t i = 0; i < x.size(); ++i) {
+    const size_t lo = i > half ? i - half : 0,
+                 hi = std::min(x.size() - 1, i + half);
+    double sum = 0;
+    for (size_t k = lo; k <= hi; ++k)
+      sum += x[k];
+    out[i] = sum / static_cast<double>(hi - lo + 1);
+  }
+  return out;
+}
+
 static double correlation(const std::vector<double> &a,
                           const std::vector<double> &b) {
   const size_t n = std::min(a.size(), b.size());
@@ -88,8 +122,8 @@ static double correlation(const std::vector<double> &a,
     ma += a[i];
     mb += b[i];
   }
-  ma /= n;
-  mb /= n;
+  ma /= static_cast<double>(n);
+  mb /= static_cast<double>(n);
   double aa = 0, bb = 0, ab = 0;
   for (size_t i = 0; i < n; ++i) {
     const double x = a[i] - ma, y = b[i] - mb;
@@ -97,15 +131,24 @@ static double correlation(const std::vector<double> &a,
     bb += y * y;
     ab += x * y;
   }
-  return ab / std::sqrt(std::max(1e-30, aa * bb));
+  const double var = std::sqrt(std::max(1e-30, aa * bb));
+  // Flat envelopes (steady tones) are not a shape mismatch.
+  if (aa < 1e-18 && bb < 1e-18)
+    return 1;
+  if (aa < 1e-18 || bb < 1e-18)
+    return 0;
+  return ab / var;
 }
+
 struct Active {
   size_t first{}, last{};
 };
+
 static Active active(const std::vector<double> &e) {
-  if (e.empty()) return {};
+  if (e.empty())
+    return {};
   const double peak = *std::max_element(e.begin(), e.end()),
-               threshold = peak * 0.05;
+               threshold = peak * 0.08;
   Active a{};
   while (a.first < e.size() && e[a.first] < threshold)
     ++a.first;
@@ -114,100 +157,378 @@ static Active active(const std::vector<double> &e) {
     --a.last;
   return a;
 }
-static double pitch(const std::vector<double> &x, uint32_t rate, size_t begin,
-                    size_t end) {
-  constexpr size_t n = 4096;
-  const size_t available = end > begin ? end - begin : 0;
-  if (available < n)
-    return 0;
-  const size_t at = begin + (available - n) / 2;
-  std::vector<double> magnitude;
-  constexpr double pitch_step = 0.25;
-  for (double freq = 40; freq <= 4000; freq += pitch_step) {
-    double re = 0, im = 0;
-    for (size_t i = 0; i < n; ++i) {
-      const double win =
-                       0.5 - 0.5 * std::cos(2 * std::numbers::pi * i / (n - 1)),
-                   phase = 2 * std::numbers::pi * freq * i / rate;
-      re += x[at + i] * win * std::cos(phase);
-      im -= x[at + i] * win * std::sin(phase);
-    }
-    magnitude.push_back(std::sqrt(re * re + im * im));
+
+static void shift_pair(std::vector<double> &a, std::vector<double> &b,
+                       int lag_samples) {
+  if (lag_samples > 0) {
+    const size_t lag = static_cast<size_t>(lag_samples);
+    if (lag >= b.size())
+      return;
+    b.erase(b.begin(), b.begin() + static_cast<std::ptrdiff_t>(lag));
+  } else if (lag_samples < 0) {
+    const size_t lag = static_cast<size_t>(-lag_samples);
+    if (lag >= a.size())
+      return;
+    a.erase(a.begin(), a.begin() + static_cast<std::ptrdiff_t>(lag));
   }
-  const auto peak = std::max_element(magnitude.begin(), magnitude.end());
-  return peak == magnitude.end() ? 0 : 40.0 + std::distance(magnitude.begin(), peak) * pitch_step;
-}
-static double cosine_similarity(const std::vector<double> &a,
-                                const std::vector<double> &b) {
   const size_t n = std::min(a.size(), b.size());
-  if (!n) return 0;
-  double aa = 0, bb = 0, ab = 0;
-  for (size_t i = 0; i < n; ++i) {
-    aa += a[i] * a[i]; bb += b[i] * b[i]; ab += a[i] * b[i];
-  }
-  return ab / std::sqrt(std::max(1e-30, aa * bb));
+  a.resize(n);
+  b.resize(n);
 }
-static double magnitude(const std::vector<double> &x, size_t at, size_t n,
-                        uint32_t rate, double freq) {
-  double re = 0, im = 0;
-  for (size_t i = 0; i < n; ++i) {
-    const double win = 0.5 - 0.5 * std::cos(2 * std::numbers::pi * i / (n - 1)),
-                 phase = 2 * std::numbers::pi * freq * i / rate;
-    re += x[at + i] * win * std::cos(phase);
-    im -= x[at + i] * win * std::sin(phase);
+
+static void fft(std::vector<std::complex<double>> &x) {
+  const size_t n = x.size();
+  for (size_t i = 1, j = 0; i < n; ++i) {
+    size_t bit = n >> 1;
+    for (; j & bit; bit >>= 1)
+      j ^= bit;
+    j ^= bit;
+    if (i < j)
+      std::swap(x[i], x[j]);
   }
-  return std::sqrt(re * re + im * im);
-}
-static std::vector<double> tonal_spectrum(const std::vector<double> &x,
-                                          size_t begin, size_t end,
-                                          uint32_t rate, double fundamental) {
-  constexpr size_t n = 4096;
-  std::vector<double> out;
-  if (end - begin < n || fundamental <= 0)
-    return out;
-  const size_t at = begin + (end - begin - n) / 2;
-  for (int harmonic = 1; harmonic <= 32 && fundamental * harmonic < rate * 0.45;
-       ++harmonic) {
-    const double center = fundamental * harmonic;
-    double energy = 0;
-    for (double detune : {-2.0, -1.0, 0.0, 1.0, 2.0}) {
-      const double m = magnitude(x, at, n, rate, center + detune);
-      energy += m * m;
-    }
-    out.push_back(std::sqrt(energy));
-  }
-  return out;
-}
-static std::vector<double> noise_spectrum(const std::vector<double> &x,
-                                          size_t begin, size_t end,
-                                          uint32_t rate) {
-  constexpr size_t n = 8192, bands = 16, probes = 12, windows = 5;
-  std::vector<double> out(bands);
-  if (end - begin < n)
-    return out;
-  for (size_t band = 0; band < bands; ++band) {
-    const double lo = 40 * std::pow(16000.0 / 40.0,
-                                    static_cast<double>(band) / bands),
-                 hi = 40 * std::pow(16000.0 / 40.0,
-                                    static_cast<double>(band + 1) / bands);
-    double energy = 0;
-    for (size_t window = 0; window < windows; ++window) {
-      const size_t span = end - begin - n;
-      const size_t at = begin + (windows == 1 ? span / 2 : span * window / (windows - 1));
-      for (size_t probe = 0; probe < probes; ++probe) {
-        const double freq = lo * std::pow(hi / lo, (probe + 0.5) / probes),
-                     m = magnitude(x, at, n, rate, freq);
-        energy += m * m;
+  for (size_t len = 2; len <= n; len <<= 1) {
+    const double ang = -2 * std::numbers::pi / static_cast<double>(len);
+    const std::complex<double> wlen(std::cos(ang), std::sin(ang));
+    for (size_t i = 0; i < n; i += len) {
+      std::complex<double> w(1);
+      for (size_t j = 0; j < len / 2; ++j) {
+        const auto u = x[i + j], v = x[i + j + len / 2] * w;
+        x[i + j] = u + v;
+        x[i + j + len / 2] = u - v;
+        w *= wlen;
       }
     }
-    out[band] = std::log10(1e-12 + energy / (probes * windows));
+  }
+}
+
+// Largest power of two that fits the span, capped at 4096. Short fixtures (the
+// SID blips are under 100 ms) still have to yield a spectrum; a fixed 4096-point
+// window silently returned nothing for them and scored the pair as a mismatch.
+static size_t window_for(size_t span) {
+  size_t n = 512;
+  while (n * 2 <= span && n < 4096)
+    n *= 2;
+  return n <= span ? n : 0;
+}
+
+static std::vector<double> log_bands(const std::vector<double> &x, size_t begin,
+                                     size_t end, uint32_t rate) {
+  constexpr size_t bands = 24, hops = 6;
+  std::vector<double> energy(bands);
+  if (end <= begin)
+    return {};
+  const size_t n = window_for(end - begin);
+  if (!n)
+    return {};
+  const double lo = 40, hi = 16000;
+  const size_t span = end - begin - n;
+  size_t used = 0;
+  for (size_t hop = 0; hop < hops; ++hop) {
+    const size_t at = begin + (hops == 1 ? 0 : span * hop / (hops - 1));
+    std::vector<std::complex<double>> spec(n);
+    for (size_t i = 0; i < n; ++i) {
+      const double win =
+          0.5 - 0.5 * std::cos(2 * std::numbers::pi * static_cast<double>(i) /
+                               static_cast<double>(n - 1));
+      spec[i] = x[at + i] * win;
+    }
+    fft(spec);
+    for (size_t k = 1; k < n / 2; ++k) {
+      const double freq = static_cast<double>(k) * rate / static_cast<double>(n);
+      if (freq < lo || freq >= hi)
+        continue;
+      const double pos = static_cast<double>(bands) * std::log(freq / lo) /
+                         std::log(hi / lo);
+      const size_t band = std::min(bands - 1, static_cast<size_t>(pos));
+      energy[band] += std::norm(spec[k]);
+    }
+    ++used;
+  }
+  if (!used)
+    return {};
+  for (double &e : energy)
+    e = std::log10(1e-12 + e / static_cast<double>(used));
+  // Floor each spectrum 35 dB under its own strongest band. Below that a band
+  // holds nothing but whichever renderer's own noise floor, and comparing two
+  // noise floors is not a comparison of timbre: it let bands with no signal in
+  // them outvote the harmonics that carry the sound.
+  const double floor = *std::max_element(energy.begin(), energy.end()) - 3.5;
+  for (double &e : energy)
+    e = std::max(e, floor);
+  return energy;
+}
+
+// Two box passes, first null near 8 kHz. Pitch detection only needs the low end,
+// and wide-band chip artifacts (the N163 multiplexes its channels up around
+// 15 kHz) otherwise drag YIN's minimum off the true period by tens of cents.
+static std::vector<double> pitch_prefilter(const std::vector<double> &x,
+                                           uint32_t rate, size_t at, size_t n) {
+  const size_t taps = std::max<size_t>(rate / 8000U, 1);
+  std::vector<double> out(x.begin() + static_cast<std::ptrdiff_t>(at),
+                          x.begin() + static_cast<std::ptrdiff_t>(at + n));
+  if (taps < 2)
+    return out;
+  for (int pass = 0; pass < 2; ++pass) {
+    std::vector<double> next(out.size());
+    double sum = 0;
+    for (size_t i = 0; i < out.size(); ++i) {
+      sum += out[i];
+      if (i >= taps)
+        sum -= out[i - taps];
+      next[i] = sum / static_cast<double>(std::min(i + 1, taps));
+    }
+    out.swap(next);
   }
   return out;
 }
+
+static double yin_hz(const std::vector<double> &raw, uint32_t rate, size_t begin,
+                     size_t end) {
+  if (end <= begin)
+    return 0;
+  const size_t n = window_for(end - begin);
+  if (!n)
+    return 0;
+  const std::vector<double> x =
+      pitch_prefilter(raw, rate, begin + (end - begin - n) / 2, n);
+  const size_t at = 0;
+  // Fixtures reach ~2 kHz an octave up, so a 1500 Hz ceiling forced YIN to
+  // report a subharmonic for the highest notes.
+  const size_t min_lag = std::max<size_t>(rate / 5000U, 2),
+               max_lag = std::min<size_t>(n / 2, rate / 40U);
+  if (max_lag <= min_lag)
+    return 0;
+  std::vector<double> d(max_lag + 1);
+  for (size_t tau = 1; tau <= max_lag; ++tau) {
+    double s = 0;
+    for (size_t i = 0; i + tau < n; ++i) {
+      const double diff = x[at + i] - x[at + i + tau];
+      s += diff * diff;
+    }
+    d[tau] = s;
+  }
+  double running = 0;
+  std::vector<double> cmnd(max_lag + 1, 1);
+  for (size_t tau = 1; tau <= max_lag; ++tau) {
+    running += d[tau];
+    cmnd[tau] = d[tau] * static_cast<double>(tau) / std::max(1e-30, running);
+  }
+  size_t tau = min_lag;
+  constexpr double threshold = 0.15;
+  for (; tau + 1 < max_lag; ++tau) {
+    if (cmnd[tau] < threshold && cmnd[tau] <= cmnd[tau + 1] &&
+        cmnd[tau] <= cmnd[tau - 1])
+      break;
+  }
+  if (tau + 1 >= max_lag) {
+    tau = static_cast<size_t>(
+        std::min_element(cmnd.begin() + static_cast<std::ptrdiff_t>(min_lag),
+                         cmnd.end()) -
+        cmnd.begin());
+  }
+  if (tau <= 1 || tau >= max_lag)
+    return 0;
+  // Octave correction. A wavetable voice whose period is not bit-identical from
+  // one cycle to the next (the N163 time-multiplexes its channels) dips harder
+  // at twice or three times the true period, which reads back as a spurious
+  // pitch error. Prefer the shortest submultiple that is nearly as periodic.
+  for (size_t divisor = 4; divisor >= 2; --divisor) {
+    const size_t candidate = tau / divisor;
+    if (candidate >= min_lag && cmnd[candidate] < 0.4 &&
+        cmnd[candidate] < cmnd[tau] * 2 + 0.05) {
+      tau = candidate;
+      break;
+    }
+  }
+  const double s0 = cmnd[tau - 1], s1 = cmnd[tau], s2 = cmnd[tau + 1];
+  const double den = 2 * (s0 - 2 * s1 + s2);
+  const double adj = std::abs(den) < 1e-12 ? 0 : (s0 - s2) / den;
+  const double period = static_cast<double>(tau) + adj;
+  if (period <= 1)
+    return 0;
+  return static_cast<double>(rate) / period;
+}
+
+struct Report {
+  double env{};
+  double spectral{};
+  double onset{};
+  double offset{};
+  double cents{};
+  double align_ms{};
+  double ref_hz{};
+  double cand_hz{};
+  bool ok{};
+};
+
+static Report compare(std::vector<double> a, std::vector<double> b,
+                      uint32_t rate, bool noise, double minimum) {
+  Report r{};
+  dc_block(a);
+  dc_block(b);
+  constexpr size_t hop = 256;
+  const Active pre_a = active(envelope(a, hop)), pre_b = active(envelope(b, hop));
+  int lag = static_cast<int>(pre_b.first) - static_cast<int>(pre_a.first);
+  const int max_lag =
+      static_cast<int>(std::max(1.0, 0.08 * static_cast<double>(rate) / hop));
+  lag = std::clamp(lag, -max_lag, max_lag);
+  r.align_ms = static_cast<double>(lag) * static_cast<double>(hop) /
+               static_cast<double>(rate) * 1000.0;
+  shift_pair(a, b, lag * static_cast<int>(hop));
+  const auto ea = envelope(a, hop), eb = envelope(b, hop);
+  // Correlate the amplitude contour, not the noise realisation. Two independent
+  // LFSRs agree on the shape of a note but their block-to-block RMS jitter is
+  // uncorrelated by construction, so a raw 5 ms envelope scores a perfectly good
+  // noise channel near zero. Onset and offset still use the unsmoothed envelope.
+  r.env = correlation(smooth(ea, noise ? 8 : 2), smooth(eb, noise ? 8 : 2));
+  const Active aa = active(ea), ab = active(eb);
+  r.onset = std::abs(static_cast<double>(aa.first) - static_cast<double>(ab.first)) *
+            static_cast<double>(hop) / static_cast<double>(rate);
+  r.offset = std::abs(static_cast<double>(aa.last) - static_cast<double>(ab.last)) *
+             static_cast<double>(hop) / static_cast<double>(rate);
+  const size_t ba = aa.first * hop, ea_end = std::min(a.size(), aa.last * hop),
+               bb = ab.first * hop, eb_end = std::min(b.size(), ab.last * hop);
+  const size_t sa0 = std::max(ba, bb), se0 = std::min(ea_end, eb_end);
+  const auto spec_a = log_bands(a, sa0, se0, rate);
+  const auto spec_b = log_bands(b, sa0, se0, rate);
+  r.spectral = correlation(spec_a, spec_b);
+  if (!noise) {
+    r.ref_hz = yin_hz(a, rate, ba, ea_end);
+    r.cand_hz = yin_hz(b, rate, bb, eb_end);
+    if (r.ref_hz >= 40 && r.cand_hz >= 40) {
+      const double ratio = r.cand_hz / r.ref_hz;
+      const double oct = std::round(std::log2(ratio));
+      r.cents = 1200 * std::abs(std::log2(ratio / std::pow(2.0, oct)));
+    } else {
+      r.cents = 999;
+    }
+  }
+  r.ok = r.env >= minimum && r.spectral >= minimum && r.onset <= 0.05 &&
+         r.offset <= 0.05 && (noise || r.cents <= 20);
+  return r;
+}
+
+static void print_report(const Report &r, bool noise) {
+  std::cout << "envelope=" << r.env << " spectrum=" << r.spectral
+            << " onset_delta_ms=" << r.onset * 1000
+            << " offset_delta_ms=" << r.offset * 1000
+            << " align_ms=" << r.align_ms;
+  if (!noise)
+    std::cout << " reference_hz=" << r.ref_hz << " candidate_hz=" << r.cand_hz
+              << " pitch_cents=" << r.cents;
+  std::cout << " result=" << (r.ok ? "pass" : "fail") << '\n';
+}
+
+static std::vector<double> tone(uint32_t rate, double hz, double seconds,
+                                double phase, int shape, double extra_ms) {
+  const size_t n = static_cast<size_t>(seconds * rate);
+  std::vector<double> x(n);
+  const size_t attack = rate / 50, rel = rate / 10;
+  const size_t note_end =
+      n - rel - static_cast<size_t>(std::max(0.0, extra_ms) * 1e-3 * rate);
+  for (size_t i = 0; i < n; ++i) {
+    double env = 0;
+    if (i < attack)
+      env = static_cast<double>(i) / attack;
+    else if (i < note_end)
+      env = 1;
+    else if (i < note_end + rel)
+      env = 1 - static_cast<double>(i - note_end) / rel;
+    const double t = static_cast<double>(i) / rate;
+    const double ph = 2 * std::numbers::pi * hz * t + phase;
+    double s = std::sin(ph);
+    if (shape == 1)
+      s = s >= 0 ? 1 : -1;
+    x[i] = env * s * 0.25;
+  }
+  return x;
+}
+
+// White noise with the same note contour as tone(), from a caller-chosen seed
+// so two "independent chips" can be simulated. decay_per_second > 0 fades the
+// sustain, which a fair gate still has to notice.
+static std::vector<double> noise_burst(uint32_t rate, double seconds,
+                                       uint32_t seed, double decay_per_second) {
+  const size_t n = static_cast<size_t>(seconds * rate);
+  std::vector<double> x(n);
+  const size_t attack = rate / 50, rel = rate / 10, note_end = n - rel;
+  uint32_t state = seed;
+  for (size_t i = 0; i < n; ++i) {
+    state = state * 1664525U + 1013904223U;
+    double env = 0;
+    if (i < attack)
+      env = static_cast<double>(i) / attack;
+    else if (i < note_end)
+      env = 1;
+    else
+      env = 1 - static_cast<double>(i - note_end) / rel;
+    const double t = static_cast<double>(i) / rate;
+    env *= std::exp(-decay_per_second * t);
+    x[i] = env * ((state >> 16U) & 1U ? 0.25 : -0.25);
+  }
+  return x;
+}
+
+static int self_test() {
+  constexpr uint32_t rate = 48000;
+  const auto ref = tone(rate, 440, 1.2, 0, 0, 0);
+  struct Case {
+    const char *name;
+    std::vector<double> cand;
+    bool noise;
+    bool expect;
+  };
+  const Case cases[] = {
+      {"delay_40ms",
+       [] {
+         auto x = tone(rate, 440, 1.2, 0, 0, 0);
+         x.insert(x.begin(), static_cast<size_t>(0.04 * rate), 0);
+         x.resize(static_cast<size_t>(1.2 * rate), 0);
+         return x;
+       }(),
+       false, true},
+      {"phase", tone(rate, 440, 1.2, 1.2, 0, 0), false, true},
+      {"loud",
+       [] {
+         auto x = tone(rate, 440, 1.2, 0, 0, 0);
+         for (double &s : x)
+           s *= 4;
+         return x;
+       }(),
+       false, true},
+      {"square", tone(rate, 440, 1.2, 0, 1, 0), false, false},
+      {"sharp_50c", tone(rate, 440 * std::pow(2.0, 50.0 / 1200.0), 1.2, 0, 0, 0),
+       false, false},
+      {"short_80ms", tone(rate, 440, 1.2, 0, 0, 80), false, false},
+      // Two chips never share an LFSR seed, so a different noise realisation
+      // with the same contour has to pass...
+      {"noise_other_seed", noise_burst(rate, 1.2, 0x1234, 0), true, true},
+      // ...but a sustain that fades away is a real envelope difference.
+      {"noise_decaying", noise_burst(rate, 1.2, 0x1234, 3.0), true, false},
+  };
+  const auto noise_reference = noise_burst(rate, 1.2, 0x9e37, 0);
+  int failed = 0;
+  for (const auto &c : cases) {
+    const Report r =
+        compare(c.noise ? noise_reference : ref, c.cand, rate, c.noise, 0.8);
+    const bool ok = r.ok == c.expect;
+    std::cout << "self-test " << c.name << " " << (ok ? "ok" : "BAD")
+              << " (expected " << (c.expect ? "pass" : "fail") << " got "
+              << (r.ok ? "pass" : "fail") << ") ";
+    print_report(r, c.noise);
+    if (!ok)
+      ++failed;
+  }
+  return failed ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--self-test") == 0)
+    return self_test();
   if (argc != 5) {
     std::cerr << "usage: yanes-parity-compare reference.wav candidate.wav "
-                 "tonal|noise minimum-similarity\n";
+                 "tonal|noise minimum-similarity\n"
+              << "       yanes-parity-compare --self-test\n";
     return 2;
   }
   const bool noise = std::strcmp(argv[3], "noise") == 0;
@@ -215,45 +536,17 @@ int main(int argc, char **argv) {
     return 2;
   char *threshold_end = nullptr;
   const double minimum = std::strtod(argv[4], &threshold_end);
-  if (!threshold_end || *threshold_end || minimum < 0 || minimum > 1) return 2;
+  if (!threshold_end || *threshold_end || minimum < 0 || minimum > 1)
+    return 2;
   Wav a = load(argv[1]), raw = load(argv[2]);
   if (!a.rate || !raw.rate || a.mono.empty() || raw.mono.empty())
     return 1;
-  const size_t frames =
-      std::min(a.mono.size(),
-               static_cast<size_t>(raw.mono.size() *
-                                   static_cast<double>(a.rate) / raw.rate));
+  const size_t frames = std::min(
+      a.mono.size(), static_cast<size_t>(raw.mono.size() *
+                                         static_cast<double>(a.rate) / raw.rate));
   a.mono.resize(frames);
-  const auto b = resample(raw, a.rate, frames);
-  const auto ea = envelope(a.mono, 256), eb = envelope(b, 256);
-  const Active aa = active(ea), ab = active(eb);
-  const double env = correlation(ea, eb);
-  const double onset = std::abs(static_cast<double>(aa.first) - ab.first) *
-                       256 / a.rate,
-               offset = std::abs(static_cast<double>(aa.last) - ab.last) * 256 /
-                        a.rate;
-  const size_t ba = aa.first * 256, eaEnd = std::min(frames, aa.last * 256),
-               bb = ab.first * 256, ebEnd = std::min(frames, ab.last * 256);
-  const double pa = noise ? 0 : pitch(a.mono, a.rate, ba, eaEnd),
-               pb = noise ? 0 : pitch(b, a.rate, bb, ebEnd);
-  const auto sa = noise ? noise_spectrum(a.mono, ba, eaEnd, a.rate)
-                        : tonal_spectrum(a.mono, ba, eaEnd, a.rate, pa);
-  const auto sb = noise ? noise_spectrum(b, bb, ebEnd, a.rate)
-                        : tonal_spectrum(b, bb, ebEnd, a.rate, pb);
-  const double spectral = noise ? correlation(sa, sb) : cosine_similarity(sa, sb);
-  const double cents =
-      noise
-          ? 0
-          : 1200 * std::abs(std::log2(std::max(1e-9, pb) / std::max(1e-9, pa)));
-  const bool pass = env >= minimum && spectral >= minimum && onset <= 0.03 &&
-                    offset <= 0.03 && (noise || cents <= 20);
-  std::cout << "envelope=" << env << " spectrum=" << spectral
-            << " onset_delta_ms=" << onset * 1000
-            << " offset_delta_ms=" << offset * 1000
-            << " candidate_offset_ms=" << (static_cast<double>(ab.last)-aa.last)*256/a.rate*1000;
-  if (!noise)
-    std::cout << " reference_hz=" << pa << " candidate_hz=" << pb
-              << " pitch_cents=" << cents;
-  std::cout << " result=" << (pass ? "pass" : "fail") << '\n';
-  return pass ? 0 : 1;
+  auto b = resample(raw, a.rate, frames);
+  const Report r = compare(std::move(a.mono), std::move(b), a.rate, noise, minimum);
+  print_report(r, noise);
+  return r.ok ? 0 : 1;
 }
