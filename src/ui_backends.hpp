@@ -6,21 +6,57 @@ bool gui_is_open(const Plugin* p);
 void gui_paint(Plugin* p);
 
 #if defined(__linux__)
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+
+void gui_close_picker(Plugin* p) {
+  if (!p->gui_picker) return;
+  pclose(p->gui_picker);
+  p->gui_picker = nullptr;
+  p->gui_picker_slot = -1;
+  p->gui_picker_output.clear();
+}
+
+// Starts the dialog and returns; the answer is collected in gui_poll_picker. Reading the
+// pipe here instead would block the host's main thread for as long as the dialog stayed
+// open, and blocking it is what leaves a host waiting on an editor that never answers.
 bool gui_choose_sample(Plugin* p, int slot) {
-  bool changed = false;
+  if (p->gui_picker) return false;
   FILE* picker = popen("zenity --file-selection --title='Load YANES WAV or DPCM sample' --file-filter='Audio | *.wav *.WAV *.ydmc'", "r");
-  if (picker) {
-    char path[4096]{};
-    if (std::fgets(path, sizeof(path), picker)) {
-      path[std::strcspn(path, "\r\n")] = 0;
-      if (auto bank = load_dpcm_file(path)) {
-        install_dpcm_bank(p, static_cast<size_t>(slot), std::move(bank));
-        changed = true;
-      }
-    }
-    pclose(picker);
+  if (!picker) return false;
+  const int fd = fileno(picker);
+  if (fd < 0) { pclose(picker); return false; }
+  fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+  p->gui_picker = picker;
+  p->gui_picker_slot = slot;
+  p->gui_picker_output.clear();
+  return false;
+}
+
+void gui_paint(Plugin* p);
+
+void gui_poll_picker(Plugin* p) {
+  if (!p->gui_picker) return;
+  char chunk[512];
+  for (;;) {
+    const ssize_t got = read(fileno(p->gui_picker), chunk, sizeof(chunk));
+    if (got > 0) { p->gui_picker_output.append(chunk, static_cast<size_t>(got)); continue; }
+    // Nothing to read yet means the user is still choosing; anything else means the
+    // dialog has closed and whatever it wrote is complete.
+    if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
+    break;
   }
-  return changed;
+  const int slot = p->gui_picker_slot;
+  std::string path = p->gui_picker_output;
+  gui_close_picker(p);
+  if (const size_t end = path.find_first_of("\r\n"); end != std::string::npos) path.resize(end);
+  if (path.empty() || slot < 0 || slot >= 16) return;
+  auto bank = load_dpcm_file(path);
+  if (!bank) return;
+  install_dpcm_bank(p, static_cast<size_t>(slot), std::move(bank));
+  gui_mark_state(p);
+  gui_paint(p);
 }
 
 void gui_paint(Plugin* p) {
@@ -41,54 +77,72 @@ void gui_paint(Plugin* p) {
   XFlush(p->display);
 }
 
-void gui_loop(Plugin* p) {
-  uint64_t scope_seen = p->scope_revision.load(std::memory_order_acquire);
-  unsigned scope_refresh = 0;
-  while (p->gui_running.load(std::memory_order_acquire)) {
-    while (p->display && XPending(p->display)) {
-      XEvent e{};
-      XNextEvent(p->display, &e);
-      if (e.type == Expose) gui_paint(p);
-      if (e.type == ConfigureNotify) {
-        p->gui_width = static_cast<uint32_t>(std::max(1, e.xconfigure.width));
-        p->gui_height = static_cast<uint32_t>(std::max(1, e.xconfigure.height));
-        gui_paint(p);
-      }
-      if (e.type == LeaveNotify) { gui_input(p, GuiPointer::Leave, 0, 0, 0); gui_paint(p); }
-      const auto logical = [&](int px, int py) {
-        return std::pair<int,int>{yanes::ui::unscale_x(px, static_cast<int>(p->gui_width)),
-                                  yanes::ui::unscale_y(py, static_cast<int>(p->gui_height))};
-      };
-      if (e.type == ButtonPress) {
-        const auto [x, y] = logical(e.xbutton.x, e.xbutton.y);
-        gui_input(p, GuiPointer::Down, static_cast<int>(e.xbutton.button), x, y);
-        gui_paint(p);
-      }
-      if (e.type == ButtonRelease) {
-        const auto [x, y] = logical(e.xbutton.x, e.xbutton.y);
-        gui_input(p, GuiPointer::Up, static_cast<int>(e.xbutton.button), x, y);
-        gui_paint(p);
-      }
-      if (e.type == MotionNotify) {
-        const auto [x, y] = logical(e.xmotion.x, e.xmotion.y);
-        gui_input(p, GuiPointer::Move, 0, x, y);
-        gui_paint(p);
-      }
+// Drains whatever X has queued. Called from the host's main thread, either because the
+// connection became readable or because the editor's timer fired.
+void gui_pump(Plugin* p) {
+  while (p->display && XPending(p->display)) {
+    XEvent e{};
+    XNextEvent(p->display, &e);
+    if (e.type == Expose) gui_paint(p);
+    if (e.type == ConfigureNotify) {
+      p->gui_width = static_cast<uint32_t>(std::max(1, e.xconfigure.width));
+      p->gui_height = static_cast<uint32_t>(std::max(1, e.xconfigure.height));
+      gui_paint(p);
     }
-    const uint64_t revision = p->ui_revision.load(std::memory_order_acquire);
-    if (revision != p->gui_seen_revision) { p->gui_seen_revision = revision; gui_paint(p); }
-    if (p->gui_page == 0 && ++scope_refresh >= 3) {
-      scope_refresh = 0;
-      const uint64_t current = p->scope_revision.load(std::memory_order_acquire);
-      if (current != scope_seen) { scope_seen = current; gui_paint(p); }
+    if (e.type == LeaveNotify) { gui_input(p, GuiPointer::Leave, 0, 0, 0); gui_paint(p); }
+    const auto logical = [&](int px, int py) {
+      return std::pair<int,int>{yanes::ui::unscale_x(px, static_cast<int>(p->gui_width)),
+                                yanes::ui::unscale_y(py, static_cast<int>(p->gui_height))};
+    };
+    if (e.type == ButtonPress) {
+      const auto [x, y] = logical(e.xbutton.x, e.xbutton.y);
+      gui_input(p, GuiPointer::Down, static_cast<int>(e.xbutton.button), x, y);
+      gui_paint(p);
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(12));
+    if (e.type == ButtonRelease) {
+      const auto [x, y] = logical(e.xbutton.x, e.xbutton.y);
+      gui_input(p, GuiPointer::Up, static_cast<int>(e.xbutton.button), x, y);
+      gui_paint(p);
+    }
+    if (e.type == MotionNotify) {
+      const auto [x, y] = logical(e.xmotion.x, e.xmotion.y);
+      gui_input(p, GuiPointer::Move, 0, x, y);
+      gui_paint(p);
+    }
   }
 }
 
+void gui_on_timer(const clap_plugin_t* plugin, clap_id timer_id) {
+  auto* p = self(plugin);
+  if (timer_id != p->gui_timer) return;
+  gui_pump(p);
+  gui_poll_picker(p);
+  if (!p->display) return;
+  const uint64_t revision = p->ui_revision.load(std::memory_order_acquire);
+  if (revision != p->gui_seen_revision) { p->gui_seen_revision = revision; gui_paint(p); }
+  // The scope redraws at a third of the tick rate, as it did on the old loop.
+  if (p->gui_page == 0 && ++p->gui_scope_ticks >= 3) {
+    p->gui_scope_ticks = 0;
+    const uint64_t scope = p->scope_revision.load(std::memory_order_acquire);
+    if (scope != p->gui_seen_scope_revision) { p->gui_seen_scope_revision = scope; gui_paint(p); }
+  }
+}
+
+void gui_on_fd(const clap_plugin_t* plugin, int fd, clap_posix_fd_flags_t) {
+  auto* p = self(plugin);
+  if (fd == p->gui_fd) gui_pump(p);
+}
+
+const clap_plugin_timer_support_t kTimerSupport{gui_on_timer};
+const clap_plugin_posix_fd_support_t kPosixFdSupport{gui_on_fd};
+
 bool gui_is_open(const Plugin* p) { return p->display != nullptr; }
-bool gui_supported(const clap_plugin_t*, const char* api, bool floating) {
-  return api && !std::strcmp(api, CLAP_WINDOW_API_X11) && !floating;
+bool gui_supported(const clap_plugin_t* plugin, const char* api, bool floating) {
+  // Without a host timer there is no main thread to run the editor on, and running it on
+  // one of our own is what this backend no longer does. Declining leaves the host on its
+  // own parameter panel, which stays fully usable.
+  return plugin && self(plugin)->host_timers && self(plugin)->host_timers->register_timer &&
+         api && !std::strcmp(api, CLAP_WINDOW_API_X11) && !floating;
 }
 bool gui_preferred(const clap_plugin_t*, const char** api, bool* floating) {
   *api = CLAP_WINDOW_API_X11; *floating = false; return true;
@@ -107,16 +161,31 @@ bool gui_create(const clap_plugin_t* plugin, const char* api, bool floating) {
     p->display = nullptr; p->window = 0; p->gc = nullptr; return false;
   }
   p->gui_seen_revision = p->ui_revision.load(std::memory_order_acquire);
+  p->gui_seen_scope_revision = p->scope_revision.load(std::memory_order_acquire);
+  p->gui_scope_ticks = 0;
   XSelectInput(p->display, p->window, ExposureMask | ButtonPressMask | ButtonReleaseMask |
                Button1MotionMask | PointerMotionMask | LeaveWindowMask | StructureNotifyMask);
-  p->gui_running.store(true);
-  p->gui_thread = std::thread(gui_loop, p);
+  // The timer is what the editor cannot run without; the descriptor is an optimisation that
+  // delivers X events as they arrive rather than at the next tick.
+  p->gui_timer = CLAP_INVALID_ID;
+  if (!p->host_timers->register_timer(p->host, 16, &p->gui_timer)) {
+    gui_destroy(plugin);
+    return false;
+  }
+  if (p->host_fds && p->host_fds->register_fd &&
+      p->host_fds->register_fd(p->host, ConnectionNumber(p->display), CLAP_POSIX_FD_READ))
+    p->gui_fd = ConnectionNumber(p->display);
   return true;
 }
 void gui_destroy(const clap_plugin_t* plugin) {
   auto* p = self(plugin);
-  p->gui_running.store(false);
-  if (p->gui_thread.joinable()) p->gui_thread.join();
+  if (p->gui_timer != CLAP_INVALID_ID && p->host_timers && p->host_timers->unregister_timer)
+    p->host_timers->unregister_timer(p->host, p->gui_timer);
+  p->gui_timer = CLAP_INVALID_ID;
+  if (p->gui_fd >= 0 && p->host_fds && p->host_fds->unregister_fd)
+    p->host_fds->unregister_fd(p->host, p->gui_fd);
+  p->gui_fd = -1;
+  gui_close_picker(p);
   if (p->display) {
     if (p->gui_xft_font) XftFontClose(p->display, p->gui_xft_font);
     if (p->gui_xft_draw) XftDrawDestroy(p->gui_xft_draw);

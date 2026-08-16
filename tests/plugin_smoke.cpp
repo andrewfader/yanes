@@ -13,10 +13,30 @@
 
 namespace {
 bool g_creating_plugin = false;
-const void* host_extension(const clap_host_t*, const char*) {
+// The editor runs on the host's main thread, which means it can only exist where the host
+// offers a timer to drive it from. This stub is the smallest host that qualifies.
+clap_id g_timer_id = CLAP_INVALID_ID;
+uint32_t g_timer_registered = 0, g_timer_unregistered = 0;
+bool register_timer(const clap_host_t*, uint32_t period_ms, clap_id* timer_id) {
+  assert(period_ms > 0 && timer_id);
+  *timer_id = g_timer_id = 7;
+  ++g_timer_registered;
+  return true;
+}
+bool unregister_timer(const clap_host_t*, clap_id timer_id) {
+  assert(timer_id == g_timer_id);
+  ++g_timer_unregistered;
+  return true;
+}
+const clap_host_timer_support_t g_timer_support{register_timer, unregister_timer};
+const void* host_extension(const clap_host_t*, const char* id) {
   assert(!g_creating_plugin && "Host get_extension must not be called during create_plugin");
+  if (id && std::strcmp(id, CLAP_EXT_TIMER_SUPPORT) == 0) return &g_timer_support;
   return nullptr;
 }
+// A host with no timer at all, used to check that the editor declines rather than falling
+// back to a thread of its own.
+const void* bare_host_extension(const clap_host_t*, const char*) { return nullptr; }
 void request_restart(const clap_host_t*) {
   assert(!g_creating_plugin && "Host request_restart must not be called during create_plugin");
 }
@@ -76,6 +96,21 @@ int main(int argc, char** argv) {
 #ifdef __linux__
   assert(gui && gui->is_api_supported(plugin, CLAP_WINDOW_API_X11, false));
   assert(!gui->is_api_supported(plugin, CLAP_WINDOW_API_X11, true));
+  {
+    // Same plug-in, a host that offers no timer: the editor has nothing to run on and has
+    // to say so, leaving the host to use its own parameter panel.
+    const clap_host_t bare{CLAP_VERSION_INIT, nullptr, "YANES bare host", "YANES", "", "1",
+                           bare_host_extension, request_restart, request_process, request_callback};
+    g_creating_plugin = true;
+    const clap_plugin_t* timerless = factory->create_plugin(factory, &bare, descriptor->id);
+    g_creating_plugin = false;
+    assert(timerless && timerless->init(timerless));
+    const auto* bare_gui = static_cast<const clap_plugin_gui_t*>(
+        timerless->get_extension(timerless, CLAP_EXT_GUI));
+    assert(bare_gui && !bare_gui->is_api_supported(timerless, CLAP_WINDOW_API_X11, false));
+    assert(!bare_gui->create(timerless, CLAP_WINDOW_API_X11, false));
+    timerless->destroy(timerless);
+  }
 #elif defined(_WIN32)
   assert(gui && gui->is_api_supported(plugin, CLAP_WINDOW_API_WIN32, false));
   assert(!gui->is_api_supported(plugin, CLAP_WINDOW_API_WIN32, true));
@@ -93,7 +128,27 @@ int main(int argc, char** argv) {
   const auto* voices=static_cast<const clap_plugin_voice_info_t*>(plugin->get_extension(plugin,CLAP_EXT_VOICE_INFO));
   clap_voice_info_t voice_info{};assert(voices&&voices->get(plugin,&voice_info)&&voice_info.voice_count==16&&voice_info.voice_capacity==16);
 #ifdef __linux__
-  if(std::getenv("YANES_TEST_GUI")){assert(gui->create(plugin,CLAP_WINDOW_API_X11,false));gui->suggest_title(plugin,"YANES automated GUI test");assert(gui->show(plugin));assert(gui->set_size(plugin,1200,700));std::this_thread::sleep_for(std::chrono::milliseconds(50));assert(gui->set_size(plugin,1900,1000));std::this_thread::sleep_for(std::chrono::milliseconds(50));if(const char*hold=std::getenv("YANES_TEST_GUI_HOLD_MS"))std::this_thread::sleep_for(std::chrono::milliseconds(std::max(0,std::atoi(hold))));assert(gui->hide(plugin));gui->destroy(plugin);}
+  if(std::getenv("YANES_TEST_GUI")){
+    const auto* timers=static_cast<const clap_plugin_timer_support_t*>(plugin->get_extension(plugin,CLAP_EXT_TIMER_SUPPORT));
+    assert(timers&&timers->on_timer);
+    const uint32_t registered_before=g_timer_registered;
+    assert(gui->create(plugin,CLAP_WINDOW_API_X11,false));
+    // Opening the editor has to take a timer from the host; that timer is the only thing
+    // driving it now, so a missing registration means a window that never redraws.
+    assert(g_timer_registered==registered_before+1);
+    gui->suggest_title(plugin,"YANES automated GUI test");
+    assert(gui->show(plugin));
+    // Stand in for the host's main loop: every tick pumps X and repaints as needed.
+    const auto pump=[&](int ticks){for(int i=0;i<ticks;++i){timers->on_timer(plugin,g_timer_id);std::this_thread::sleep_for(std::chrono::milliseconds(16));}};
+    pump(4);
+    assert(gui->set_size(plugin,1200,700));pump(4);
+    assert(gui->set_size(plugin,1900,1000));pump(4);
+    if(const char*hold=std::getenv("YANES_TEST_GUI_HOLD_MS"))pump(std::max(0,std::atoi(hold))/16);
+    assert(gui->hide(plugin));
+    const uint32_t unregistered_before=g_timer_unregistered;
+    gui->destroy(plugin);
+    assert(g_timer_unregistered==unregistered_before+1);
+  }
 #endif
   const auto* state=static_cast<const clap_plugin_state_t*>(plugin->get_extension(plugin,CLAP_EXT_STATE));
   assert(state);

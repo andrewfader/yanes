@@ -28,7 +28,6 @@
 #include <array>
 #include <atomic>
 #include <charconv>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -36,7 +35,6 @@
 #include <fstream>
 #include <new>
 #include <memory>
-#include <thread>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -340,8 +338,20 @@ struct Plugin {
   XftDraw* gui_xft_draw{};
   XftFont* gui_xft_font{};
   int gui_font_pixels{};
-  std::thread gui_thread{};
-  std::atomic<bool> gui_running{};
+  // The editor used to run its X11 loop on a thread of its own, which put painting,
+  // parameter edits and host callbacks on a thread CLAP reserves for the host's main
+  // thread. Everything below drives the same loop from the host instead: the connection's
+  // descriptor wakes us for X events and the timer covers idle repaints, so the editor,
+  // the parameter writes it makes and the host callbacks that follow all stay main-thread.
+  const clap_host_timer_support_t* host_timers{};
+  const clap_host_posix_fd_support_t* host_fds{};
+  clap_id gui_timer{CLAP_INVALID_ID};
+  int gui_fd{-1};
+  // A file dialog is a separate process; it is collected from the timer rather than waited
+  // on, so an open dialog never holds up the host.
+  FILE* gui_picker{};
+  int gui_picker_slot{-1};
+  std::string gui_picker_output{};
 #elif defined(_WIN32)
   HWND hwnd{};
 #elif defined(__APPLE__)
@@ -1229,6 +1239,16 @@ bool gui_is_open(const Plugin* p);
 bool plugin_init(const clap_plugin_t* plugin) {
   auto* p = self(plugin);
   p->initialized = true;
+#if defined(YANES_HAS_EDITOR) && defined(__linux__)
+  // init() is the first point where asking the host for extensions is legal, and the editor
+  // needs both answers before it can decide whether it can open at all.
+  if (p->host && p->host->get_extension) {
+    p->host_timers = static_cast<const clap_host_timer_support_t*>(
+        p->host->get_extension(p->host, CLAP_EXT_TIMER_SUPPORT));
+    p->host_fds = static_cast<const clap_host_posix_fd_support_t*>(
+        p->host->get_extension(p->host, CLAP_EXT_POSIX_FD_SUPPORT));
+  }
+#endif
   const char* paths = std::getenv("YANES_DPCM_BANK");
   if (!paths || !*paths) return true;
   std::string_view list(paths);
@@ -1520,6 +1540,10 @@ const void* get_extension(const clap_plugin_t*, const char* id) {
   if (!std::strcmp(id, CLAP_EXT_VOICE_INFO)) return &kVoiceInfo;
 #ifdef YANES_HAS_EDITOR
   if (!std::strcmp(id, CLAP_EXT_GUI)) return &kGui;
+#if defined(__linux__)
+  if (!std::strcmp(id, CLAP_EXT_TIMER_SUPPORT)) return &kTimerSupport;
+  if (!std::strcmp(id, CLAP_EXT_POSIX_FD_SUPPORT)) return &kPosixFdSupport;
+#endif
 #endif
   return nullptr;
 }

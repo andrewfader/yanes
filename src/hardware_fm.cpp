@@ -8,7 +8,14 @@
 
 namespace yanes {
 
-constexpr uint8_t kFourOpCarriers[8] = {0x08, 0x08, 0x08, 0x08, 0x0a, 0x0e, 0x0e, 0x0f};
+// Carriers per algorithm, as a mask over the operator index used by write_operators. That
+// index addresses the chip's register slots, which on the OPN family run 1, 3, 2, 4 rather
+// than in operator order, so algorithm 4 (two parallel pairs, carriers OP2 and OP4) is
+// indices 2 and 3. It read 0x0a here, which named OP3 — a modulator — as the carrier and
+// left the real second carrier at modulator attenuation, so algorithm 4 lost a voice and
+// over-modulated the one it kept. YM2151 lays its four slots out as M1, M2, C1, C2, where
+// the same algorithm's carriers are again indices 2 and 3, so the mask suits both families.
+constexpr uint8_t kFourOpCarriers[8] = {0x08, 0x08, 0x08, 0x08, 0x0c, 0x0e, 0x0e, 0x0f};
 constexpr uint8_t operator_level(int algorithm, int op, int carrier_level) {
   const bool carrier = ((kFourOpCarriers[algorithm & 7] >> op) & 1U) != 0;
   return static_cast<uint8_t>(carrier ? carrier_level : 20 + op * 7);
@@ -16,7 +23,24 @@ constexpr uint8_t operator_level(int algorithm, int op, int carrier_level) {
 constexpr uint8_t opl_level(int algorithm, int op, int carrier_level) {
   return static_cast<uint8_t>(op == 1 || (algorithm & 1) ? carrier_level : 18);
 }
-constexpr double kChipFullScale[] = {6600.0, 11000.0, 5530.0, 2670.0, 5320.0, 10850.0, 4800.0};
+// Per-chip value that one voice's loudest output maps to, so every chip arrives at the
+// mixer on the same scale. The YM2612 entry read 6600, which its own DAC cannot reach: the
+// channel clamps at 256, the ladder-effect offset lifts that to 260, the five idle channels
+// each add 4, and ymfm's final (x * 128 * 64) / (6 * 65) turns the resulting 280 into 5881.
+// Normalising by 6600 therefore capped the chip at 0.89 of full scale where every sibling
+// reaches 1.0 and beyond, leaving Genesis FM permanently short of the rest of the plug-in.
+constexpr double kChipFullScale[] = {5881.0, 11000.0, 5530.0, 2670.0, 5320.0, 10850.0, 4800.0};
+
+// Brightness only ever reaches these chips as carrier total level, which is pure output
+// attenuation: the modulator levels below are fixed, so nothing about the tone changes with
+// it. A linear (1 - brightness) * 32 therefore parked the default 0.65 at eleven steps of
+// attenuation, holding every hardware FM voice 8 dB under the plug-in's other chips for no
+// audible return. Cubing puts the default within one step of fully open while keeping the
+// full 24 dB of range underneath it, so turning brightness down still attenuates as before.
+constexpr int carrier_attenuation(double brightness) {
+  const double closed = 1.0 - std::clamp(brightness, 0.0, 1.0);
+  return static_cast<int>(closed * closed * closed * 32.0 + 0.5);
+}
 constexpr uint8_t opl_operator_flags(const FmControls& c, int op) {
   return static_cast<uint8_t>((c.am_depth ? 0x80 : 0) | (c.pm_depth ? 0x40 : 0) | 0x20 |
                               (c.key_scale ? 0x10 : 0) | (op + 1));
@@ -125,7 +149,7 @@ void HardwareFmVoice::key_on(Kind kind, double frequency, const FmControls& c) {
   impl_->programmed = true;
   impl_->flush(kind);
   const int alg = std::clamp(c.algorithm, 0, 7), fb = std::clamp(c.feedback, 0, 7);
-  const int carrier_level = std::clamp(static_cast<int>((1.0 - c.brightness) * 32.0), 0, 48);
+  const int carrier_level = carrier_attenuation(c.brightness);
   if (kind == Kind::Opl2 || kind == Kind::Opl3 || kind == Kind::Opl3FourOp) {
     const bool four = kind == Kind::Opl3FourOp;
     auto setup = [&](auto& chip) {
@@ -219,7 +243,7 @@ void HardwareFmVoice::key_off() {
 void HardwareFmVoice::update_controls(const FmControls& c) {
   if (!impl_->programmed) return;
   const int alg=std::clamp(c.algorithm,0,7),fb=std::clamp(c.feedback,0,7);
-  const int carrier=std::clamp(static_cast<int>((1.0-c.brightness)*32.0),0,48);
+  const int carrier=carrier_attenuation(c.brightness);
   if (impl_->kind==Kind::Opl2||impl_->kind==Kind::Opl3||impl_->kind==Kind::Opl3FourOp) {
     const bool four = impl_->kind == Kind::Opl3FourOp;
     auto apply=[&](auto& chip){

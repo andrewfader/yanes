@@ -263,7 +263,9 @@ inline int64_t state_read(const clap_istream_t* stream, void* data, uint64_t siz
   auto* memory = static_cast<StateMemory*>(stream->ctx);
   const uint64_t available = memory->bytes.size() - memory->read;
   const uint64_t amount = std::min(size, available);
-  std::memcpy(data, memory->bytes.data() + memory->read, amount);
+  // An empty buffer has no data() to offset from, and memcpy rejects a null source even
+  // for a zero-length copy. The malformed-state cases read from exactly that buffer.
+  if (amount > 0) std::memcpy(data, memory->bytes.data() + memory->read, amount);
   memory->read += amount;
   return static_cast<int64_t>(amount);
 }
