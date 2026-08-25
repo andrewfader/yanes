@@ -54,6 +54,12 @@ int main() {
   assert(param_at(4, slider_x, rows_y + 15 * row_height, param_count) == -1);
   assert(param_row_at(0, label_x - 13, rows_y, param_count) == -1);
   assert(param_row_at(0, value_x + 360, rows_y, param_count) == -1);
+  assert(value_step_direction_at(value_x - 12, rows_y) == 0);
+  assert(value_step_direction_at(value_x + 172, rows_y) == 0);
+  assert(value_step_direction_at(value_x + 173, rows_y) == 1);
+  assert(value_step_direction_at(value_x + 357, rows_y) == 1);
+  assert(value_step_direction_at(value_x - 13, rows_y) == -1);
+  assert(value_step_direction_at(value_x, rows_y - 1) == -1);
 
   assert(value_from_x(slider_x, -10.0, 10.0, false) == -10.0);
   assert(value_from_x(slider_x + slider_width, -10.0, 10.0, false) == 10.0);

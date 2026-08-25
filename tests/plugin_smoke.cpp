@@ -90,9 +90,13 @@ int main(int argc, char** argv) {
   const auto* notes = static_cast<const clap_plugin_note_ports_t*>(plugin->get_extension(plugin, CLAP_EXT_NOTE_PORTS));
   const auto* params = static_cast<const clap_plugin_params_t*>(plugin->get_extension(plugin, CLAP_EXT_PARAMS));
   const auto* gui = static_cast<const clap_plugin_gui_t*>(plugin->get_extension(plugin, CLAP_EXT_GUI));
+  const auto* latency = static_cast<const clap_plugin_latency_t*>(plugin->get_extension(plugin, CLAP_EXT_LATENCY));
+  const auto* tail = static_cast<const clap_plugin_tail_t*>(plugin->get_extension(plugin, CLAP_EXT_TAIL));
   assert(audio && audio->count(plugin, false) == 1 && audio->count(plugin, true) == 0);
   assert(notes && notes->count(plugin, true) == 1);
   assert(params && params->count(plugin) == 79);
+  assert(latency && latency->get(plugin) == 0);
+  assert(tail);
 #ifdef __linux__
   assert(gui && gui->is_api_supported(plugin, CLAP_WINDOW_API_X11, false));
   assert(!gui->is_api_supported(plugin, CLAP_WINDOW_API_X11, true));
@@ -154,6 +158,15 @@ int main(int argc, char** argv) {
   assert(state);
   assert(plugin->activate(plugin, 48000.0, 1, 512));
   assert(plugin->start_processing(plugin));
+
+  clap_event_param_value_t release_tail{};
+  release_tail.header = {sizeof(release_tail), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0};
+  release_tail.param_id = 5; release_tail.note_id = -1; release_tail.port_index = -1;
+  release_tail.channel = -1; release_tail.key = -1; release_tail.value = 100.0;
+  EventList tail_events{{&release_tail.header, nullptr}, 1};
+  clap_input_events_t tail_input{&tail_events, event_count, event_get};
+  params->flush(plugin, &tail_input, nullptr);
+  assert(tail->get(plugin) == 4800);
 
   std::array<float, 512> left{}, right{};
   std::array<float*, 2> channels{left.data(), right.data()};

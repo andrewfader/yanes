@@ -183,6 +183,11 @@ renders every CLAP parameter in its native device panel, which remains a dependa
 provides its usual modulation and automation workflow. Linux uses X11/Xft (including under
 XWayland). Windows uses GDI. macOS uses a flipped Cocoa view.
 
+Stepped value fields include large previous/next targets, so browsing the 58 sound sources and
+49 presets does not require landing on an exact position along a rail. MIDI CC7 controls volume
+independently on each channel, including stack parts. The CLAP latency and tail extensions report
+zero processing latency and a release/echo-dependent tail so offline hosts do not truncate decays.
+
 ## NES DPCM sample bank
 
 Yes, sample import is implemented, but only for this bank. `yanes-dpcm` converts a mono or stereo

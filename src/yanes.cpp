@@ -28,6 +28,7 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -300,6 +301,8 @@ struct Plugin {
   double hum_phase{};
   double pitch_bend{};
   double mod_wheel{};
+  std::array<double,16> channel_volume{1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,
+                                       1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0};
   std::vector<float> delay_buffer{};
   size_t delay_write{};
   double chorus_phase{};
@@ -456,6 +459,13 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
   if (s.stepped) value = std::round(value);
   const double previous=p->params[id].exchange(value,std::memory_order_relaxed);
   if(previous!=value)p->ui_revision.fetch_add(1,std::memory_order_release);
+  if (previous != value && p->initialized &&
+      (id == kReleaseMs || id == kEchoMix || id == kEchoTime || id == kEchoFeedback) &&
+      p->host && p->host->get_extension) {
+    if (const auto* tail = static_cast<const clap_host_tail_t*>(
+            p->host->get_extension(p->host, CLAP_EXT_TAIL)); tail && tail->changed)
+      tail->changed(p->host);
+  }
   if (id == kGenesisAlgorithm || id == kGenesisFeedback || id == kFmBrightness ||
       (id >= kFmAttack && id <= kFmPmDepth)) p->fm_revision.fetch_add(1, std::memory_order_release);
   // Only on an actual change, so re-sending the current voice never overwrites
@@ -716,6 +726,10 @@ void handle_event(Plugin* p, const clap_event_header_t* h, const clap_output_eve
       }
     }
     if (status == 0xb0 && e->data[1] == 1) p->mod_wheel = e->data[2] / 127.0;
+    // CC7 is live performance input, like pitch bend and sustain, and applies
+    // independently to each MIDI channel/stack part.
+    if (status == 0xb0 && e->data[1] == 7)
+      p->channel_volume[static_cast<size_t>(channel)] = e->data[2] / 127.0;
     if (status == 0xb0 && e->data[1] == 64) {
       const bool down=e->data[2]>=64;p->sustain_pedal[static_cast<size_t>(channel)]=down;
       if(!down)for(auto& v:p->voices)if(v.active&&v.channel==channel&&v.sustained)release_voice(p, v);
@@ -1292,6 +1306,7 @@ void plugin_reset(const clap_plugin_t* plugin) {
   p->sustain_pedal.fill(false);
   std::fill(p->delay_buffer.begin(), p->delay_buffer.end(), 0.0f);
   p->delay_write = 0; p->pitch_bend = 0; p->mod_wheel = 0;
+  p->channel_volume.fill(1.0);
   p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;
   p->output_peak_l.store(0.0f);p->output_peak_r.store(0.0f);p->output_clipped.store(false);
 }
@@ -1329,7 +1344,8 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
     for (auto& v : p->voices) if (v.active) {
       const uint32_t channel_bit=1U<<std::clamp<int>(v.channel,0,15);
       const bool muted=(mute_mask&channel_bit)||(solo_mask&&!(solo_mask&channel_bit));
-      const float rendered = render_voice(p, v);
+      const float rendered = render_voice(p, v) * static_cast<float>(
+          p->channel_volume[static_cast<size_t>(std::clamp<int>(v.channel, 0, 15))]);
       if (!v.active) emit_note_end(out_events, frame, v);
       if (muted) continue;
       if (!nes_stack) { sample += rendered; continue; }
@@ -1518,6 +1534,25 @@ bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
 }
 const clap_plugin_state_t kState{state_save, state_load};
 
+uint32_t latency_get(const clap_plugin_t*) { return 0; }
+const clap_plugin_latency_t kLatency{latency_get};
+
+uint32_t tail_get(const clap_plugin_t* plugin) {
+  const auto* p = self(plugin);
+  double seconds = p->params[kReleaseMs].load(std::memory_order_relaxed) * 0.001;
+  const double mix = p->params[kEchoMix].load(std::memory_order_relaxed);
+  const double feedback = p->params[kEchoFeedback].load(std::memory_order_relaxed);
+  if (mix > 1.0e-6 && feedback > 1.0e-6) {
+    // Number of repeats needed to fall below -100 dB, plus the voice release.
+    const double repeats = std::log(1.0e-5) / std::log(std::clamp(feedback, 1.0e-6, 0.999999));
+    seconds += p->params[kEchoTime].load(std::memory_order_relaxed) * 0.001 * repeats;
+  }
+  if (p->params[kChorusMix].load(std::memory_order_relaxed) > 1.0e-6)
+    seconds += 0.026; // 14 ms base delay plus the maximum 12 ms modulation depth.
+  return static_cast<uint32_t>(std::min<double>(std::ceil(seconds * p->sample_rate), INT32_MAX - 1.0));
+}
+const clap_plugin_tail_t kTail{tail_get};
+
 #ifdef YANES_HAS_EDITOR
 #include "ui_frontend.hpp"
 #include "ui_backends.hpp"
@@ -1538,6 +1573,8 @@ const void* get_extension(const clap_plugin_t*, const char* id) {
   if (!std::strcmp(id, CLAP_EXT_PARAMS)) return &kParams;
   if (!std::strcmp(id, CLAP_EXT_STATE)) return &kState;
   if (!std::strcmp(id, CLAP_EXT_VOICE_INFO)) return &kVoiceInfo;
+  if (!std::strcmp(id, CLAP_EXT_LATENCY)) return &kLatency;
+  if (!std::strcmp(id, CLAP_EXT_TAIL)) return &kTail;
 #ifdef YANES_HAS_EDITOR
   if (!std::strcmp(id, CLAP_EXT_GUI)) return &kGui;
 #if defined(__linux__)

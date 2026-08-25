@@ -392,6 +392,30 @@ void test_mod_wheel_and_pitch_bend(const Library& library) {
   plugin->destroy(plugin);
 }
 
+void test_channel_volume(const Library& library) {
+  const clap_plugin_t* plugin = library.create();
+  {
+    Runner runner(plugin, kRate, kBlock);
+    Events on;
+    on.push(midi_event(0x90 | 3, 60, 127));
+    expect_audible(runner.run(&on), "note before channel volume");
+
+    Events mute;
+    mute.push(midi_event(0xb0 | 3, 7, 0));
+    expect_silent(runner.run(&mute), "CC7 channel volume at zero");
+
+    Events restore;
+    restore.push(midi_event(0xb0 | 3, 7, 127));
+    expect_audible(runner.run(&restore), "CC7 channel volume restored");
+
+    plugin->reset(plugin);
+    Events after_reset;
+    after_reset.push(midi_event(0x90 | 3, 64, 127));
+    expect_audible(runner.run(&after_reset), "reset restores channel volume");
+  }
+  plugin->destroy(plugin);
+}
+
 // Channel pressure and other unhandled status bytes must be ignored, not misparsed.
 void test_unhandled_midi_is_ignored(const Library& library) {
   const clap_plugin_t* plugin = library.create();
@@ -406,7 +430,6 @@ void test_unhandled_midi_is_ignored(const Library& library) {
     noise.push(midi_event(0xd0, 100, 0));   // channel pressure
     noise.push(midi_event(0xa0, 60, 100));  // polyphonic aftertouch
     noise.push(midi_event(0xc0, 42, 0));    // program change
-    noise.push(midi_event(0xb0, 7, 0));     // channel volume, not implemented
     runner.run(&noise);
     const Block after = runner.settle(2);
     assert(after.finite && after.peak > kAudible);
@@ -636,6 +659,7 @@ int main(int argc, char** argv) {
   test_panic_controllers(library);
   test_panic_is_per_channel(library);
   test_mod_wheel_and_pitch_bend(library);
+  test_channel_volume(library);
   test_unhandled_midi_is_ignored(library);
   test_polyphony_and_voice_stealing(library);
   test_reset_clears_voices(library);

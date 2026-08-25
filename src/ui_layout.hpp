@@ -53,6 +53,13 @@ constexpr int param_row_at(int page, int x, int y, int param_count) {
                               rows_per_page * row_height) && id >= 0 && id < param_count ? id : -1;
 }
 
+// The value field doubles as a large previous/next target for stepped choices.
+// Return -1 outside it, otherwise 0 for the left half and 1 for the right half.
+constexpr int value_step_direction_at(int x, int y) {
+  if (!contains(x, y, value_x - 12, rows_y, 370, rows_per_page * row_height)) return -1;
+  return x < value_x - 12 + 185 ? 0 : 1;
+}
+
 inline double value_from_x(int x, double minimum, double maximum, bool stepped) {
   const double norm = std::clamp(static_cast<double>(x - slider_x) / slider_width, 0.0, 1.0);
   const double value = minimum + (maximum - minimum) * norm;

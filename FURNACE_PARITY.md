@@ -94,8 +94,7 @@ Every fixture is also generated one octave below and above its note. The voice
 keeps the same defaults; only the MIDI key moves ±12. These 42 cases are not
 tuned individually, which is what stops a voice from being fitted to one note.
 
-**41/42** pass, the exception being `sid8580-low` for the pitch-read reason
-above. Of the rest the tightest are `n163-low` (spectrum 0.832) and
+**42/42 pass.** The tightest are `n163-low` (spectrum 0.832) and
 `gameboy-pulse-high` (envelope 0.863); the median holdout spectrum is 0.986.
 
 ## What the chip models had to get right

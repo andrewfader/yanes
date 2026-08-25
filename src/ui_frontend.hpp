@@ -225,7 +225,11 @@ void gui_draw(Plugin* p, yanes::ui::Canvas& canvas) {
     canvas.fill_rect(handle-4,y+9,8,26,text);
     char value_text[64]{}; value_to_text(nullptr, static_cast<clap_id>(id), value, value_text, sizeof(value_text));
     canvas.fill_rect(yanes::ui::value_x-12,y+6,370,32,hover?0x27384b:panel);
-    canvas.draw_text(yanes::ui::value_x,y+31,value_text,hover?amber:text,340);
+    if (s.stepped) {
+      canvas.draw_text(yanes::ui::value_x,y+31,"‹",hover?amber:muted,24);
+      canvas.draw_text(yanes::ui::value_x+30,y+31,value_text,hover?amber:text,276);
+      canvas.draw_text(yanes::ui::value_x+322,y+31,"›",hover?amber:muted,20);
+    } else canvas.draw_text(yanes::ui::value_x,y+31,value_text,hover?amber:text,340);
   }
   canvas.fill_rect(yanes::ui::tooltip_x,yanes::ui::tooltip_y,yanes::ui::tooltip_width,yanes::ui::tooltip_height,panel);
   if(p->gui_hover_param>=0&&p->gui_hover_param<static_cast<int>(kParamCount)){const auto id=static_cast<clap_id>(p->gui_hover_param);const auto&s=kSpecs[static_cast<size_t>(id)];char help[512]{};
@@ -285,6 +289,21 @@ void gui_input(Plugin* p, GuiPointer action, int button, int x, int y) {
         gui_click_set(p, kDpcmLoopMask, static_cast<double>(old ^ (1U << slot)));
         return;
       }
+    }
+  }
+  if (const int row_id = yanes::ui::param_row_at(p->gui_page, x, y, static_cast<int>(kParamCount));
+      row_id >= 0 && kSpecs[static_cast<size_t>(row_id)].stepped) {
+    const int direction = yanes::ui::value_step_direction_at(x, y);
+    if (direction >= 0 && (button == 1 || button == 4 || button == 5)) {
+      const auto& s = kSpecs[static_cast<size_t>(row_id)];
+      const double old = p->params[static_cast<size_t>(row_id)].load();
+      const bool increase = button == 4 || (button == 1 && direction == 1);
+      gui_click_set(p, static_cast<clap_id>(row_id), std::clamp(old + (increase ? 1.0 : -1.0), s.min, s.max));
+      return;
+    }
+    if (direction >= 0 && button == 3) {
+      gui_click_set(p, static_cast<clap_id>(row_id), kSpecs[static_cast<size_t>(row_id)].def);
+      return;
     }
   }
   const int id = yanes::ui::param_at(p->gui_page, x, y, static_cast<int>(kParamCount));
