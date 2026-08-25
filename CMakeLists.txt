@@ -107,6 +107,12 @@ add_executable(yanes-vgm-extract tools/yanes_vgm_extract.cpp)
 target_compile_features(yanes-vgm-extract PRIVATE cxx_std_20)
 install(TARGETS yanes-vgm-extract RUNTIME DESTINATION bin)
 
+add_executable(yanes-nes-rom-emu tools/yanes_nes_rom_emu.cpp)
+target_compile_features(yanes-nes-rom-emu PRIVATE cxx_std_20)
+target_include_directories(yanes-nes-rom-emu PRIVATE "${clap_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+target_link_libraries(yanes-nes-rom-emu PRIVATE ${CMAKE_DL_LIBS})
+yanes_warnings(yanes-nes-rom-emu)
+
 add_executable(vgm_tests tests/vgm_tests.cpp)
 target_compile_features(vgm_tests PRIVATE cxx_std_20)
 yanes_warnings(vgm_tests)
@@ -166,6 +172,10 @@ if(REAPER_EXECUTABLE)
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_reaper_integration.sh)
   set_tests_properties(reaper_clap_integration PROPERTIES TIMEOUT 120 ENVIRONMENT
     "REAPER=${REAPER_EXECUTABLE};YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_AUDIO_COMPARE=$<TARGET_FILE:yanes-audio-compare>")
+  add_test(NAME reaper_nes_song COMMAND
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_reaper_nes_song.sh)
+  set_tests_properties(reaper_nes_song PROPERTIES TIMEOUT 120 ENVIRONMENT
+    "REAPER=${REAPER_EXECUTABLE};YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_AUDIO_COMPARE=$<TARGET_FILE:yanes-audio-compare>")
 endif()
 add_test(NAME ymfm_opm_register_render COMMAND yanes-register-render ym2151
   ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ym2151_tone.reg
@@ -222,4 +232,8 @@ if(YANES_FURNACE_EXECUTABLE)
         "FURNACE=${YANES_FURNACE_EXECUTABLE};YANES_FIXTURE_RENDER=$<TARGET_FILE:yanes-fixture-render>;YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
     endforeach()
   endforeach()
+  add_test(NAME nes_rom_parity_suite COMMAND
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nes_rom_parity.sh)
+  set_tests_properties(nes_rom_parity_suite PROPERTIES TIMEOUT 120 ENVIRONMENT
+    "YANES_FURNACE_EXECUTABLE=${YANES_FURNACE_EXECUTABLE};YANES_FIXTURE_RENDER=$<TARGET_FILE:yanes-fixture-render>;YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
 endif()
