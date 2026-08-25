@@ -162,7 +162,7 @@ constexpr std::array<ParamSpec, kParamCount> kSpecs{{
     {"DPCM trim end", "NES/DPCM bank", 0.05, 1, 1, false},
     {"Channel mute mask", "Hardware/Stack mixer", 0, 65535, 0, true},
     {"Channel solo mask", "Hardware/Stack mixer", 0, 65535, 0, true},
-    {"Preset", "Presets", 0, 48, 0, true},
+    {"Preset", "Presets", 0, 54, 0, true},
 }};
 
 constexpr const char* kWaveNames[] = {
@@ -197,7 +197,9 @@ constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord l
     "SID combined reed", "DPCM sixteen-key bank", "User-sequence spark",
     "Arcade CRT cabinet", "Porta FM electric piano", "Porta FM toy organ",
     "Japanese analog poly", "American matrix brass", "Early sampler choir",
-    "Tine suitcase piano", "Classic ladder bass", "Retro chip drum kit"};
+    "Tine suitcase piano", "Classic ladder bass", "Retro chip drum kit",
+    "Game Boy bubble bloop", "Game Boy coin chirp", "Game Boy 7-bit zap",
+    "LSDJ wave pluck", "Game Boy fast chord", "Game Boy tracker delay"};
 constexpr const char* kDutyNames[] = {"12.5%", "25%", "50%", "75%"};
 constexpr double kDuties[] = {0.125, 0.25, 0.5, 0.75};
 
@@ -537,6 +539,12 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 46: put(kWaveform,55);put(kFmIndex,3.2);put(kFmBrightness,0.66);put(kAttackMs,2);put(kReleaseMs,920);put(kChorusMix,0.18);put(kDrive,0.08);break;
     case 47: put(kWaveform,56);put(kChipCutoff,820);put(kChipResonance,0.64);put(kTranspose,-12);put(kAttackMs,1);put(kReleaseMs,180);put(kDrive,0.32);break;
     case 48: put(kWaveform,57);put(kAttackMs,0);put(kReleaseMs,24);put(kExpansionShape,4);put(kVelocity,1);put(kTranspose,0);put(kFineTune,0);put(kArpMode,0);put(kLayerMode,0);put(kHardwareEnvelope,0);put(kDrive,0.12);put(kRetroAmount,0.08);break;
+    case 49: put(kWaveform, 10); put(kDuty, 1); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 8); put(kSweepDepth, -16); put(kSweepTime, 45); put(kReleaseMs, 25); break;
+    case 50: put(kWaveform, 10); put(kDuty, 2); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 6); put(kSweepDepth, 19); put(kSweepTime, 55); put(kReleaseMs, 30); break;
+    case 51: put(kWaveform, 12); put(kNoiseMode, 1); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 11); put(kSweepDepth, -20); put(kSweepTime, 50); put(kReleaseMs, 40); break;
+    case 52: put(kWaveform, 11); put(kExpansionShape, 3); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 9); put(kDrive, 0.18); put(kAttackMs, 0); put(kReleaseMs, 20); break;
+    case 53: put(kWaveform, 10); put(kDuty, 0); put(kArpMode, 4); put(kArpRate, 38); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 5); put(kReleaseMs, 35); break;
+    case 54: put(kWaveform, 10); put(kDuty, 1); put(kEchoMix, 0.38); put(kEchoTime, 90); put(kEchoFeedback, 0.40); put(kAttackMs, 1); put(kReleaseMs, 45); break;
     default: break;
   }
 }
@@ -1444,7 +1452,7 @@ bool value_to_text(const clap_plugin_t*, clap_id id, double value, char* text, u
   else if (id == kClockMode) std::snprintf(text, capacity, "%s", value >= 0.5 ? "PAL / 50 Hz" : "NTSC / 60 Hz");
   else if (id == kArpMode) std::snprintf(text, capacity, "%s", kArpNames[std::clamp(static_cast<int>(std::round(value)), 0, 5)]);
   else if (id == kLayerMode) std::snprintf(text, capacity, "%s", kLayerNames[std::clamp(static_cast<int>(std::round(value)), 0, 5)]);
-  else if (id == kPreset) std::snprintf(text, capacity, "%s", kPresetNames[std::clamp(static_cast<int>(std::round(value)), 0, 48)]);
+  else if (id == kPreset) std::snprintf(text, capacity, "%s", kPresetNames[std::clamp(static_cast<int>(std::round(value)), 0, static_cast<int>(sizeof(kPresetNames) / sizeof(kPresetNames[0]) - 1))]);
   else if (id == kAttackMs || id == kReleaseMs || id == kPortamentoMs || id == kEchoTime || id == kChorusDepth) std::snprintf(text, capacity, "%.1f ms", value);
   else if (id == kGainDb || id == kMasterDb) std::snprintf(text, capacity, "%.1f dB", value);
   else if (id == kFineTune) std::snprintf(text, capacity, "%.1f cents", value);
