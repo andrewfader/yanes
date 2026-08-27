@@ -75,6 +75,12 @@ inline float pulse(double phase, double increment, double duty) {
   return value;
 }
 
+// Untreated 2A03 pulse: hard edges at the sequencer duty. Use for NES stack /
+// Strict Hardware so the nonlinear mixer sees the same two-level DAC the chip does.
+inline float pulse_raw(double phase, double duty) {
+  return phase < duty ? 1.0f : -1.0f;
+}
+
 inline float nes_triangle(double phase) {
   // The 2A03 sequencer has 32 steps: 15..0, 0..15.
   const int step = std::clamp(static_cast<int>(phase * 32.0), 0, 31);

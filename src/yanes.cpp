@@ -22,6 +22,7 @@
 
 #include "dsp.hpp"
 #include "hardware_fm.hpp"
+#include "nes_apu.hpp"
 #include "ui_layout.hpp"
 
 #include <algorithm>
@@ -289,6 +290,7 @@ struct Plugin {
   std::array<std::atomic<double>, kParamCount> params{};
   std::array<Voice, 16> voices{};
   std::array<yanes::HardwareFmVoice, 16> hardware_fm{};
+  yanes::NesApu nes_apu{};
   double sample_rate{48000.0};
   double previous_note{60.0};
   uint64_t age_counter{};
@@ -472,7 +474,22 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
       (id >= kFmAttack && id <= kFmPmDepth)) p->fm_revision.fetch_add(1, std::memory_order_release);
   // Only on an actual change, so re-sending the current voice never overwrites
   // edits the player has made on top of it.
-  if (id == kWaveform && previous != value) apply_voice_defaults(p, static_cast<int>(value));
+  if (id == kWaveform && previous != value) {
+    apply_voice_defaults(p, static_cast<int>(value));
+    if (static_cast<int>(value) == 18) {
+      p->nes_apu.reset();
+      p->nes_apu.set_sample_rate(p->sample_rate);
+      p->nes_apu.set_clock(p->params[kClockMode].load(std::memory_order_relaxed) >= 0.5);
+    }
+  }
+  if (id == kDuty && static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 18) {
+    const int duty = static_cast<int>(std::lround(value));
+    p->nes_apu.set_pulse_duty(0, duty);
+    p->nes_apu.set_pulse_duty(1, duty);
+  }
+  if (id == kClockMode) {
+    p->nes_apu.set_clock(value >= 0.5);
+  }
   if (!apply_preset || id != kPreset) return;
   // A preset is a complete recipe, so every other parameter returns to its default before the
   // recipe runs. Without this, selecting a preset only layered its own edits on top of whatever
@@ -626,6 +643,9 @@ void stop_hardware(Plugin* p, Voice& v) {
 
 void kill_voice(Plugin* p, Voice& v, const clap_output_events_t* out, uint32_t time) {
   if (!v.active) return;
+  if (static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 18 &&
+      v.channel >= 0 && v.channel <= 3)
+    p->nes_apu.note_off(v.channel);
   stop_hardware(p, v);
   emit_note_end(out, time, v);
   v.active = false;
@@ -635,6 +655,10 @@ void kill_voice(Plugin* p, Voice& v, const clap_output_events_t* out, uint32_t t
 
 void release_voice(Plugin* p, Voice& v) {
   if (!v.active) return;
+  // Hardware channels silence on gate clear; the voice env may still track MIDI.
+  if (static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 18 &&
+      v.channel >= 0 && v.channel <= 3)
+    p->nes_apu.note_off(v.channel);
   stop_hardware(p, v);
   v.releasing = true;
   v.sustained = false;
@@ -671,9 +695,9 @@ void note_on(Plugin* p, int channel, int key, int note_id, double velocity, int1
   voice->target_note = static_cast<double>(key);
   voice->note = glide > 0.0 ? p->previous_note : voice->target_note;
   voice->velocity = std::clamp(velocity, 0.0, 1.0);
-  voice->lfsr.reset(static_cast<uint16_t>((++p->age_counter * 1103515245ULL) & 0x7fffU));
+  voice->lfsr.reset(static_cast<uint16_t>((p->age_counter * 1103515245ULL) & 0x7fffU));
   voice->noise_value = voice->lfsr.clock(false);
-  voice->age = p->age_counter;
+  voice->age = ++p->age_counter;
   voice->dpcm_slot = static_cast<uint8_t>(std::clamp(key - static_cast<int>(p->params[kDpcmBaseKey].load()), 0, 15));
   voice->dpcm_data = p->dpcm_banks[voice->dpcm_slot].load(std::memory_order_acquire);
   if(voice->dpcm_data)voice->dpcm_bit=static_cast<size_t>(static_cast<double>(voice->dpcm_data->size()*8U)*p->params[kDpcmTrimStart].load());
@@ -689,6 +713,14 @@ void note_on(Plugin* p, int channel, int key, int note_id, double velocity, int1
     const auto kind=fm_kind(fm_waveform,selected_waveform);
     p->hardware_fm[voice_index].key_on(kind, yanes::midi_frequency(key), fm_controls(p));
     voice->hardware_signature=fm_waveform|(static_cast<int>(kind)<<8);
+  }
+  if (selected_waveform == 18 && channel >= 0 && channel <= 3) {
+    const int duty = static_cast<int>(p->params[kDuty].load(std::memory_order_relaxed));
+    const int transpose =
+        static_cast<int>(std::lround(p->params[kTranspose].load(std::memory_order_relaxed)));
+    const double velocity_enabled =
+        p->params[kVelocity].load(std::memory_order_relaxed) >= 0.5 ? voice->velocity : 1.0;
+    p->nes_apu.note_on(channel, key + transpose, duty, velocity_enabled);
   }
   p->previous_note = voice->target_note;
 }
@@ -763,6 +795,11 @@ float render_voice(Plugin* p, Voice& v) {
   double release = p->params[kReleaseMs].load(std::memory_order_relaxed);
   if(static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed))==7&&v.key<60&&release<1.0)release=58.0;
   if (v.releasing) {
+    if (release <= 0.0) {
+      stop_hardware(p, v);
+      v.active = false;
+      return 0.0f;
+    }
     v.env -= 1.0 / (p->sample_rate * std::max(0.001, release * 0.001));
     if (v.env <= 0.0) { stop_hardware(p, v); v.active = false; return 0.0f; }
   } else {
@@ -869,12 +906,28 @@ float render_voice(Plugin* p, Voice& v) {
   const int shape = static_cast<int>(p->params[kExpansionShape].load(std::memory_order_relaxed));
   if (waveform == 0) {
     const int duty = static_cast<int>(p->params[kDuty].load(std::memory_order_relaxed));
-    value = yanes::pulse(v.phase, increment, kDuties[std::clamp(duty, 0, 3)]);
+    const double width = kDuties[std::clamp(duty, 0, 3)];
+    // NES stack and Strict Hardware feed the nonlinear mixer a hard 2A03 pulse.
+    // Musical solo NES pulse keeps polyBLEP so DAW use and Furnace parity stay clean.
+    const bool hardware_pulse = selected_waveform == 18 ||
+        p->params[kStrictHardware].load(std::memory_order_relaxed) >= 0.5;
+    if (hardware_pulse) {
+      // Four subsamples approximate the CPU-rate average a real APU dump takes,
+      // without the soft edges polyBLEP would bake in before the DAC mix.
+      for (int n = 0; n < 4; ++n)
+        value += yanes::pulse_raw(std::fmod(v.phase + increment * n / 4.0, 1.0), width);
+      value *= 0.25f;
+    } else {
+      value = yanes::pulse(v.phase, increment, width);
+    }
   } else if (waveform == 1) {
-    // Four subsamples reduce the staircase oscillator's aliases without changing its 32 levels.
-    for (int n = 0; n < 4; ++n)
-      value += yanes::nes_tnd_shape(
-          yanes::nes_triangle(std::fmod(v.phase + increment * n / 4.0, 1.0)));
+    // Four subsamples reduce aliases. Stack mode leaves the staircase linear — the mixer
+    // applies the shared TND DAC, and shaping here would bend it twice.
+    const bool stack_tnd = selected_waveform == 18;
+    for (int n = 0; n < 4; ++n) {
+      const float step = yanes::nes_triangle(std::fmod(v.phase + increment * n / 4.0, 1.0));
+      value += stack_tnd ? step : yanes::nes_tnd_shape(step);
+    }
     value *= 0.25f;
   } else if (waveform == 2) {
     const int base_period = static_cast<int>(p->params[kNoisePeriod].load(std::memory_order_relaxed));
@@ -1222,7 +1275,12 @@ float process_retro(Plugin* p, float input) {
 
 struct StereoSample { float left{}, right{}; };
 StereoSample process_rack(Plugin* p, float input) {
-  const float driven = std::tanh(input * static_cast<float>(1.0 + 7.0 * p->params[kDrive].load(std::memory_order_relaxed)));
+  const double drive = p->params[kDrive].load(std::memory_order_relaxed);
+  // Drive at zero must be a transparent chip out — tanh(x) still rounds peaks.
+  const float driven =
+      drive <= 1.0e-6
+          ? input
+          : std::tanh(input * static_cast<float>(1.0 + 7.0 * drive));
   if (p->delay_buffer.empty()) return {driven, driven};
   const size_t size = p->delay_buffer.size();
   double echo_seconds = p->params[kEchoTime].load(std::memory_order_relaxed) * 0.001;
@@ -1303,6 +1361,9 @@ bool plugin_activate(const clap_plugin_t* plugin, double rate, uint32_t, uint32_
   p->delay_write = 0;
   p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;
   p->output_peak_l.store(0.0f);p->output_peak_r.store(0.0f);p->output_clipped.store(false);
+  p->nes_apu.set_sample_rate(rate);
+  p->nes_apu.set_clock(p->params[kClockMode].load(std::memory_order_relaxed) >= 0.5);
+  p->nes_apu.reset();
   return rate > 0.0;
 }
 void plugin_deactivate(const clap_plugin_t*) {}
@@ -1317,6 +1378,7 @@ void plugin_reset(const clap_plugin_t* plugin) {
   p->channel_volume.fill(1.0);
   p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;
   p->output_peak_l.store(0.0f);p->output_peak_r.store(0.0f);p->output_clipped.store(false);
+  p->nes_apu.reset();
 }
 
 clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_process_t* process) {
@@ -1346,40 +1408,51 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
     take_events(frame, false);
     float sample = 0.0f;
     const bool nes_stack = static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 18;
-    double pulse_dac = 0.0, triangle_dac = 0.0, noise_dac = 0.0, dpcm_dac = 0.0;
     const uint32_t mute_mask=static_cast<uint32_t>(p->params[kStackMuteMask].load());
     const uint32_t solo_mask=static_cast<uint32_t>(p->params[kStackSoloMask].load());
+    double dpcm_dac = 0.0;
     for (auto& v : p->voices) if (v.active) {
       const uint32_t channel_bit=1U<<std::clamp<int>(v.channel,0,15);
       const bool muted=(mute_mask&channel_bit)||(solo_mask&&!(solo_mask&channel_bit));
+      if (nes_stack && v.channel >= 0 && v.channel <= 3) {
+        // Channel audio comes from NesApu; still tick the voice for MIDI lifetime.
+        (void)render_voice(p, v);
+        if (!v.active) emit_note_end(out_events, frame, v);
+        continue;
+      }
       const float rendered = render_voice(p, v) * static_cast<float>(
           p->channel_volume[static_cast<size_t>(std::clamp<int>(v.channel, 0, 15))]);
       if (!v.active) emit_note_end(out_events, frame, v);
       if (muted) continue;
       if (!nes_stack) { sample += rendered; continue; }
-      const double velocity = p->params[kVelocity].load(std::memory_order_relaxed) >= 0.5 ? v.velocity : 1.0;
-      const double amplitude = std::max(0.000001, v.env * velocity);
-      const double bipolar = std::clamp(static_cast<double>(rendered) / amplitude, -1.0, 1.0);
-      if (v.channel <= 1) pulse_dac += (bipolar * 0.5 + 0.5) * 15.0 * amplitude;
-      else if (v.channel == 2) triangle_dac += (bipolar * 0.5 + 0.5) * 15.0 * amplitude;
-      else if (v.channel == 3) noise_dac += (bipolar * 0.5 + 0.5) * 15.0 * amplitude;
-      else if (v.channel == 4) dpcm_dac += (bipolar * 0.5 + 0.5) * 127.0 * amplitude;
+      // DPCM still rides the voice oscillator into the shared TND mix.
+      if (v.channel == 4) {
+        const double velocity =
+            p->params[kVelocity].load(std::memory_order_relaxed) >= 0.5 ? v.velocity : 1.0;
+        const double render_amp = std::max(0.000001, v.env * velocity);
+        const double bipolar =
+            std::clamp(static_cast<double>(rendered) / render_amp, -1.0, 1.0);
+        dpcm_dac += (bipolar * 0.5 + 0.5) * 127.0 * std::max(0.000001, v.env);
+      }
     }
-    if (nes_stack && (pulse_dac > 0.0 || triangle_dac > 0.0 || noise_dac > 0.0 || dpcm_dac > 0.0)) {
-      const double pulse_out = pulse_dac > 0.0 ? 95.88 / (8128.0 / pulse_dac + 100.0) : 0.0;
-      const double tnd_input = triangle_dac / 8227.0 + noise_dac / 12241.0 + dpcm_dac / 22638.0;
-      const double tnd_out = tnd_input > 0.0 ? 159.79 / (1.0 / tnd_input + 100.0) : 0.0;
-      sample = static_cast<float>((pulse_out + tnd_out) * 2.0 - 0.65);
+    if (nes_stack) {
+      sample = p->nes_apu.render(mute_mask, solo_mask, dpcm_dac);
+      const double voice_gain = db_gain(p->params[kGainDb].load(std::memory_order_relaxed));
+      const double master = db_gain(p->params[kMasterDb].load(std::memory_order_relaxed));
+      sample = static_cast<float>(sample * voice_gain * master);
+    } else {
+      const double voice_gain = db_gain(p->params[kGainDb].load(std::memory_order_relaxed));
+      const double master = db_gain(p->params[kMasterDb].load(std::memory_order_relaxed));
+      sample = std::tanh(sample * static_cast<float>(voice_gain)) * static_cast<float>(master);
     }
-    const double voice_gain = db_gain(p->params[kGainDb].load(std::memory_order_relaxed));
-    const double master = db_gain(p->params[kMasterDb].load(std::memory_order_relaxed));
-    sample = std::tanh(sample * static_cast<float>(voice_gain)) * static_cast<float>(master);
     sample = process_retro(p, sample);
     const StereoSample effected = process_rack(p, sample);
     const float width = static_cast<float>(p->params[kStereoWidth].load(std::memory_order_relaxed));
     const double raw_l=effected.left*(1.0f+width*0.08f),raw_r=effected.right*(1.0f-width*0.08f);
     const int output_waveform=static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
-    const bool dc_enabled=nes_stack||output_waveform==38||output_waveform==39||p->params[kRetroAmount].load(std::memory_order_relaxed)>0.00001;
+    const bool dc_enabled=
+        (!nes_stack && (output_waveform==38||output_waveform==39)) ||
+        p->params[kRetroAmount].load(std::memory_order_relaxed)>0.00001;
     double dc_l=raw_l,dc_right=raw_r;
     if(dc_enabled){dc_l=raw_l-p->output_dc_x_l+dc_r*p->output_dc_y_l;dc_right=raw_r-p->output_dc_x_r+dc_r*p->output_dc_y_r;}
     else p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;

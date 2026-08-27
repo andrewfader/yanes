@@ -16,8 +16,11 @@
 
 namespace nes {
 
-constexpr double kCpuClock = 1789773.0; // NTSC 2A03 clock (Hz)
+// Independent of YANES DSP: published NTSC 2A03 figures only.
+constexpr double kCpuClock = 1789773.0;
 constexpr int kSampleRate = 48000;
+constexpr std::array<uint16_t, 16> kNoisePeriods{
+    4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068};
 
 struct NoteEvent {
   double start_sec;
@@ -28,7 +31,9 @@ struct NoteEvent {
   uint8_t duty{2}; // 0 = 12.5%, 1 = 25%, 2 = 50%, 3 = 75%
 };
 
-// 2A03 APU hardware simulation
+// Cycle-stepped 2A03 APU reference. Deliberately does not call into YANES
+// oscillators, LFSR helpers, or post filters — this is the hardware gate that
+// YANES presets are scored against.
 struct Apu {
   struct Pulse {
     uint8_t duty{2};
@@ -51,41 +56,68 @@ struct Apu {
     uint16_t period{4};
     uint16_t timer_counter{0};
     uint16_t shift_reg{1};
-    bool loop_mode{false};
+    bool short_mode{false};
     bool active{false};
   } noise;
 
   double dc_in{0.0};
   double dc_out{0.0};
+  double mix_acc{0.0};
+  double mix_count{0.0};
+  double lp_y{0.0};
   double sample_acc{0.0};
   double sample_period{kCpuClock / kSampleRate};
+  // One-pole low-pass approximating the console's analog path before RF/AV
+  // (~12 kHz). Independent of YANES filters; keeps the hardware gate from
+  // scoring infinite-bandwidth aliasing that no real NES outputs.
+  double lp_alpha{1.0 - std::exp(-2.0 * 3.14159265358979323846 * 12000.0 / kSampleRate)};
   std::vector<int16_t> pcm_output;
 
-  void note_on(int ch, int key, uint8_t duty_val, uint8_t vol) {
+  // Hardware noise period register from the score's MIDI key.
+  static int noise_period_index(int key) {
+    return std::clamp(key - 48, 0, 15);
+  }
+
+  static uint8_t midi_volume(int velocity) {
+    // 4-bit APU volume from MIDI velocity (triangle has no volume on hardware).
+    return static_cast<uint8_t>(
+        std::clamp(static_cast<int>(std::lround(velocity / 127.0 * 15.0)), 0, 15));
+  }
+
+  static double midi_hz(int key) {
+    return 440.0 * std::pow(2.0, (key - 69.0) / 12.0);
+  }
+
+  void note_on(int ch, int key, uint8_t duty_val, int velocity) {
     if (ch == 0 || ch == 1) {
       pulse[ch].active = true;
-      pulse[ch].duty = duty_val;
-      pulse[ch].volume = vol;
-      const double hz = 440.0 * std::pow(2.0, (key - 69.0) / 12.0);
-      pulse[ch].timer = static_cast<uint16_t>(std::clamp(std::round(kCpuClock / (16.0 * hz) - 1.0), 8.0, 2047.0));
+      pulse[ch].duty = static_cast<uint8_t>(std::min<int>(duty_val, 3));
+      pulse[ch].volume = midi_volume(velocity);
+      pulse[ch].seq_pos = 0;
+      const double hz = midi_hz(key);
+      pulse[ch].timer = static_cast<uint16_t>(
+          std::clamp(std::round(kCpuClock / (16.0 * hz) - 1.0), 8.0, 2047.0));
       pulse[ch].timer_counter = pulse[ch].timer;
     } else if (ch == 2) {
+      // Triangle has no 4-bit volume; length/linear counter gate only.
       triangle.active = true;
-      const double hz = 440.0 * std::pow(2.0, (key - 69.0) / 12.0);
-      triangle.timer = static_cast<uint16_t>(std::clamp(std::round(kCpuClock / (32.0 * hz) - 1.0), 2.0, 2047.0));
+      triangle.seq_pos = 0;
+      const double hz = midi_hz(key);
+      triangle.timer = static_cast<uint16_t>(
+          std::clamp(std::round(kCpuClock / (32.0 * hz) - 1.0), 2.0, 2047.0));
       triangle.timer_counter = triangle.timer;
     } else if (ch == 3) {
-      static constexpr uint16_t noise_periods[16] = {4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068};
       noise.active = true;
-      noise.volume = vol;
-      const int period_idx = std::clamp(key - 48, 0, 15);
-      noise.period = noise_periods[period_idx];
+      noise.volume = midi_volume(velocity);
+      const int period_idx = noise_period_index(key);
+      noise.period = kNoisePeriods[static_cast<size_t>(period_idx)];
       noise.timer_counter = noise.period;
-      noise.loop_mode = (key >= 64);
+      noise.short_mode = key >= 64;
+      // Hardware does not reseed on note-on; leave the shift register running.
     }
   }
 
-  void note_off(int ch, int /*key*/) {
+  void note_off(int ch) {
     if (ch == 0 || ch == 1) pulse[ch].active = false;
     else if (ch == 2) triangle.active = false;
     else if (ch == 3) noise.active = false;
@@ -96,77 +128,90 @@ struct Apu {
         {0, 1, 0, 0, 0, 0, 0, 0}, // 12.5%
         {0, 1, 1, 0, 0, 0, 0, 0}, // 25%
         {0, 1, 1, 1, 1, 0, 0, 0}, // 50%
-        {1, 0, 0, 1, 1, 1, 1, 1}  // 75%
+        {1, 0, 0, 1, 1, 1, 1, 1}, // 75% / 25% inverted
     };
     static constexpr uint8_t tri_table[32] = {
         15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
-    };
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
 
-    // Pulse 1
-    if (pulse[0].active) {
-      if (pulse[0].timer_counter > 0) pulse[0].timer_counter--;
-      else {
-        pulse[0].timer_counter = pulse[0].timer;
-        pulse[0].seq_pos = (pulse[0].seq_pos + 1) & 7;
+    for (auto& p : pulse) {
+      if (!p.active) continue;
+      if (p.timer_counter > 0) {
+        --p.timer_counter;
+      } else {
+        p.timer_counter = p.timer;
+        p.seq_pos = static_cast<uint8_t>((p.seq_pos + 1) & 7);
       }
     }
 
-    // Pulse 2
-    if (pulse[1].active) {
-      if (pulse[1].timer_counter > 0) pulse[1].timer_counter--;
-      else {
-        pulse[1].timer_counter = pulse[1].timer;
-        pulse[1].seq_pos = (pulse[1].seq_pos + 1) & 7;
-      }
-    }
-
-    // Triangle
     if (triangle.active) {
-      if (triangle.timer_counter > 0) triangle.timer_counter--;
-      else {
+      if (triangle.timer_counter > 0) {
+        --triangle.timer_counter;
+      } else {
         triangle.timer_counter = triangle.timer;
-        triangle.seq_pos = (triangle.seq_pos + 1) & 31;
+        triangle.seq_pos = static_cast<uint8_t>((triangle.seq_pos + 1) & 31);
       }
     }
 
-    // Noise
     if (noise.active) {
-      if (noise.timer_counter > 0) noise.timer_counter--;
-      else {
+      if (noise.timer_counter > 0) {
+        --noise.timer_counter;
+      } else {
         noise.timer_counter = noise.period;
-        const uint16_t bit = noise.loop_mode ? 6 : 1;
-        const uint16_t feedback = (noise.shift_reg & 1) ^ ((noise.shift_reg >> bit) & 1);
-        noise.shift_reg = (noise.shift_reg >> 1) | (feedback << 14);
+        const uint16_t tap = noise.short_mode ? 6U : 1U;
+        const uint16_t feedback =
+            static_cast<uint16_t>((noise.shift_reg & 1U) ^ ((noise.shift_reg >> tap) & 1U));
+        noise.shift_reg =
+            static_cast<uint16_t>((noise.shift_reg >> 1U) | (feedback << 14U));
       }
     }
 
+    const double p1 =
+        (pulse[0].active && duty_table[pulse[0].duty][pulse[0].seq_pos])
+            ? static_cast<double>(pulse[0].volume)
+            : 0.0;
+    const double p2 =
+        (pulse[1].active && duty_table[pulse[1].duty][pulse[1].seq_pos])
+            ? static_cast<double>(pulse[1].volume)
+            : 0.0;
+    const double tr =
+        triangle.active ? static_cast<double>(tri_table[triangle.seq_pos]) : 0.0;
+    // APU outputs when the LFSR LSB is clear.
+    const double ns =
+        (noise.active && (noise.shift_reg & 1U) == 0)
+            ? static_cast<double>(noise.volume)
+            : 0.0;
+
+    // Published non-linear mix (NESdev APU Mixer).
+    const double p_sum = p1 + p2;
+    const double pulse_out =
+        p_sum > 0.0 ? 95.88 / ((8128.0 / p_sum) + 100.0) : 0.0;
+    const double tnd_sum = tr / 8227.0 + ns / 12241.0;
+    const double tnd_out =
+        tnd_sum > 0.0 ? 159.79 / ((1.0 / tnd_sum) + 100.0) : 0.0;
+    const double raw = pulse_out + tnd_out;
+
+    // Integrate over the output sample period (not a single CPU-cycle poke) so
+    // the reference is a proper decimation of the APU, not a point sample.
+    mix_acc += raw;
+    mix_count += 1.0;
     sample_acc += 1.0;
-    if (sample_acc >= sample_period) {
-      sample_acc -= sample_period;
+    if (sample_acc < sample_period) return;
+    sample_acc -= sample_period;
 
-      const double p1 = (pulse[0].active && duty_table[pulse[0].duty][pulse[0].seq_pos])
-                            ? static_cast<double>(pulse[0].volume) : 0.0;
-      const double p2 = (pulse[1].active && duty_table[pulse[1].duty][pulse[1].seq_pos])
-                            ? static_cast<double>(pulse[1].volume) : 0.0;
-      const double tr = triangle.active ? static_cast<double>(tri_table[triangle.seq_pos]) : 0.0;
-      const double ns = (noise.active && (noise.shift_reg & 1) == 0) ? static_cast<double>(noise.volume) : 0.0;
+    const double averaged = mix_count > 0.0 ? mix_acc / mix_count : 0.0;
+    mix_acc = 0.0;
+    mix_count = 0.0;
 
-      const double p_sum = p1 + p2;
-      const double pulse_out = p_sum > 0.0 ? 95.88 / ((8128.0 / p_sum) + 100.0) : 0.0;
+    lp_y += lp_alpha * (averaged - lp_y);
 
-      const double tnd_sum = tr / 8227.0 + ns / 12241.0;
-      const double tnd_out = tnd_sum > 0.0 ? 159.79 / ((1.0 / tnd_sum) + 100.0) : 0.0;
+    // Independent ~90 Hz high-pass (console AC coupling), not YANES's filter.
+    constexpr double kDc = 0.995;
+    dc_out = kDc * (dc_out + lp_y - dc_in);
+    dc_in = lp_y;
 
-      const double raw = pulse_out + tnd_out;
-
-      // 20Hz DC blocker
-      dc_out = 0.997 * (dc_out + raw - dc_in);
-      dc_in = raw;
-
-      const double total = std::clamp(dc_out * 3.5, -1.0, 1.0);
-      pcm_output.push_back(static_cast<int16_t>(total * 32767.0));
-    }
+    const double total = std::clamp(dc_out * 2.8, -1.0, 1.0);
+    pcm_output.push_back(static_cast<int16_t>(total * 32767.0));
   }
 };
 
@@ -316,7 +361,10 @@ std::vector<nes::NoteEvent> get_rom_music_score(const std::string& rom_name, dou
 
 int main(int argc, char** argv) {
   if (argc < 4) {
-    std::cerr << "Usage: yanes-nes-rom-emu <rom.nes> <yanes_plugin.clap> <output_dir> [duration_seconds]\n";
+    std::cerr << "Usage: yanes-nes-rom-emu <rom.nes> <yanes_plugin.clap> <output_dir> "
+                 "[duration] [yanes_waveform] [yanes_duty] [yanes_transpose]\n"
+                 "  Optional YANES-only overrides are for negative-control gates;\n"
+                 "  the independent APU reference always uses the score as written.\n";
     return 1;
   }
 
@@ -324,6 +372,9 @@ int main(int argc, char** argv) {
   const std::string clap_path = argv[2];
   const std::string out_dir = argv[3];
   const double duration = (argc >= 5) ? std::atof(argv[4]) : 4.0;
+  const double yanes_waveform = (argc >= 6) ? std::atof(argv[5]) : 18.0;
+  const double yanes_duty = (argc >= 7) ? std::atof(argv[6]) : -1.0;
+  const double yanes_transpose = (argc >= 8) ? std::atof(argv[7]) : 0.0;
 
   std::ifstream rom_file(rom_path, std::ios::binary);
   if (!rom_file) {
@@ -344,84 +395,160 @@ int main(int argc, char** argv) {
   const int mapper = (rom_data[6] >> 4) | (rom_data[7] & 0xF0);
 
   std::cout << "========================================================\n";
-  std::cout << "  YANES Direct NES ROM Sound Extractor & Parity Engine  \n";
+  std::cout << "  YANES Independent 2A03 Hardware Gate                 \n";
   std::cout << "========================================================\n";
   std::cout << "Loaded ROM: " << rom_path << "\n";
   std::cout << "  Mapper: " << mapper << ", PRG ROM: " << (prg_banks * 16) << " KB\n";
+  std::cout << "  (Score is theme-derived from the ROM identity; APU render is\n";
+  std::cout << "   an independent cycle-stepped 2A03 model — not YANES DSP.)\n";
 
   // Extract score for the game
   const auto notes = get_rom_music_score(rom_path, duration);
-  std::cout << "Extracted " << notes.size() << " authentic musical note events from the ROM sound stream.\n";
+  std::cout << "Prepared " << notes.size() << " note events for the hardware gate.\n";
 
-  // 1. Direct NES APU Hardware Render (Reference WAV)
+  // 1. Independent NES APU Hardware Render (reference WAV)
   nes::Apu apu;
-  const uint64_t total_cpu_cycles = static_cast<uint64_t>(duration * nes::kCpuClock);
-  const size_t total_note_events = notes.size();
+  const uint64_t total_cpu_cycles =
+      static_cast<uint64_t>(std::llround(duration * nes::kCpuClock));
+  const size_t total_samples =
+      static_cast<size_t>(std::lround(duration * nes::kSampleRate));
 
-  size_t note_idx = 0;
   for (uint64_t cycle = 0; cycle < total_cpu_cycles; ++cycle) {
-    const double cur_t = static_cast<double>(cycle) / nes::kCpuClock;
-
-    // Check for note on / note off events
-    for (size_t i = 0; i < total_note_events; ++i) {
-      const auto& n = notes[i];
-      const uint64_t start_cycle = static_cast<uint64_t>(n.start_sec * nes::kCpuClock);
-      const uint64_t end_cycle = static_cast<uint64_t>(n.end_sec * nes::kCpuClock);
-      if (cycle == start_cycle) {
-        apu.note_on(n.channel, n.key, n.duty, static_cast<uint8_t>(n.velocity / 8));
-      } else if (cycle == end_cycle) {
-        apu.note_off(n.channel, n.key);
-      }
+    for (const auto& n : notes) {
+      const uint64_t start_cycle =
+          static_cast<uint64_t>(std::llround(n.start_sec * nes::kCpuClock));
+      const uint64_t end_cycle =
+          static_cast<uint64_t>(std::llround(n.end_sec * nes::kCpuClock));
+      if (cycle == start_cycle)
+        apu.note_on(n.channel, n.key, n.duty, n.velocity);
+      else if (cycle == end_cycle)
+        apu.note_off(n.channel);
     }
-
     apu.step_cycle();
   }
 
   const std::string rom_wav = out_dir + "/rom_extracted.wav";
   write_wav(rom_wav, apu.pcm_output, 48000, 1);
-  std::cout << "Wrote direct ROM APU audio render to " << rom_wav << " (" << apu.pcm_output.size() << " samples).\n";
+  std::cout << "Wrote independent APU render to " << rom_wav << " ("
+            << apu.pcm_output.size() << " samples).\n";
 
   // 2. Generate Multi-Track REAPER Project (.rpp)
   const std::string rpp_path = out_dir + "/rom_song.rpp";
   write_reaper_rpp(rpp_path, notes, duration);
-  std::cout << "Generated REAPER project from ROM sound: " << rpp_path << "\n";
+  std::cout << "Generated REAPER project from score: " << rpp_path << "\n";
 
-  // 3. Drive YANES CLAP plugin in NES 5-Channel Stack mode (Waveform 18)
+  // 3. Drive YANES CLAP (NES stack preset path) with the same score
   const harness::Library library(clap_path.c_str());
   const clap_plugin_t* plugin = library.create();
 
   std::vector<int16_t> yanes_pcm;
-  yanes_pcm.reserve(nes::kSampleRate * static_cast<size_t>(duration));
+  yanes_pcm.reserve(total_samples);
 
   {
     harness::Runner runner(plugin, nes::kSampleRate, 512);
-    // Param 0: Waveform = 18 (NES 5-channel stack), Param 4: Attack = 0, Param 5: Release = 0
-    runner.set(0, 18.0);
-    runner.set(4, 0.0);
-    runner.set(5, 0.0);
-    runner.set(9, 0.0);
-    runner.set(14, 0.0);
+    // Waveform 18 = NES stack by default; optional overrides support negative controls.
+    runner.set(0, yanes_waveform);
+    if (yanes_duty >= 0.0)
+      runner.set(1, yanes_duty);
+    else
+      runner.set(1, 2.0);  // overridden per pulse note from the score
+    if (yanes_transpose != 0.0) runner.set(11, yanes_transpose);
+    runner.set(3, 0.0);    // kNoiseMode long; overridden per noise note
+    runner.set(4, 0.0);    // kAttackMs
+    runner.set(5, 0.0);    // kReleaseMs
+    runner.set(9, 0.0);    // kGainDb
+    runner.set(14, 0.0);   // kMasterDb
+    // Monophonic stack retrigger — same constraint as a real 2A03 channel.
+    runner.set(51, 1.0);   // kStrictHardware
+    if (yanes_waveform != 18.0 || yanes_duty >= 0.0 || yanes_transpose != 0.0) {
+      std::cout << "YANES overrides: waveform=" << yanes_waveform
+                << " duty=" << (yanes_duty >= 0.0 ? yanes_duty : -1.0)
+                << " transpose=" << yanes_transpose << "\n";
+    }
 
-    const size_t total_blocks = static_cast<size_t>((duration * nes::kSampleRate) / 512);
+    const size_t total_blocks = total_samples / 512;
+    int current_duty = -1;
+    int current_noise_period = -1;
+    const bool lock_duty = yanes_duty >= 0.0;
 
     for (size_t b = 0; b < total_blocks; ++b) {
       const double block_start = (b * 512.0) / nes::kSampleRate;
       const double block_end = ((b + 1) * 512.0) / nes::kSampleRate;
 
       harness::Events events;
-      bool has_events = false;
+      struct Timed {
+        uint32_t time;
+        int sort_key;
+        std::vector<uint8_t> bytes;
+      };
+      std::vector<Timed> timed;
+      auto queue = [&](uint32_t time, int sort_key, const auto& event) {
+        Timed item;
+        item.time = std::min(time, 511U);
+        item.sort_key = sort_key;
+        item.bytes.resize(sizeof(event));
+        std::memcpy(item.bytes.data(), &event, sizeof(event));
+        auto* header = reinterpret_cast<clap_event_header_t*>(item.bytes.data());
+        header->time = item.time;
+        timed.push_back(std::move(item));
+      };
+
       for (const auto& n : notes) {
         if (n.start_sec >= block_start && n.start_sec < block_end) {
-          events.push(harness::note_event(CLAP_EVENT_NOTE_ON, static_cast<int16_t>(n.channel), static_cast<int16_t>(n.key), -1, 1.0));
-          has_events = true;
+          const uint32_t at = static_cast<uint32_t>(std::lround(
+              (n.start_sec - block_start) * nes::kSampleRate));
+          if ((n.channel == 0 || n.channel == 1) && !lock_duty &&
+              n.duty != current_duty) {
+            queue(at, 0, harness::param_event(1, static_cast<double>(n.duty)));
+            current_duty = n.duty;
+          }
+          if (n.channel == 3) {
+            // Map hardware period index (key-48) onto YANES's
+            // base_period - (key-60) table so both sides hit the same NTSC entry.
+            const int period = nes::Apu::noise_period_index(n.key);
+            const int base = ((period + (n.key - 60)) % 16 + 16) % 16;
+            if (base != current_noise_period) {
+              queue(at, 1, harness::param_event(2, static_cast<double>(base)));
+              current_noise_period = base;
+            }
+            queue(at, 2, harness::param_event(3, n.key >= 64 ? 1.0 : 0.0));
+          }
+          // Triangle has no hardware volume — full gate only.
+          const double velocity =
+              n.channel == 2 ? 1.0 : std::clamp(n.velocity / 127.0, 0.0, 1.0);
+          queue(at, 3,
+                harness::note_event(CLAP_EVENT_NOTE_ON,
+                                    static_cast<int16_t>(n.channel),
+                                    static_cast<int16_t>(n.key), -1, velocity));
         }
         if (n.end_sec >= block_start && n.end_sec < block_end) {
-          events.push(harness::note_event(CLAP_EVENT_NOTE_OFF, static_cast<int16_t>(n.channel), static_cast<int16_t>(n.key), -1, 0.0));
-          has_events = true;
+          const uint32_t at = static_cast<uint32_t>(std::lround(
+              (n.end_sec - block_start) * nes::kSampleRate));
+          queue(at, 4,
+                harness::note_event(CLAP_EVENT_NOTE_OFF,
+                                    static_cast<int16_t>(n.channel),
+                                    static_cast<int16_t>(n.key), -1, 0.0));
         }
       }
 
-      runner.run(has_events ? &events : nullptr);
+      std::stable_sort(timed.begin(), timed.end(),
+                       [](const Timed& a, const Timed& b) {
+                         if (a.time != b.time) return a.time < b.time;
+                         return a.sort_key < b.sort_key;
+                       });
+      for (const auto& item : timed) {
+        if (item.bytes.size() == sizeof(clap_event_param_value_t)) {
+          clap_event_param_value_t ev{};
+          std::memcpy(&ev, item.bytes.data(), sizeof(ev));
+          events.push(ev);
+        } else {
+          clap_event_note_t ev{};
+          std::memcpy(&ev, item.bytes.data(), sizeof(ev));
+          events.push(ev);
+        }
+      }
+
+      runner.run(timed.empty() ? nullptr : &events);
 
       for (uint32_t i = 0; i < 512; ++i) {
         const float val = std::clamp(runner.left()[i], -1.0f, 1.0f);
@@ -434,7 +561,8 @@ int main(int argc, char** argv) {
 
   const std::string yanes_wav = out_dir + "/yanes_extracted.wav";
   write_wav(yanes_wav, yanes_pcm, 48000, 1);
-  std::cout << "Rendered YANES audio from ROM note stream: " << yanes_wav << " (" << yanes_pcm.size() << " samples).\n";
+  std::cout << "Rendered YANES preset path: " << yanes_wav << " ("
+            << yanes_pcm.size() << " samples).\n";
 
   return 0;
 }

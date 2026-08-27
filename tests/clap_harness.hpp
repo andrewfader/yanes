@@ -68,7 +68,9 @@ struct Library {
     assert(handle && "failed to load the plug-in");
     entry = static_cast<const clap_plugin_entry_t*>(find_symbol(handle, "clap_entry"));
     assert(entry && clap_version_is_compatible(entry->clap_version));
-    assert(entry->init(path));
+    const bool inited = entry->init(path);
+    assert(inited);
+    (void)inited;
     factory = static_cast<const clap_plugin_factory_t*>(entry->get_factory(CLAP_PLUGIN_FACTORY_ID));
     assert(factory && factory->get_plugin_count(factory) == 1);
     descriptor = factory->get_plugin_descriptor(factory, 0);
@@ -82,7 +84,10 @@ struct Library {
     g_creating_plugin = true;
     const clap_plugin_t* plugin = factory->create_plugin(factory, &kHost, descriptor->id);
     g_creating_plugin = false;
-    assert(plugin && plugin->init(plugin));
+    assert(plugin);
+    const bool inited = plugin->init(plugin);
+    assert(inited);
+    (void)inited;
     return plugin;
   }
 };
@@ -182,8 +187,12 @@ class Runner {
  public:
   Runner(const clap_plugin_t* plugin, double sample_rate, uint32_t frames)
       : plugin_(plugin), frames_(frames), left_(frames), right_(frames) {
-    assert(plugin_->activate(plugin_, sample_rate, 1, frames));
-    assert(plugin_->start_processing(plugin_));
+    const bool activated = plugin_->activate(plugin_, sample_rate, 1, frames);
+    assert(activated);
+    const bool started = plugin_->start_processing(plugin_);
+    assert(started);
+    (void)activated;
+    (void)started;
   }
   ~Runner() { plugin_->stop_processing(plugin_); plugin_->deactivate(plugin_); }
   Runner(const Runner&) = delete;
@@ -201,7 +210,9 @@ class Runner {
     process.in_events = &input;
     process.audio_outputs = &output;
     process.audio_outputs_count = 1;
-    assert(plugin_->process(plugin_, &process) == CLAP_PROCESS_CONTINUE);
+    const clap_process_status status = plugin_->process(plugin_, &process);
+    assert(status == CLAP_PROCESS_CONTINUE);
+    (void)status;
 
     Block block;
     double sum = 0.0;

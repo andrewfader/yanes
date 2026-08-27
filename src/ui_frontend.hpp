@@ -62,7 +62,7 @@ const char* gui_help(clap_id id) {
     case kLayerMode:return "Adds a tuned or noise-based companion oscillator to every voice.";
     case kLayerMix:return "Balances the added layer against the primary oscillator.";
     case kTempoSync:return "Locks the arpeggiator and echo timing to host tempo.";
-    case kStrictHardware:return "Restricts stack channels to hardware-like monophonic retriggering.";
+    case kStrictHardware:return "Hardware-like stack retriggering, and raw (non-bandlimited) NES pulses into the mixer.";
     case kSequenceLength:return "Sets how many user pitch steps play before the sequence repeats.";
     case kDpcmBaseKey:return "Maps this MIDI note to sample slot 1; following notes select following slots.";
     case kDpcmLoopMask:return "Stores which of the sixteen DPCM slots repeat after reaching trim end.";
