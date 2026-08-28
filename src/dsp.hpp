@@ -161,11 +161,46 @@ inline uint32_t lfsr_clock(uint32_t state, unsigned tap, unsigned width) {
   return ((state >> 1U) | (feedback << (width - 1U))) & mask;
 }
 
+// DMG CH4 feeds bit0 XOR bit1 back into bit 14, and narrow mode mirrors that
+// same bit into bit 6 to shorten the period. The feedback must be XOR, not XNOR:
+// an XNOR register is absorbed by the all-ones state, which is exactly the value
+// the hardware loads on trigger, so the sequence would freeze into a DC level
+// the moment a real ROM started a noise note.
 inline uint32_t game_boy_lfsr_clock(uint32_t state, bool narrow) {
-  const uint32_t feedback = (state ^ (state >> 1U) ^ 1U) & 1U;
+  const uint32_t feedback = (state ^ (state >> 1U)) & 1U;
   state = (state >> 1U) | (feedback << 14U);
   if (narrow) state = (state & ~(1U << 6U)) | (feedback << 6U);
   return state & 0x7fffU;
+}
+
+// Game Boy CH3 plays 32 four-bit samples straight out of wave RAM (FF30-FF3F,
+// high nibble first). Unlike the shaped wavetables above this is not a
+// parameterized family: a register-driven render has to play back exactly the
+// bytes the sound driver wrote, so the table is an input rather than a shape id.
+inline float game_boy_wave_sample(double phase, const uint8_t* wave_ram) {
+  const int step = std::clamp(static_cast<int>(phase * 32.0), 0, 31);
+  const uint8_t byte = wave_ram[step >> 1];
+  const int nibble = (step & 1) ? (byte & 0x0f) : (byte >> 4);
+  return static_cast<float>(nibble / 7.5 - 1.0);
+}
+
+// NR32 attenuates CH3 by shifting the sample right: 0 mutes, 1 is full volume,
+// 2 is half, 3 is a quarter. There is no finer step on the hardware.
+inline float game_boy_wave_level(float sample, int volume_code) {
+  switch (std::clamp(volume_code, 0, 3)) {
+    case 0: return 0.0f;
+    case 1: return sample;
+    case 2: return sample * 0.5f;
+    default: return sample * 0.25f;
+  }
+}
+
+// HuC6280 channels play 32 unsigned five-bit wave-RAM samples. Register-driven
+// ROM replay supplies the exact RAM image instead of approximating it with one
+// of the musical shape controls used by the normal PCE preset.
+inline float pce_wave_sample(double phase, const uint8_t* wave_ram) {
+  const int step = std::clamp(static_cast<int>(phase * 32.0), 0, 31);
+  return static_cast<float>((wave_ram[step] & 0x1f) / 15.5 - 1.0);
 }
 
 inline uint32_t sega_psg_lfsr_clock(uint32_t state, bool white_noise) {

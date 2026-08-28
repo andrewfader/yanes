@@ -1,0 +1,36 @@
+diff --git a/Core/apu.c b/Core/apu.c
+index caa5451..0871bc1 100644
+--- a/Core/apu.c
++++ b/Core/apu.c
+@@ -1679,8 +1679,13 @@ static void nr43_write(GB_gameboy_t *gb, uint8_t new)
+     }
+ }
+ 
++GB_apu_register_callback_t GB_apu_register_callback = NULL;
++
+ void GB_apu_write(GB_gameboy_t *gb, uint8_t reg, uint8_t value)
+ {
++    if (GB_apu_register_callback) {
++        GB_apu_register_callback(gb, reg, value);
++    }
+     GB_apu_run(gb, true);
+     if (!gb->apu.global_enable && reg != GB_IO_NR52 && reg < GB_IO_WAV_START && (GB_is_cgb(gb) ||
+                                                                                 (
+diff --git a/Core/apu.h b/Core/apu.h
+index 604931e..c24da55 100644
+--- a/Core/apu.h
++++ b/Core/apu.h
+@@ -225,6 +225,13 @@ void GB_set_sample_rate_by_clocks(GB_gameboy_t *gb, double cycles_per_sample); /
+ void GB_set_highpass_filter_mode(GB_gameboy_t *gb, GB_highpass_mode_t mode);
+ void GB_set_interference_volume(GB_gameboy_t *gb, double volume);
+ void GB_apu_set_sample_callback(GB_gameboy_t *gb, GB_sample_callback_t callback);
++
++/* YANES oracle hook: fires on every APU register bus write, including wave RAM
++   (GB_IO_WAV_START..GB_IO_WAV_END), before SameBoy applies NR52 gating or the
++   DMG wave-RAM-while-active redirect. Callers therefore see the raw write the
++   game's sound driver issued, not the post-quirk value. */
++typedef void (*GB_apu_register_callback_t)(GB_gameboy_t *gb, uint8_t reg, uint8_t value);
++extern GB_apu_register_callback_t GB_apu_register_callback;
+ int GB_start_audio_recording(GB_gameboy_t *gb, const char *path, GB_audio_format_t format);
+ int GB_stop_audio_recording(GB_gameboy_t *gb);
+ uint8_t GB_get_channel_volume(GB_gameboy_t *gb, GB_channel_t channel);

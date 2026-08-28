@@ -78,6 +78,40 @@ into YANES. The bundled Furnace `Equinox Intro` demo produced 61,323 YM2612 writ
 correlation of 0.940756 in the development environment; this observation is deliberately not a
 hardcoded universal threshold because Furnace core selection and module features can differ.
 
+The ROM-driven Game Boy gate uses a patched SameBoy checkout to run an actual `.gb`/`.gbc`
+image once and capture both its reference audio and every APU register write. Build the capture
+side with `SAMEBOY_SRC=/path/to/SameBoy tools/build_gb_oracle.sh`, then run
+`tools/test_gb_rom_parity.sh /path/to/game.gb`. `yanes-gb-replay` independently decodes that
+register stream through YANES's pulse, wave-RAM, and LFSR primitives and emits a mix plus four
+isolated channels, so the gate identifies the diverging voice rather than hiding it in a mix.
+The required, small SameBoy instrumentation is in
+`third_party/sameboy-apu-register-log.patch`; no emulator source is incorporated into YANES.
+
+The PC Engine equivalent uses `tools/build_libretro_host.sh` and a Beetle PCE
+checkout patched with `third_party/beetle-pce-psg-register-log.patch`. Run
+`tools/test_pce_rom_parity.sh game.pce`; the core's frame-local timestamps are
+paired with the frontend frame index, then `yanes-pce-replay` reconstructs all
+six HuC6280 channels from the real ROM's exact frequency, balance, wave-RAM,
+DDA, noise, and channel-1-to-channel-0 LFO writes. Register events retain
+sub-sample timing, and the replay models the original HuC6280's unipolar DAC,
+ultrasonic wave accumulator, and zero-divider noise special case. ROM
+comparisons use the comparator's `rom` mode: energy
+contour and spectrum remain mandatory, while single-note YIN and boundary-onset
+rules (undefined for polyphonic continuous music) are deliberately omitted.
+
+NES uses the same libretro host with a Nestopia checkout patched by
+`third_party/nestopia-apu-register-log.patch`. Build it with
+`NESTOPIA_SRC=/path/to/nestopia tools/build_nes_oracle.sh`, then run
+`tools/test_nes_rom_parity.sh game.nes`; `yanes-nes-replay` cycle-steps the
+captured 2A03 pulse, triangle, noise, DMC, frame-counter, length, sweep, and
+envelope state before applying the published nonlinear mixer curves.
+
+All three real-ROM lanes can be enrolled in CTest with `-DYANES_GB_ROM=...`,
+`-DYANES_PCE_ROM=...`, and `-DYANES_NES_ROM=...`. The ROMs and patched cores
+stay external. The scripts reject silent captures and compare a smoothed
+musical-energy contour plus log-band spectrum, avoiding a misleading raw-wave
+correlation between emulators with different analog filters and reset phase.
+
 POKEY modes now clock distinct 4-, 5-, 9-, and 17-bit polynomial generators and provide eight
 AUDC-style tone/noise gating combinations. Fast clock selection and strict-mode 16-bit channel
 pairing expand the earlier single-LFSR model. SID modes now combine quantized 12-bit triangle,

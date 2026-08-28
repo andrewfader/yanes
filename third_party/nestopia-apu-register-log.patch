@@ -1,0 +1,74 @@
+diff --git a/source/core/NstCpu.cpp b/source/core/NstCpu.cpp
+index 03ed29c..bcaec93 100644
+--- a/source/core/NstCpu.cpp
++++ b/source/core/NstCpu.cpp
+@@ -24,6 +24,7 @@
+ 
+ #include <cstring>
+ #include <cstdlib>
++#include <cstdio>
+ #include "NstCpu.hpp"
+ #include "NstHook.hpp"
+ #include "NstState.hpp"
+@@ -35,6 +36,38 @@ namespace Nes
+ 	{
+ 		dword Cpu::logged = 0;
+ 
++		// YANES oracle hook. Every 2A03 register write reaches the bus through
++		// Cpu::PokeBus, so one probe here captures the whole $4000-$4017 stream
++		// without touching Apu's fourteen poke handlers. The frontend publishes
++		// YANES_FRAME_INDEX before each retro_run(); pairing it with the
++		// frame-local cycle count and the frame length gives a unit-agnostic
++		// timeline that the replay can convert to samples.
++		static std::FILE* yanesApuLog = NULL;
++		static bool yanesApuLogTried = false;
++
++		void Cpu::YanesLogApuWrite(uint address,uint data,Cycle count,Cycle frame)
++		{
++			if (!yanesApuLogTried)
++			{
++				const char* const path = std::getenv( "YANES_APU_LOG" );
++				yanesApuLogTried = true;
++				if (path)
++				{
++					yanesApuLog = std::fopen( path, "w" );
++					if (yanesApuLog)
++						std::fprintf( yanesApuLog, "# columns: frame cycle_in_frame frame_cycles reg value\n" );
++				}
++			}
++			if (yanesApuLog)
++			{
++				const char* const index = std::getenv( "YANES_FRAME_INDEX" );
++				std::fprintf( yanesApuLog, "%s %lu %lu %02x %02x\n",
++				              index ? index : "0",
++				              (unsigned long) count, (unsigned long) frame,
++				              (unsigned) (address & 0xFFFF), (unsigned) (data & 0xFF) );
++			}
++		}
++
+ 		void (Cpu::*const Cpu::opcodes[0x100])() =
+ 		{
+ 			&Cpu::op0x00, &Cpu::op0x01, &Cpu::op0x02, &Cpu::op0x03,
+@@ -879,6 +912,8 @@ namespace Nes
+ 		inline void Cpu::PokeBus(const uint address,const uint data)
+ 		{
+ 			busData = busDataInternal = data & 0xFF;
++			if (address - 0x4000U < 0x18U)
++				YanesLogApuWrite( address, data, cycles.count, cycles.frame );
+ 			map.Poke8( address, data );
+ 		}
+ 
+diff --git a/source/core/NstCpu.hpp b/source/core/NstCpu.hpp
+index 8df14b2..0546c0b 100644
+--- a/source/core/NstCpu.hpp
++++ b/source/core/NstCpu.hpp
+@@ -74,6 +74,9 @@ namespace Nes
+ 			uint Peek(uint) const;
+ 			void Poke(uint,uint) const;
+ 
++			// YANES oracle hook: see NstCpu.cpp.
++			static void YanesLogApuWrite(uint,uint,Cycle,Cycle);
++
+ 			bool IsOddCycle() const;
+ 			bool IsWriteCycle(Cycle) const;
+ 

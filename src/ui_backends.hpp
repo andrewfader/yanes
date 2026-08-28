@@ -305,8 +305,8 @@ LRESULT CALLBACK gui_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
   switch (msg) {
     case WM_PAINT: gui_paint(p); return 0;
     case WM_SIZE:
-      p->gui_width = static_cast<uint32_t>(std::max(1, LOWORD(lparam)));
-      p->gui_height = static_cast<uint32_t>(std::max(1, HIWORD(lparam)));
+      p->gui_width = static_cast<uint32_t>(std::max(1, static_cast<int>(LOWORD(lparam))));
+      p->gui_height = static_cast<uint32_t>(std::max(1, static_cast<int>(HIWORD(lparam))));
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     case WM_TIMER: {
@@ -373,7 +373,7 @@ bool gui_create(const clap_plugin_t* plugin, const char* api, bool floating) {
   wc.cbSize = sizeof(wc);
   wc.lpfnWndProc = gui_wndproc;
   wc.hInstance = GetModuleHandleW(nullptr);
-  wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(OCR_NORMAL));
   wc.lpszClassName = L"YANES_Editor_0_2_0";
   RegisterClassExW(&wc);
   p->hwnd = CreateWindowExW(0, wc.lpszClassName, L"YANES", WS_CHILD,

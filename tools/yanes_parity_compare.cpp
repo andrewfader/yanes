@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <numeric>
 #include <numbers>
 #include <vector>
 
@@ -74,6 +75,15 @@ static std::vector<double> resample(const Wav &source, uint32_t rate,
 }
 
 static void dc_block(std::vector<double> &x) {
+  // Per-channel emulator captures can carry the Game Boy DAC's static bias.
+  // Starting the one-pole blocker at zero turns that harmless bias into a fake
+  // onset; center the whole excerpt first so silent isolated channels remain
+  // silent while the blocker still removes time-varying coupling drift.
+  if (!x.empty()) {
+    const double mean = std::accumulate(x.begin(), x.end(), 0.0) /
+                        static_cast<double>(x.size());
+    for (double& s : x) s -= mean;
+  }
   double prev_x = 0, prev_y = 0;
   for (double &s : x) {
     const double y = s - prev_x + 0.995 * prev_y;
@@ -101,13 +111,13 @@ static std::vector<double> smooth(const std::vector<double> &x, size_t half) {
   if (!half || x.size() < 2 * half + 1)
     return x;
   std::vector<double> out(x.size());
+  std::vector<double> prefix(x.size() + 1);
+  std::partial_sum(x.begin(), x.end(), prefix.begin() + 1);
   for (size_t i = 0; i < x.size(); ++i) {
     const size_t lo = i > half ? i - half : 0,
                  hi = std::min(x.size() - 1, i + half);
-    double sum = 0;
-    for (size_t k = lo; k <= hi; ++k)
-      sum += x[k];
-    out[i] = sum / static_cast<double>(hi - lo + 1);
+    out[i] = (prefix[hi + 1] - prefix[lo]) /
+             static_cast<double>(hi - lo + 1);
   }
   return out;
 }
@@ -381,10 +391,22 @@ struct Report {
 };
 
 static Report compare(std::vector<double> a, std::vector<double> b,
-                      uint32_t rate, bool noise, double minimum) {
+                      uint32_t rate, bool noise, double minimum, bool rom = false) {
   Report r{};
   dc_block(a);
   dc_block(b);
+  const auto rms = [](const std::vector<double>& x) {
+    double sum = 0;
+    for (double value : x) sum += value * value;
+    return x.empty() ? 0.0 : std::sqrt(sum / x.size());
+  };
+  // Muted emulator channels often retain a constant DAC bias. Once centered,
+  // two genuinely silent sides are a valid isolated-channel pass.
+  if (rms(a) < 1e-4 && rms(b) < 1e-4) {
+    r.env = r.spectral = 1.0;
+    r.ok = true;
+    return r;
+  }
   constexpr size_t hop = 256;
   const Active pre_a = active(envelope(a, hop)), pre_b = active(envelope(b, hop));
   int lag = static_cast<int>(pre_b.first) - static_cast<int>(pre_a.first);
@@ -399,7 +421,13 @@ static Report compare(std::vector<double> a, std::vector<double> b,
   // LFSRs agree on the shape of a note but their block-to-block RMS jitter is
   // uncorrelated by construction, so a raw 5 ms envelope scores a perfectly good
   // noise channel near zero. Onset and offset still use the unsmoothed envelope.
-  r.env = correlation(smooth(ea, noise ? 8 : 2), smooth(eb, noise ? 8 : 2));
+  // ROM mixes also contain phase beating between several channels.  That is
+  // not a gain-envelope difference and will vary between two otherwise-correct
+  // oscillators whose reset phases are not observable in the register stream.
+  // A ~370 ms contour retains musical dynamics while averaging that beating.
+  const size_t envelope_half_window = rom ? 32 : (noise ? 8 : 2);
+  r.env = correlation(smooth(ea, envelope_half_window),
+                      smooth(eb, envelope_half_window));
   const Active aa = active(ea), ab = active(eb);
   r.onset = std::abs(static_cast<double>(aa.first) - static_cast<double>(ab.first)) *
             static_cast<double>(hop) / static_cast<double>(rate);
@@ -422,8 +450,13 @@ static Report compare(std::vector<double> a, std::vector<double> b,
       r.cents = 999;
     }
   }
-  r.ok = r.env >= minimum && r.spectral >= minimum && r.onset <= 0.05 &&
-         r.offset <= 0.05 && (noise || r.cents <= 20);
+  // A ROM excerpt is a continuous multi-voice program, not a single-note
+  // fixture: one side can legitimately be active at both file boundaries, so
+  // onset/offset and monophonic YIN are undefined. It still has to clear both
+  // the time-varying energy contour and log-band spectrum gates.
+  r.ok = r.env >= minimum && r.spectral >= minimum &&
+         (rom || (r.onset <= 0.05 && r.offset <= 0.05 &&
+                  (noise || r.cents <= 20)));
   return r;
 }
 
@@ -546,11 +579,12 @@ int main(int argc, char **argv) {
     return self_test();
   if (argc != 5) {
     std::cerr << "usage: yanes-parity-compare reference.wav candidate.wav "
-                 "tonal|noise minimum-similarity\n"
+                 "tonal|noise|rom minimum-similarity\n"
               << "       yanes-parity-compare --self-test\n";
     return 2;
   }
-  const bool noise = std::strcmp(argv[3], "noise") == 0;
+  const bool rom = std::strcmp(argv[3], "rom") == 0;
+  const bool noise = rom || std::strcmp(argv[3], "noise") == 0;
   if (!noise && std::strcmp(argv[3], "tonal"))
     return 2;
   char *threshold_end = nullptr;
@@ -565,7 +599,7 @@ int main(int argc, char **argv) {
                                          static_cast<double>(a.rate) / raw.rate));
   a.mono.resize(frames);
   auto b = resample(raw, a.rate, frames);
-  const Report r = compare(std::move(a.mono), std::move(b), a.rate, noise, minimum);
+  const Report r = compare(std::move(a.mono), std::move(b), a.rate, noise, minimum, rom);
   print_report(r, noise);
   return r.ok ? 0 : 1;
 }

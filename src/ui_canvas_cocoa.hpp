@@ -28,7 +28,8 @@ class CocoaCanvas final : public Canvas {
 
   void fill_rect(int x, int y, int width, int height, uint32_t rgb) override {
     [color(rgb) set];
-    NSRectFill(NSMakeRect(sx(x), sy(y), std::max(1, sx(width)), std::max(1, sy(height))));
+    NSRectFill(NSMakeRect(sx(x), sy(y), std::max<CGFloat>(1.0, sx(width)),
+                              std::max<CGFloat>(1.0, sy(height))));
   }
 
   void draw_line(int x1, int y1, int x2, int y2, uint32_t rgb) override {
@@ -49,8 +50,9 @@ class CocoaCanvas final : public Canvas {
 
   void fill_circle(int x, int y, int diameter, uint32_t rgb) override {
     [color(rgb) set];
-    [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(sx(x), sy(y), std::max(1, sx(diameter)),
-                                                       std::max(1, sy(diameter)))] fill];
+    [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(
+        sx(x), sy(y), std::max<CGFloat>(1.0, sx(diameter)),
+        std::max<CGFloat>(1.0, sy(diameter)))] fill];
   }
 
  protected:

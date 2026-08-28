@@ -113,6 +113,26 @@ target_include_directories(yanes-nes-rom-emu PRIVATE "${clap_SOURCE_DIR}/include
 target_link_libraries(yanes-nes-rom-emu PRIVATE ${CMAKE_DL_LIBS})
 yanes_warnings(yanes-nes-rom-emu)
 
+add_executable(yanes-gb-replay tools/yanes_gb_replay.cpp)
+target_compile_features(yanes-gb-replay PRIVATE cxx_std_20)
+yanes_warnings(yanes-gb-replay)
+install(TARGETS yanes-gb-replay RUNTIME DESTINATION bin)
+
+add_executable(yanes-pce-replay tools/yanes_pce_replay.cpp)
+target_compile_features(yanes-pce-replay PRIVATE cxx_std_20)
+yanes_warnings(yanes-pce-replay)
+install(TARGETS yanes-pce-replay RUNTIME DESTINATION bin)
+
+add_executable(yanes-nes-replay tools/yanes_nes_replay.cpp)
+target_compile_features(yanes-nes-replay PRIVATE cxx_std_20)
+yanes_warnings(yanes-nes-replay)
+install(TARGETS yanes-nes-replay RUNTIME DESTINATION bin)
+
+# The capture sides are intentionally not built here: they link against patched
+# external SameBoy and Nestopia checkouts. tools/build_gb_oracle.sh and
+# tools/build_nes_oracle.sh own those reproducible builds, while these targets
+# keep the independent YANES replays in normal CI.
+
 add_executable(vgm_tests tests/vgm_tests.cpp)
 target_compile_features(vgm_tests PRIVATE cxx_std_20)
 yanes_warnings(vgm_tests)
@@ -121,6 +141,28 @@ install(PROGRAMS tools/compare_furnace.sh DESTINATION bin RENAME yanes-compare-f
 
 enable_testing()
 add_test(NAME parity_compare_fairness COMMAND yanes-parity-compare --self-test)
+
+# Optional real-ROM hardware-oracle gates. ROM images and patched emulator cores
+# remain external; setting a ROM path makes the corresponding lane visible to
+# CTest without bundling copyrighted data into this project.
+set(YANES_GB_ROM "" CACHE FILEPATH "Game Boy ROM for the SameBoy parity gate")
+set(YANES_PCE_ROM "" CACHE FILEPATH "PC Engine ROM for the Beetle PCE parity gate")
+set(YANES_NES_ROM "" CACHE FILEPATH "NES ROM for the Nestopia parity gate")
+if(YANES_GB_ROM)
+  add_test(NAME gb_rom_parity COMMAND
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_gb_rom_parity.sh ${YANES_GB_ROM})
+  set_tests_properties(gb_rom_parity PROPERTIES TIMEOUT 300)
+endif()
+if(YANES_PCE_ROM)
+  add_test(NAME pce_rom_parity COMMAND
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_pce_rom_parity.sh ${YANES_PCE_ROM})
+  set_tests_properties(pce_rom_parity PROPERTIES TIMEOUT 120)
+endif()
+if(YANES_NES_ROM)
+  add_test(NAME nes_rom_parity COMMAND
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nes_rom_parity.sh ${YANES_NES_ROM})
+  set_tests_properties(nes_rom_parity PROPERTIES TIMEOUT 120)
+endif()
 add_executable(yanes-fixture-render tests/furnace_render.cpp)
 target_compile_features(yanes-fixture-render PRIVATE cxx_std_20)
 yanes_warnings(yanes-fixture-render)
@@ -232,8 +274,8 @@ if(YANES_FURNACE_EXECUTABLE)
         "FURNACE=${YANES_FURNACE_EXECUTABLE};YANES_FIXTURE_RENDER=$<TARGET_FILE:yanes-fixture-render>;YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
     endforeach()
   endforeach()
-  add_test(NAME nes_rom_parity_suite COMMAND
-    ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nes_rom_parity.sh)
-  set_tests_properties(nes_rom_parity_suite PROPERTIES TIMEOUT 120 ENVIRONMENT
+  add_test(NAME nes_preset_gate COMMAND
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nes_preset_gate.sh)
+  set_tests_properties(nes_preset_gate PROPERTIES TIMEOUT 120 ENVIRONMENT
     "YANES_FURNACE_EXECUTABLE=${YANES_FURNACE_EXECUTABLE};YANES_FIXTURE_RENDER=$<TARGET_FILE:yanes-fixture-render>;YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
 endif()

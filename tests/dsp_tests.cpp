@@ -40,6 +40,33 @@ int main() {
 
   uint32_t gb = 1;
   for (int i = 0; i < 1000; ++i) gb = yanes::game_boy_lfsr_clock(gb, false);
+  // The register must keep moving from the value the hardware loads on trigger.
+  // "Not zero and in range" is satisfied by a frozen register, so count output
+  // transitions instead: an absorbing state scores zero and a real sequence
+  // lands near half the clocks.
+  for (bool narrow : {false, true}) {
+    uint32_t state = 0x7fff;
+    uint32_t previous = state & 1U;
+    int transitions = 0;
+    for (int i = 0; i < 4096; ++i) {
+      state = yanes::game_boy_lfsr_clock(state, narrow);
+      transitions += (state & 1U) != previous;
+      previous = state & 1U;
+    }
+    assert(transitions > 1024);
+  }
+  const uint8_t gb_wave[16] = {0x0f, 0x18, 0x27, 0x36, 0x45, 0x54, 0x63, 0x72,
+                               0x81, 0x90, 0xaf, 0xbe, 0xcd, 0xdc, 0xeb, 0xfa};
+  assert(yanes::game_boy_wave_sample(0.0, gb_wave) == -1.0f);
+  assert(yanes::game_boy_wave_sample(1.0 / 32.0, gb_wave) == 1.0f);
+  assert(yanes::game_boy_wave_level(1.0f, 0) == 0.0f);
+  assert(yanes::game_boy_wave_level(1.0f, 2) == 0.5f);
+  assert(yanes::game_boy_wave_level(1.0f, 3) == 0.25f);
+  uint8_t pce_wave[32]{};
+  pce_wave[0] = 0;
+  pce_wave[1] = 31;
+  assert(yanes::pce_wave_sample(0.0, pce_wave) == -1.0f);
+  assert(yanes::pce_wave_sample(1.0 / 32.0, pce_wave) == 1.0f);
   assert(gb != 0 && gb < 0x8000);
   uint32_t sms_white = 1, sms_periodic = 1;
   for (int i = 0; i < 100; ++i) {

@@ -1,0 +1,43 @@
+diff --git a/mednafen/hw_sound/pce_psg/pce_psg.cpp b/mednafen/hw_sound/pce_psg/pce_psg.cpp
+index feca267..56e1048 100644
+--- a/mednafen/hw_sound/pce_psg/pce_psg.cpp
++++ b/mednafen/hw_sound/pce_psg/pce_psg.cpp
+@@ -19,6 +19,8 @@
+  */
+ 
+ #include <mednafen/mednafen.h>
++#include <stdio.h>
++#include <stdlib.h>
+ #include "pce_psg.h"
+@@ -408,10 +410,34 @@ int32 PCE_PSG::GetVL(const int chnum, const int lr)
+ 	return(vol_reduction);
+ }
+ 
++// YANES oracle hook. The frontend publishes YANES_FRAME_INDEX immediately
++// before retro_run(); combining it with the core's frame-local master-clock
++// timestamp produces an unambiguous timeline without changing libretro ABI.
++static FILE *yanes_psg_log = NULL;
++static bool yanes_psg_log_tried = false;
++
+ void PCE_PSG::Write(int32 timestamp, uint8 A, uint8 V)
+ {
+ 	A &= 0x0F;
++	if(!yanes_psg_log_tried)
++	{
++		const char *path = getenv("YANES_PSG_LOG");
++		yanes_psg_log_tried = true;
++		if(path)
++		{
++			yanes_psg_log = fopen(path, "w");
++			if(yanes_psg_log)
++				fprintf(yanes_psg_log, "# columns: frame local_master_clock reg value selected_channel\n");
++		}
++	}
++	if(yanes_psg_log)
++	{
++		const char *frame = getenv("YANES_FRAME_INDEX");
++		fprintf(yanes_psg_log, "%s %d %02x %02x %u\n",
++		        frame ? frame : "0", timestamp, A, V, (unsigned)select);
++	}
+ 
+ 	if(A == 0x00)
