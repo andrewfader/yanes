@@ -190,7 +190,7 @@ target_link_libraries(plugin_smoke PRIVATE ${CMAKE_DL_LIBS})
 add_test(NAME plugin_smoke COMMAND plugin_smoke $<TARGET_FILE:yanes_clap>)
 
 # Behavioural suites that drive the built plug-in through the public CLAP interfaces.
-foreach(suite note_tests state_tests bank_tests)
+foreach(suite note_tests state_tests bank_tests preset_tests)
   add_executable(${suite} tests/${suite}.cpp)
   target_compile_features(${suite} PRIVATE cxx_std_20)
   yanes_warnings(${suite})
