@@ -405,8 +405,8 @@ struct OnePolePair {
   yanes::replay::OnePole low, high;
   OnePolePair() {
     constexpr double kHrRate = kPsgClock / 4.0;
-    low.cutoff(kHrRate / 4.0 / (2.0 * M_PI), kSubRate);
-    high.cutoff(kHrRate / 16384.0 / (2.0 * M_PI), kSubRate);
+    low.cutoff(kHrRate / 4.0 / (2.0 * yanes::replay::kPi), kSubRate);
+    high.cutoff(kHrRate / 16384.0 / (2.0 * yanes::replay::kPi), kSubRate);
   }
   double process(double x) { return high.high(low.low(x)); }
 };

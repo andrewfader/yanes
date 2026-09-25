@@ -22,6 +22,9 @@
 
 namespace yanes::replay {
 
+// MSVC's <cmath> only exposes M_PI behind _USE_MATH_DEFINES, so spell it out.
+inline constexpr double kPi = 3.14159265358979323846;
+
 // Exact area under one channel's output: the level is held between events, so
 // each span contributes level * duration and no edge is ever missed.
 struct Integrator {
@@ -48,7 +51,7 @@ struct OnePole {
   double state{0};
   double alpha{1};
   void cutoff(double hz, double rate) {
-    alpha = 1.0 - std::exp(-2.0 * M_PI * hz / rate);
+    alpha = 1.0 - std::exp(-2.0 * kPi * hz / rate);
   }
   double low(double x) {
     state += (x - state) * alpha;
@@ -75,8 +78,8 @@ struct Decimator {
     for (int i = 0; i < kTaps; ++i) {
       const double x = i - (kTaps - 1) / 2.0;
       const double sinc =
-          x == 0.0 ? 2.0 * band : std::sin(2.0 * M_PI * band * x) / (M_PI * x);
-      const double window = 0.54 - 0.46 * std::cos(2.0 * M_PI * i / (kTaps - 1));
+          x == 0.0 ? 2.0 * band : std::sin(2.0 * kPi * band * x) / (kPi * x);
+      const double window = 0.54 - 0.46 * std::cos(2.0 * kPi * i / (kTaps - 1));
       coefficient[i] = sinc * window;
       sum += coefficient[i];
     }
