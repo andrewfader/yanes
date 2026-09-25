@@ -392,6 +392,143 @@ void test_mod_wheel_and_pitch_bend(const Library& library) {
   plugin->destroy(plugin);
 }
 
+// Estimates the fundamental of a steady tone from rising zero crossings, interpolated
+// to sub-sample precision, over `blocks` rendered blocks.
+double measure_hz(Runner& runner, int blocks) {
+  std::vector<float> samples;
+  for (int i = 0; i < blocks; ++i) {
+    runner.run();
+    samples.insert(samples.end(), runner.left().begin(), runner.left().end());
+  }
+  double mean = 0.0;
+  for (float s : samples) mean += s;
+  mean /= static_cast<double>(samples.size());
+  double first = -1.0, last = -1.0;
+  int crossings = 0;
+  for (size_t i = 1; i < samples.size(); ++i) {
+    const double a = samples[i - 1] - mean, b = samples[i] - mean;
+    if (a < 0.0 && b >= 0.0) {
+      const double at = static_cast<double>(i - 1) + a / (a - b);
+      if (first < 0.0) first = at;
+      last = at;
+      ++crossings;
+    }
+  }
+  assert(crossings > 2);
+  return kRate * (crossings - 1) / (last - first);
+}
+
+// A full upward wheel movement must bend by exactly the configured range, so glides of
+// an octave or two can be played from the wheel.
+void test_pitch_bend_range(const Library& library) {
+  const clap_plugin_t* plugin = library.create();
+  const clap_id range = find_param(plugin, "Pitch bend range");
+  assert(param_info(plugin, range).default_value == 2.0);
+  {
+    Runner runner(plugin, kRate, kBlock);
+    runner.set(find_param(plugin, "Waveform"), 1);  // NES triangle: steady, no DC offset
+    Events on;
+    on.push(midi_event(0x90, 57, 100));  // A3, 220 Hz
+    runner.run(&on);
+    runner.settle(4);
+    const double unbent = measure_hz(runner, 16);
+    assert(std::abs(unbent / 220.0 - 1.0) < 0.01);
+
+    Events up;
+    up.push(midi_event(0xe0, 127, 127));  // 16383: maximum upward bend
+    runner.run(&up);
+    for (const double semitones : {2.0, 12.0, 24.0, 0.0}) {
+      runner.set(range, semitones);
+      runner.settle(2);
+      // 16383 is one step short of a full +8192, hence the (8191/8192) factor.
+      const double expected = unbent * std::pow(2.0, semitones * (8191.0 / 8192.0) / 12.0);
+      const double actual = measure_hz(runner, 16);
+      if (std::abs(actual / expected - 1.0) > 0.01) {
+        std::fprintf(stderr, "bend range %.0f: %.2f Hz, expected %.2f Hz\n", semitones, actual, expected);
+        assert(false);
+      }
+    }
+  }
+  // Selecting a preset resets the sound, not the performer's controller setup.
+  {
+    Events events;
+    events.push(param_event(range, 12));
+    events.push(param_event(find_param(plugin, "Preset"), 1));
+    flush(plugin, events);
+    assert(param(plugin, range) == 12);
+  }
+  plugin->destroy(plugin);
+}
+
+// Fraction of a window's samples above the window's mean: a pulse's duty cycle, whatever DC
+// offset the output filters leave.
+double high_fraction(const std::vector<float>& samples, size_t from, size_t to) {
+  double mean = 0.0;
+  for (size_t i = from; i < to; ++i) mean += samples[i];
+  mean /= static_cast<double>(to - from);
+  size_t high = 0;
+  for (size_t i = from; i < to; ++i) high += samples[i] > mean ? 1U : 0U;
+  return static_cast<double>(high) / static_cast<double>(to - from);
+}
+
+// Renders one note and returns the left channel.
+std::vector<float> render_note(Runner& runner, int channel, int key, int blocks) {
+  Events on;
+  on.push(midi_event(0x90 | channel, key, 100));
+  std::vector<float> samples;
+  runner.run(&on);
+  samples.insert(samples.end(), runner.left().begin(), runner.left().end());
+  for (int i = 1; i < blocks; ++i) {
+    runner.run();
+    samples.insert(samples.end(), runner.left().begin(), runner.left().end());
+  }
+  return samples;
+}
+
+// The duty sequence steps the pulse width like a tracker duty macro: 12.5% then 50%, looping or
+// holding the last step, for both the band-limited pulse and the NES stack's APU pulse.
+void test_duty_sequence(const Library& library) {
+  struct Case { int waveform, channel; const char* name; };
+  for (const Case c : {Case{0, 0, "NES pulse"}, Case{10, 0, "Game Boy pulse"}, Case{18, 0, "NES stack pulse 1"}, Case{18, 1, "NES stack pulse 2"}}) {
+    for (const int mode : {1, 2}) {
+      const clap_plugin_t* plugin = library.create();
+      {
+        Runner runner(plugin, kRate, kBlock);
+        runner.set(find_param(plugin, "Waveform"), c.waveform);
+        runner.set(find_param(plugin, "Pulse duty"), 3);  // must be overridden by the steps
+        runner.set(find_param(plugin, "Duty sequence"), mode);
+        runner.set(find_param(plugin, "Duty length"), 2);
+        runner.set(find_param(plugin, "Duty step rate"), 10);  // 4800 samples per step
+        runner.set(find_param(plugin, "Duty step 1"), 0);
+        runner.set(find_param(plugin, "Duty step 2"), 2);
+        const std::vector<float> samples = render_note(runner, c.channel, 57, 32);  // 16384 samples
+        // Measure the middle of each step, away from the attack and the step edges.
+        const double first = high_fraction(samples, 1200, 4400);
+        const double second = high_fraction(samples, 6000, 9200);
+        const double third = high_fraction(samples, 10800, 14000);
+        const auto near = [](double actual, double duty) { return std::abs(actual - duty) < 0.07; };
+        if (!near(first, 0.125) || !near(second, 0.5) || !near(third, mode == 1 ? 0.125 : 0.5)) {
+          std::fprintf(stderr, "%s, mode %d: duty %.3f, %.3f, %.3f\n", c.name, mode, first, second, third);
+          assert(false);
+        }
+      }
+      plugin->destroy(plugin);
+    }
+  }
+  // Off means the Pulse duty parameter alone decides, as before.
+  const clap_plugin_t* plugin = library.create();
+  {
+    Runner runner(plugin, kRate, kBlock);
+    runner.set(find_param(plugin, "Waveform"), 0);
+    runner.set(find_param(plugin, "Pulse duty"), 2);
+    runner.set(find_param(plugin, "Duty step 1"), 0);
+    const std::vector<float> samples = render_note(runner, 0, 57, 32);
+    assert(std::abs(high_fraction(samples, 1200, 4400) - 0.5) < 0.07);
+    assert(std::abs(high_fraction(samples, 10800, 14000) - 0.5) < 0.07);
+  }
+  plugin->destroy(plugin);
+}
+
 void test_channel_volume(const Library& library) {
   const clap_plugin_t* plugin = library.create();
   {
@@ -659,6 +796,8 @@ int main(int argc, char** argv) {
   test_panic_controllers(library);
   test_panic_is_per_channel(library);
   test_mod_wheel_and_pitch_bend(library);
+  test_pitch_bend_range(library);
+  test_duty_sequence(library);
   test_channel_volume(library);
   test_unhandled_midi_is_ignored(library);
   test_polyphony_and_voice_stealing(library);

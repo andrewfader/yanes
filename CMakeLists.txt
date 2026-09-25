@@ -175,6 +175,14 @@ target_compile_features(dsp_tests PRIVATE cxx_std_20)
 yanes_enable_assertions(dsp_tests)
 add_test(NAME dsp_tests COMMAND dsp_tests)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Offscreen editor renders for layout review; not a test, since it needs an X display.
+  add_executable(yanes-ui-preview tools/ui_preview.cpp)
+  target_compile_features(yanes-ui-preview PRIVATE cxx_std_20)
+  target_include_directories(yanes-ui-preview PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(yanes-ui-preview PRIVATE X11::X11 PkgConfig::XFT)
+endif()
+
 add_executable(ui_tests tests/ui_tests.cpp)
 target_compile_features(ui_tests PRIVATE cxx_std_20)
 yanes_warnings(ui_tests)

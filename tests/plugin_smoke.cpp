@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
   const auto* tail = static_cast<const clap_plugin_tail_t*>(plugin->get_extension(plugin, CLAP_EXT_TAIL));
   assert(audio && audio->count(plugin, false) == 1 && audio->count(plugin, true) == 0);
   assert(notes && notes->count(plugin, true) == 1);
-  assert(params && params->count(plugin) == 79);
+  assert(params && params->count(plugin) == 91);
   assert(latency && latency->get(plugin) == 0);
   assert(tail);
 #ifdef __linux__
@@ -129,6 +129,17 @@ int main(int argc, char** argv) {
   assert(gui->set_size(plugin,1920,900));assert(gui->get_size(plugin,&gui_width,&gui_height));assert(gui_width==1920&&gui_height==900);
   assert(!gui->set_size(plugin,800,600));assert(gui->set_size(plugin,1600,1050));
   for(uint32_t i=0;i<params->count(plugin);++i){clap_param_info_t info{};assert(params->get_info(plugin,i,&info));assert(info.id==i);assert(info.name[0]&&info.module[0]);char text[128]{};assert(params->value_to_text(plugin,i,info.default_value,text,sizeof(text)));assert(text[0]);}
+  // Whatever the plug-in displays, it must parse back: hosts offer that text for typed entry.
+  for(uint32_t i=0;i<params->count(plugin);++i){
+    clap_param_info_t info{};assert(params->get_info(plugin,i,&info));
+    for(const double value:{info.min_value,info.default_value,info.max_value}){
+      char text[128]{};assert(params->value_to_text(plugin,i,value,text,sizeof(text)));
+      double parsed=-1.0e300;
+      if(!params->text_to_value(plugin,i,text,&parsed)){std::fprintf(stderr,"'%s' (%s) does not parse\n",text,info.name);assert(false);}
+      const double tolerance=(info.flags&CLAP_PARAM_IS_STEPPED)?0.0:(info.max_value-info.min_value)*0.01;
+      if(std::abs(parsed-value)>tolerance){std::fprintf(stderr,"'%s' (%s) parsed to %g, expected %g\n",text,info.name,parsed,value);assert(false);}
+    }
+  }
   const auto* voices=static_cast<const clap_plugin_voice_info_t*>(plugin->get_extension(plugin,CLAP_EXT_VOICE_INFO));
   clap_voice_info_t voice_info{};assert(voices&&voices->get(plugin,&voice_info)&&voice_info.voice_count==16&&voice_info.voice_capacity==16);
 #ifdef __linux__

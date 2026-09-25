@@ -19,8 +19,8 @@ consecutive MIDI notes and can be looped, trimmed, and saved in CLAP project sta
 
 The current instrument provides 12.5%, 25%, 50%, and 75% band-limited pulse waves, the NES
 32-step triangle waveform, and the 2A03's 32,767-step and 93-step noise LFSRs with all 16 timer
-periods. It includes 16-voice polyphony, velocity, attack/release, tuning, portamento, automation,
-and project-state persistence.
+periods. It includes 16-voice polyphony, velocity, attack/release, tuning, portamento, a pitch-bend
+range of up to 48 semitones, automation, and project-state persistence.
 
 Expansion-audio oscillator models include VRC6 pulse and saw, Famicom Disk System wavetable,
 Namco 163 wavetable, VRC7-style two-operator FM, and Sunsoft 5B tone. Their **Shape**, **FM ratio**,
@@ -202,23 +202,36 @@ Trick, Hyper Arpeggio Lead, Duty-Cycle Lead, Fake Echo Lead, Octave Power Bass, 
 They are inspired by general tracker and cartridge-era techniques and contain no game samples or
 extracted instrument data.
 
-The embedded editor opens at 1600 x 1050 and can be freely resized down to
-960 x 630. Its default 32-pixel font scales continuously with the window (with a
-22-pixel minimum), and its controls, visualizations, and mouse hit-testing scale with it. It presents five spacious pages: Chip, Hardware,
-Synth, Sequence, and FM/Bank. It includes a lock-free live output oscilloscope and compact spectrum
-display, a wavetable preview, clickable eight-step pitch editor, FM routing display, and sixteen-slot
-DPCM occupancy map. Clicking a parameter rail updates
-the engine with a complete CLAP begin/value/end gesture. Controls support click-and-drag editing,
-mouse-wheel fine adjustment, and right-click reset; larger tabs, rails, value fields, and channel
-or bank targets make the editor easier to scan and operate. Host automation and native Bitwig
-parameter changes update the same atomic parameter state and trigger an editor redraw, so both
-views remain synchronized. Bitwig also
-renders every CLAP parameter in its native device panel, which remains a dependable fallback and
-provides its usual modulation and automation workflow. Linux uses X11/Xft (including under
-XWayland). Windows uses GDI. macOS uses a flipped Cocoa view.
+The embedded editor opens at 1600 x 1050 and can be freely resized down to 960 x 630; text,
+controls, and hit-testing scale with the window. Six pages group controls by what you are
+adjusting — Voice, Sequence, Synth, FM, Hardware, and FX + TV — in collapsible cards, with the
+preset selector always in the header. Controls that do nothing for the current sound source stay
+in place but are dimmed, so the layout never jumps when the source changes.
 
-Stepped value fields include large previous/next targets, so browsing the 58 sound sources and
-49 presets does not require landing on an exact position along a rail. MIDI CC7 controls volume
+- **Knobs**: drag up or down (Shift for fine), double-click, Ctrl/Cmd-click, or right-click to
+  reset, and use the wheel to nudge.
+- **Choices**: short lists are segmented buttons; long ones (sound source, preset, arpeggio,
+  layer) open a pop-up list.
+- **Step lanes** (Sequence page): drag to paint pitch or duty steps, right-drag to draw a line,
+  right-click a step to reset it, and click or drag the ruler to set how many steps play.
+- **Page artwork**: a live oscilloscope and spectrum, wavetable and filter previews, FM routing,
+  and the channel mixer and DPCM slot tiles.
+
+Every edit is a complete CLAP begin/value/end gesture, one per parameter touched. Host automation
+and Bitwig's native panel update the same parameter state and redraw the editor. Page and
+collapse changes animate briefly and the editor repaints only while something changes; on
+Linux it draws into a back buffer, so it never shows a half-painted frame. Linux uses X11/Xft
+(including under XWayland), Windows uses GDI, and macOS uses a flipped Cocoa view.
+`yanes-ui-preview OUTPUT_DIR [WIDTH HEIGHT]` renders every page to PNG offscreen for layout review.
+
+The **duty sequence** steps a pulse voice's duty through up to eight steps on every note, like a
+tracker duty macro: looping or one-shot, at a free rate or locked to host tempo with the sync
+division. It applies to NES, Game Boy, and SID pulses and to the NES stack's two pulse channels.
+**Pitch bend range** sets the wheel's range from 0 to 48 semitones (default 2); selecting a preset
+keeps it. Parameter display text parses back, so typing a value a host shows (a sound-source name,
+"50%", "C2 (36)") works.
+
+MIDI CC7 controls volume
 independently on each channel, including stack parts. The CLAP latency and tail extensions report
 zero processing latency and a release/echo-dependent tail so offline hosts do not truncate decays.
 
@@ -234,7 +247,7 @@ YANES_DPCM_BANK="$PWD/kick.ydmc:$PWD/snare.ydmc:$PWD/tom.ydmc" bitwig-studio
 
 WAV input is mixed to mono and converted at 16,744 Hz, the fastest NTSC 2A03 DPCM rate. The plug-in
 reads WAV or `.ydmc` bank entries during initialization, never on the audio thread.
-You can also middle-click a slot on the FM/Bank page to choose a mono/stereo 16-bit PCM WAV or
+You can also middle-click a slot on the Hardware page to choose a mono/stereo 16-bit PCM WAV or
 `.ydmc` file, right-click it to clear it, and left-click it to toggle looping. Sample replacement
 uses immutable snapshots, so a sounding voice safely finishes with its original sample while a new
 voice receives the replacement. Once Bitwig saves the
@@ -242,12 +255,12 @@ project, all sixteen bank slots are included in CLAP state, so reopening that pr
 depend on the environment variable or original files. DPCM Base Key maps consecutive MIDI keys to
 slots; each file is limited to 1 MiB. Empty slots retain the generated, copyright-free kick/snare
 fallback. State versions 8 and 9 migrate their former single sample into slot one, while versions
-10 through 13 retain all sixteen slots and receive defaults for newer mixer, loop, DAC, trim,
+10 through 14 retain all sixteen slots and receive defaults for newer mixer, loop, DAC, trim,
 and later controls.
 Each slot can loop independently through the DPCM Loop Mask, and DPCM Initial Level exposes the
 2A03 DAC starting value used before the first delta bit. DPCM Trim Start and Trim End provide
 normalized, non-destructive start/end boundaries shared by the bank; they are not per-sample loop
-points or a waveform editor. The FM/Bank header shows loaded slots in amber and looping slots in
+points or a waveform editor. The Hardware page shows loaded slots in amber and looping slots in
 green. The graphical file chooser uses `zenity` on Linux, `GetOpenFileName` on Windows, and
 `NSOpenPanel` on macOS; the environment-variable workflow does not require a chooser.
 

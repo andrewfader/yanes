@@ -7,6 +7,7 @@
 #import <Cocoa/Cocoa.h>
 
 #include <algorithm>
+#include <array>
 
 #include "ui_canvas.hpp"
 #include "ui_layout.hpp"
@@ -17,8 +18,10 @@ class CocoaCanvas final : public Canvas {
  public:
   CocoaCanvas(int window_width, int window_height)
       : window_width_(window_width), window_height_(window_height) {
-    font_ = [NSFont systemFontOfSize:static_cast<CGFloat>(font_pixels(window_width, window_height))
-                              weight:NSFontWeightMedium];
+    for (int i = 0; i < 3; ++i)
+      fonts_[static_cast<size_t>(i)] =
+          [NSFont systemFontOfSize:static_cast<CGFloat>(font_pixels(static_cast<TextSize>(i), window_width, window_height))
+                            weight:i == 2 ? NSFontWeightBold : NSFontWeightMedium];
   }
 
   void clear(uint32_t rgb) override {
@@ -32,16 +35,13 @@ class CocoaCanvas final : public Canvas {
                               std::max<CGFloat>(1.0, sy(height))));
   }
 
-  void draw_line(int x1, int y1, int x2, int y2, uint32_t rgb) override {
-    const Point points[]{{x1, y1}, {x2, y2}};
-    draw_polyline(points, 2, rgb);
-  }
-
-  void draw_polyline(const Point* points, int count, uint32_t rgb) override {
+  void draw_polyline(const Point* points, int count, uint32_t rgb, int thickness) override {
     if (count < 2) return;
     [color(rgb) set];
     NSBezierPath* path = [NSBezierPath bezierPath];
-    [path setLineWidth:1.0];
+    [path setLineWidth:std::max<CGFloat>(1.0, thickness * uniform_scale(window_width_, window_height_))];
+    [path setLineCapStyle:NSLineCapStyleRound];
+    [path setLineJoinStyle:NSLineJoinStyleRound];
     [path moveToPoint:NSMakePoint(sx(points[0].x), sy(points[0].y))];
     for (int i = 1; i < count; ++i)
       [path lineToPoint:NSMakePoint(sx(points[i].x), sy(points[i].y))];
@@ -56,7 +56,8 @@ class CocoaCanvas final : public Canvas {
   }
 
  protected:
-  void draw_glyphs(int x, int y, const std::string& text, uint32_t rgb) override {
+  void draw_glyphs(int x, int y, const std::string& text, uint32_t rgb, TextSize size) override {
+    NSFont* font_ = fonts_[static_cast<size_t>(size)];
     NSString* string = to_string(text);
     if (!string) return;
     // The editor positions text by its baseline; AppKit draws from the top-left in a flipped view.
@@ -64,7 +65,8 @@ class CocoaCanvas final : public Canvas {
          withAttributes:@{NSFontAttributeName : font_, NSForegroundColorAttributeName : color(rgb)}];
   }
 
-  int measure_text(const std::string& text) override {
+  int measure_text(const std::string& text, TextSize size) override {
+    NSFont* font_ = fonts_[static_cast<size_t>(size)];
     NSString* string = to_string(text);
     if (!string) return 0;
     const NSSize size = [string sizeWithAttributes:@{NSFontAttributeName : font_}];
@@ -88,7 +90,7 @@ class CocoaCanvas final : public Canvas {
 
   int window_width_;
   int window_height_;
-  NSFont* font_{};
+  std::array<NSFont*, 3> fonts_{};
 };
 
 }  // namespace yanes::ui

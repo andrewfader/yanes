@@ -23,6 +23,9 @@
 #include "dsp.hpp"
 #include "hardware_fm.hpp"
 #include "nes_apu.hpp"
+#include "params.hpp"
+#include "ui_editor.hpp"
+#include "ui_pages.hpp"
 #include "ui_layout.hpp"
 
 #include <algorithm>
@@ -57,152 +60,7 @@
 
 namespace {
 
-enum ParamId : clap_id {
-  kWaveform, kDuty, kNoisePeriod, kNoiseMode, kAttackMs, kReleaseMs,
-  kExpansionShape, kFmRatio, kFmIndex, kGainDb, kVelocity, kTranspose, kFineTune,
-  kPortamentoMs, kMasterDb, kClockMode, kHardwareEnvelope, kEnvelopeRate,
-  kSweepDepth, kSweepTime, kArpMode, kArpRate, kDpcmRate, kGenesisAlgorithm,
-  kGenesisFeedback, kRetroAmount, kBitDepth, kOutputRate, kRfNoise, kHum,
-  kSpeaker, kStereoWidth, kChipCutoff, kChipResonance, kWavetablePosition,
-  kWavetableWarp, kAdditiveTilt, kFmBrightness, kLayerMode, kLayerMix,
-  kVibratoRate, kVibratoDepth, kDrive, kEchoMix, kEchoTime, kEchoFeedback,
-  kChorusMix, kChorusRate, kChorusDepth, kTempoSync, kSyncDivision,
-  kStrictHardware, kSequenceLength, kSequence1, kSequence2, kSequence3,
-  kSequence4, kSequence5, kSequence6, kSequence7, kSequence8,
-  kFmAttack, kFmDecay, kFmSustainRate, kFmSustainLevel, kFmRelease,
-  kFmDetune, kFmKeyScale, kFmLfoRate, kFmAmDepth, kFmPmDepth, kDpcmBaseKey,
-  kDpcmLoopMask, kDpcmInitialLevel, kDpcmTrimStart, kDpcmTrimEnd, kStackMuteMask, kStackSoloMask,
-  kPreset, kParamCount
-};
-
-struct ParamSpec {
-  const char* name;
-  const char* module;
-  double min;
-  double max;
-  double def;
-  bool stepped;
-};
-
-constexpr std::array<ParamSpec, kParamCount> kSpecs{{
-    {"Waveform", "Oscillator", 0, 57, 0, true},
-    {"Pulse duty", "Oscillator", 0, 3, 1, true},
-    {"Noise period", "Oscillator/Noise", 0, 15, 8, true},
-    {"Noise mode", "Oscillator/Noise", 0, 1, 0, true},
-    {"Attack", "Envelope", 0, 500, 2, false},
-    {"Release", "Envelope", 0, 2000, 30, false},
-    {"Shape", "Expansion audio", 0, 7, 3, true},
-    {"FM ratio", "Expansion audio/VRC7", 0.5, 8, 2, false},
-    {"FM index", "Expansion audio/VRC7", 0, 8, 2, false},
-    {"Voice gain", "Output", -36, 6, -9, false},
-    {"Velocity", "Performance", 0, 1, 1, true},
-    {"Transpose", "Performance", -24, 24, 0, true},
-    {"Fine tune", "Performance", -100, 100, 0, false},
-    {"Portamento", "Performance", 0, 1000, 0, false},
-    {"Master", "Output", -36, 6, -6, false},
-    {"Clock", "Hardware", 0, 1, 0, true},
-    {"Hardware envelope", "Hardware/Envelope", 0, 1, 0, true},
-    {"Envelope rate", "Hardware/Envelope", 0, 15, 8, true},
-    {"Sweep depth", "Hardware/Sweep", -24, 24, 0, false},
-    {"Sweep time", "Hardware/Sweep", 1, 1000, 120, false},
-    {"Arpeggio", "Sequences", 0, 5, 0, true},
-    {"Arpeggio rate", "Sequences", 1, 60, 12, false},
-    {"DPCM rate", "NES/DPCM", 0, 15, 12, true},
-    {"FM algorithm", "FM synthesis", 0, 31, 0, true},
-    {"FM feedback", "Genesis/YM2612", 0, 7, 3, false},
-    {"Retro amount", "Output/Console and TV", 0, 1, 0, false},
-    {"Bit depth", "Output/Console and TV", 4, 16, 16, true},
-    {"Output rate", "Output/Console and TV", 4000, 48000, 48000, false},
-    {"RF noise", "Output/Console and TV", 0, 1, 0, false},
-    {"Mains hum", "Output/Console and TV", 0, 1, 0, false},
-    {"TV speaker", "Output/Console and TV", 0, 1, 0, false},
-    {"Stereo width", "Output", 0, 1, 0, false},
-    {"Chip cutoff", "Chip filter", 40, 16000, 6000, false},
-    {"Chip resonance", "Chip filter", 0, 1, 0.25, false},
-    {"Table position", "Wavetable synthesis", 0, 1, 0, false},
-    {"Table warp", "Wavetable synthesis", 0, 1, 0.5, false},
-    {"Harmonic tilt", "Additive synthesis", 0, 1, 0.45, false},
-    {"FM brightness", "FM synthesis", 0, 1, 0.65, false},
-    {"Layer", "Voice stacking", 0, 5, 0, true},
-    {"Layer mix", "Voice stacking", 0, 1, 0.35, false},
-    {"Vibrato rate", "Performance", 0.1, 20, 5.5, false},
-    {"Vibrato depth", "Performance", 0, 2, 0, false},
-    {"Drive", "Effects/Retro rack", 0, 1, 0, false},
-    {"Echo mix", "Effects/Retro rack", 0, 1, 0, false},
-    {"Echo time", "Effects/Retro rack", 10, 1000, 180, false},
-    {"Echo feedback", "Effects/Retro rack", 0, 0.92, 0.35, false},
-    {"Chorus mix", "Effects/Retro rack", 0, 1, 0, false},
-    {"Chorus rate", "Effects/Retro rack", 0.05, 8, 0.8, false},
-    {"Chorus depth", "Effects/Retro rack", 0, 12, 4, false},
-    {"Tempo sync", "Composition", 0, 1, 0, true},
-    {"Sync division", "Composition", 0, 7, 3, true},
-    {"Strict hardware", "Composition", 0, 1, 0, true},
-    {"Sequence length", "Sequences/User", 1, 8, 4, true},
-    {"Step 1", "Sequences/User", -24, 24, 0, true},
-    {"Step 2", "Sequences/User", -24, 24, 4, true},
-    {"Step 3", "Sequences/User", -24, 24, 7, true},
-    {"Step 4", "Sequences/User", -24, 24, 12, true},
-    {"Step 5", "Sequences/User", -24, 24, 0, true},
-    {"Step 6", "Sequences/User", -24, 24, 0, true},
-    {"Step 7", "Sequences/User", -24, 24, 0, true},
-    {"Step 8", "Sequences/User", -24, 24, 0, true},
-    {"FM attack", "FM synthesis/Operators", 0, 31, 31, true},
-    {"FM decay", "FM synthesis/Operators", 0, 31, 10, true},
-    {"FM sustain rate", "FM synthesis/Operators", 0, 31, 5, true},
-    {"FM sustain level", "FM synthesis/Operators", 0, 15, 2, true},
-    {"FM release", "FM synthesis/Operators", 0, 15, 6, true},
-    {"FM detune", "FM synthesis/Operators", 0, 7, 0, true},
-    {"FM key scale", "FM synthesis/Operators", 0, 3, 1, true},
-    {"FM LFO rate", "FM synthesis/LFO", 0, 7, 3, true},
-    {"FM AM depth", "FM synthesis/LFO", 0, 127, 0, true},
-    {"FM PM depth", "FM synthesis/LFO", 0, 127, 0, true},
-    {"DPCM base key", "NES/DPCM bank", 0, 112, 36, true},
-    {"DPCM loop mask", "NES/DPCM bank", 0, 65535, 0, true},
-    {"DPCM initial level", "NES/DPCM bank", 0, 127, 64, true},
-    {"DPCM trim start", "NES/DPCM bank", 0, 0.95, 0, false},
-    {"DPCM trim end", "NES/DPCM bank", 0.05, 1, 1, false},
-    {"Channel mute mask", "Hardware/Stack mixer", 0, 65535, 0, true},
-    {"Channel solo mask", "Hardware/Stack mixer", 0, 65535, 0, true},
-    {"Preset", "Presets", 0, 54, 0, true},
-}};
-
-constexpr const char* kWaveNames[] = {
-    "NES pulse", "NES triangle", "NES noise", "VRC6 pulse", "VRC6 saw",
-    "FDS wavetable", "Namco 163 wavetable", "VRC7 FM", "Sunsoft 5B tone",
-    "NES DPCM drums", "Game Boy pulse", "Game Boy wave", "Game Boy noise",
-    "SMS tone", "SMS noise", "Genesis PSG tone", "Genesis PSG noise", "Genesis YM2612 FM",
-    "NES five-channel stack", "Game Boy four-channel stack", "SMS four-channel stack",
-    "Genesis ten-channel stack", "AY-3-8910 tone", "AY-3-8910 noise", "Atari POKEY tone",
-    "Atari POKEY poly noise", "PC Engine wavetable", "OPL2 two-operator FM",
-    "OPL3 four-operator FM", "Yamaha OPN/OPNA FM", "Yamaha OPM FM",
-    "PC-88 YM2203 stack", "PC-98 YM2608 stack", "X68000 YM2151 stack",
-    "Atari four-channel stack", "PC Engine six-channel stack", "Sound Blaster OPL3 stack",
-    "PC Engine noise", "SID 6581", "SID 8580", "Konami SCC wavetable",
-    "Konami SCC five-channel stack", "Philips SAA1099 tone", "SAA1099 six-channel stack",
-    "Atari TIA polynomial tone", "Atari TIA two-channel stack", "Morphing wavetable",
-    "Phase distortion", "Harmonic additive", "Six-operator FM", "Digital partial pair",
-    "Porta FM keyboard", "Vintage analog poly", "Matrix brass poly", "Early digital ensemble",
-    "Electromechanical tine", "Ladder mono synth", "Retro chip drum kit"};
-constexpr const char* kArpNames[] = {"Off", "Major", "Minor", "Octaves", "NES chord", "User steps"};
-constexpr const char* kLayerNames[] = {"Off", "Octave", "Fifth", "Sub octave", "Triangle", "Noise"};
-constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord lead",
-    "NES DPCM kit", "Game Boy wave", "SMS bass", "Genesis FM bell",
-    "Bedroom CRT", "Noisy RF television", "PC Engine glass", "DOS OPL2 organ",
-    "OPL3 brass", "PC-88 adventure", "PC-98 FM piano", "X68000 arcade", "Atari POKEY zap",
-    "SID 6581 bass", "SID 8580 lead", "Konami SCC lead", "Game Blaster bells",
-    "Vector wavetable pad", "Phase-distortion brass", "Additive drawbars",
-    "Six-operator electric piano", "Digital partial strings", "Envelope bass trick",
-    "Hyper arpeggio lead", "Duty-cycle lead", "Fake echo lead", "Octave power bass",
-    "Worn chorus pad", "VRC6 heroic lead", "FDS glass organ", "N163 ensemble",
-    "YM2612 growl bass", "YM2151 arcade bell", "POKEY metallic zap",
-    "SID combined reed", "DPCM sixteen-key bank", "User-sequence spark",
-    "Arcade CRT cabinet", "Porta FM electric piano", "Porta FM toy organ",
-    "Japanese analog poly", "American matrix brass", "Early sampler choir",
-    "Tine suitcase piano", "Classic ladder bass", "Retro chip drum kit",
-    "Game Boy bubble bloop", "Game Boy coin chirp", "Game Boy 7-bit zap",
-    "LSDJ wave pluck", "Game Boy fast chord", "Game Boy tracker delay"};
-constexpr const char* kDutyNames[] = {"12.5%", "25%", "50%", "75%"};
-constexpr double kDuties[] = {0.125, 0.25, 0.5, 0.75};
+using namespace yanes::params;
 
 // Apple's libc++ still does not implement std::atomic<std::shared_ptr<T>> (P0718R2), so the DPCM
 // bank slots go through this wrapper: the standard specialisation where the library has it, and a
@@ -320,7 +178,8 @@ struct Plugin {
   // Touched by the audio thread and by parameter changes on every platform, so these live outside
   // the editor blocks below: process() and params_flush() run whether or not an editor is open.
   struct GuiOutEvent { uint8_t type; clap_id id; double value; };
-  static constexpr uint32_t kGuiOutCap = 128;
+  // Painting a step lane can touch every step between two host flushes; size for that.
+  static constexpr uint32_t kGuiOutCap = 1024;
   static constexpr uint8_t kGuiBegin = 0, kGuiValue = 1, kGuiEnd = 2;
   std::array<GuiOutEvent, kGuiOutCap> gui_out{};
   std::atomic<uint32_t> gui_out_w{};
@@ -331,20 +190,23 @@ struct Plugin {
 #ifdef YANES_HAS_EDITOR
   // Editor state that has nothing to do with the window system, shared by all three backends.
   uint32_t gui_width{yanes::ui::width}, gui_height{yanes::ui::height};
-  int gui_page{};
   uint64_t gui_seen_revision{};
   uint64_t gui_seen_scope_revision{};
   unsigned gui_scope_ticks{};
-  int gui_hover_param{-1};
-  int gui_hover_tab{-1};
-  int gui_drag_param{-1};
+  // The host is declared first so the editor, which refers to it, is destroyed first.
+  std::unique_ptr<yanes::ui::EditorHost> gui_editor_host{};
+  std::unique_ptr<yanes::ui::Editor> gui_editor{};
 #if defined(__linux__)
   Display* display{};
   Window window{};
   GC gc{};
-  XftDraw* gui_xft_draw{};
-  XftFont* gui_xft_font{};
-  int gui_font_pixels{};
+  // Everything is drawn into this back buffer and copied to the window in one request, so the
+  // window never shows a half-painted frame.
+  Pixmap gui_back{};
+  XftDraw* gui_back_xft{};
+  int gui_back_width{}, gui_back_height{};
+  std::array<XftFont*, 3> gui_fonts{};
+  std::array<int, 3> gui_font_pixels{};
   // The editor used to run its X11 loop on a thread of its own, which put painting,
   // parameter edits and host callbacks on a thread CLAP reserves for the host's main
   // thread. Everything below drives the same loop from the host instead: the connection's
@@ -497,7 +359,7 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
   // effect kept that setting audible under every preset chosen afterwards.
   // Master is the user's output level rather than part of any recipe, so it survives the reset.
   for (clap_id target = 0; target < kParamCount; ++target)
-    if (target != kPreset && target != kMasterDb) set_param(p, target, kSpecs[target].def, false);
+    if (target != kPreset && target != kMasterDb && target != kPitchBendRange) set_param(p, target, kSpecs[target].def, false);
   apply_voice_defaults(p, static_cast<int>(kSpecs[kWaveform].def));
   // Preset recipes change many parameters at once; ask the host to re-read them all so its
   // generic panel and automation lanes do not keep showing the previous preset's values.
@@ -785,9 +647,33 @@ void handle_event(Plugin* p, const clap_event_header_t* h, const clap_output_eve
     }
     if (status == 0xe0) {
       const int bend = e->data[1] | (e->data[2] << 7);
-      p->pitch_bend = (bend - 8192) / 8192.0 * 2.0;
+      p->pitch_bend = (bend - 8192) / 8192.0;
     }
   }
+}
+
+constexpr double kSyncDivisions[] = {0.25, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0};
+
+// Steps per second for a sequence whose free-running rate is `free_rate`. Tempo sync replaces
+// it with the shared host-tempo division, so the arpeggio and duty steps stay in lockstep.
+double sequence_rate(const Plugin* p, double free_rate) {
+  if (p->params[kTempoSync].load(std::memory_order_relaxed) < 0.5) return free_rate;
+  const int division = static_cast<int>(p->params[kSyncDivision].load(std::memory_order_relaxed));
+  return p->tempo / 60.0 * kSyncDivisions[std::clamp(division, 0, 7)];
+}
+
+// The pulse duty index (0..3) this voice plays right now: the Pulse duty parameter, or, with
+// the duty sequence on, the step it has reached, like a tracker's duty macro. The sequence
+// restarts with every note; one-shot mode holds its last step.
+int voice_duty(const Plugin* p, const Voice& v) {
+  const int base = static_cast<int>(p->params[kDuty].load(std::memory_order_relaxed));
+  const int mode = static_cast<int>(p->params[kDutySeqMode].load(std::memory_order_relaxed));
+  if (mode <= 0) return std::clamp(base, 0, 3);
+  const int length = std::clamp(static_cast<int>(p->params[kDutySeqLength].load(std::memory_order_relaxed)), 1, 8);
+  const double rate = sequence_rate(p, p->params[kDutySeqRate].load(std::memory_order_relaxed));
+  int step = static_cast<int>(static_cast<double>(v.samples) * rate / p->sample_rate);
+  step = mode == 2 ? std::min(step, length - 1) : step % length;
+  return std::clamp(static_cast<int>(p->params[static_cast<clap_id>(kDutyStep1 + step)].load(std::memory_order_relaxed)), 0, 3);
 }
 
 float render_voice(Plugin* p, Voice& v) {
@@ -816,11 +702,7 @@ float render_voice(Plugin* p, Voice& v) {
   const double fine = p->params[kFineTune].load(std::memory_order_relaxed) / 100.0;
   const int arp = static_cast<int>(p->params[kArpMode].load(std::memory_order_relaxed));
   double arp_rate = p->params[kArpRate].load(std::memory_order_relaxed);
-  constexpr double divisions[] = {0.25, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0};
-  if (p->params[kTempoSync].load(std::memory_order_relaxed) >= 0.5) {
-    const int division = static_cast<int>(p->params[kSyncDivision].load(std::memory_order_relaxed));
-    arp_rate = p->tempo / 60.0 * divisions[std::clamp(division, 0, 7)];
-  }
+  arp_rate = sequence_rate(p, arp_rate);
   const double elapsed_samples = static_cast<double>(v.samples);
   const int arp_step = static_cast<int>((elapsed_samples * arp_rate / p->sample_rate)) % 3;
   constexpr int arp_intervals[5][3] = {{0,0,0},{0,4,7},{0,3,7},{0,12,24},{0,3,8}};
@@ -838,8 +720,9 @@ float render_voice(Plugin* p, Voice& v) {
   const double vibrato_depth = p->params[kVibratoDepth].load(std::memory_order_relaxed) + p->mod_wheel * 0.75;
   const double vibrato = std::sin(6.28318530718 * elapsed_samples *
       p->params[kVibratoRate].load(std::memory_order_relaxed) / p->sample_rate) * vibrato_depth;
+  const double bend_range = p->params[kPitchBendRange].load(std::memory_order_relaxed);
   double frequency = yanes::midi_frequency(v.note + transpose + fine + sequence_pitch +
-                                            v.tuning_expression + p->pitch_bend + vibrato);
+                                            v.tuning_expression + p->pitch_bend * bend_range + vibrato);
   const int selected_waveform=static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
   int waveform=selected_waveform;
   if (waveform == 18) { // NES: MIDI channels 1..5 = pulse 1, pulse 2, triangle, noise, DPCM.
@@ -905,8 +788,7 @@ float render_voice(Plugin* p, Voice& v) {
   float value = 0.0f;
   const int shape = static_cast<int>(p->params[kExpansionShape].load(std::memory_order_relaxed));
   if (waveform == 0) {
-    const int duty = static_cast<int>(p->params[kDuty].load(std::memory_order_relaxed));
-    const double width = kDuties[std::clamp(duty, 0, 3)];
+    const double width = kDuties[voice_duty(p, v)];
     // NES stack and Strict Hardware feed the nonlinear mixer a hard 2A03 pulse.
     // Musical solo NES pulse keeps polyBLEP so DAW use and Furnace parity stay clean.
     const bool hardware_pulse = selected_waveform == 18 ||
@@ -997,7 +879,7 @@ float render_voice(Plugin* p, Voice& v) {
     value = static_cast<float>((v.dpcm_level - 64) / 64.0);
     if ((!dpcm_bank || dpcm_bank->empty()) && v.dpcm_position > 0.65) v.releasing = true;
   } else if (waveform == 10) {
-    value = yanes::pulse(v.phase, increment, kDuties[std::clamp(static_cast<int>(p->params[kDuty].load()), 0, 3)]);
+    value = yanes::pulse(v.phase, increment, kDuties[voice_duty(p, v)]);
   } else if (waveform == 11) {
     // Game Boy CH3: 32 four-bit samples. Shape 7 is the plain ramp the chip
     // holds after a reset, which is what the hardware reference renders play.
@@ -1079,7 +961,7 @@ float render_voice(Plugin* p, Voice& v) {
   } else if (waveform == 38 || waveform == 39) {
     // SID's oscillator DAC combines selected 12-bit waveforms; the older 6581 exhibits
     // substantially more inter-bit bleed and lower combined-waveform amplitude than the 8580.
-    const double duty = kDuties[std::clamp(static_cast<int>(p->params[kDuty].load()), 0, 3)];
+    const double duty = kDuties[voice_duty(p, v)];
     const uint16_t saw = static_cast<uint16_t>(std::floor(v.phase * 4096.0)) & 0xfffU;
     const uint16_t tri = static_cast<uint16_t>(std::floor((v.phase < 0.5 ? v.phase * 2.0 : 2.0 - v.phase * 2.0) * 4095.0));
     const uint16_t pulse = v.phase < duty ? 0xfffU : 0U;
@@ -1416,6 +1298,7 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
       const bool muted=(mute_mask&channel_bit)||(solo_mask&&!(solo_mask&channel_bit));
       if (nes_stack && v.channel >= 0 && v.channel <= 3) {
         // Channel audio comes from NesApu; still tick the voice for MIDI lifetime.
+        if (v.channel <= 1) p->nes_apu.set_pulse_duty(v.channel, voice_duty(p, v));
         (void)render_voice(p, v);
         if (!v.active) emit_note_end(out_events, frame, v);
         continue;
@@ -1518,33 +1401,10 @@ bool params_value(const clap_plugin_t* plugin, clap_id id, double* value) {
   return true;
 }
 bool value_to_text(const clap_plugin_t*, clap_id id, double value, char* text, uint32_t capacity) {
-  if (id >= kParamCount || !text || capacity == 0) return false;
-  if (id == kWaveform) std::snprintf(text, capacity, "%s", kWaveNames[std::clamp(static_cast<int>(std::round(value)), 0, 57)]);
-  else if (id == kDuty) std::snprintf(text, capacity, "%s", kDutyNames[std::clamp(static_cast<int>(std::round(value)), 0, 3)]);
-  else if (id == kNoiseMode || id == kVelocity || id == kHardwareEnvelope || id == kTempoSync || id == kStrictHardware) std::snprintf(text, capacity, "%s", value >= 0.5 ? "On" : "Off");
-  else if (id == kClockMode) std::snprintf(text, capacity, "%s", value >= 0.5 ? "PAL / 50 Hz" : "NTSC / 60 Hz");
-  else if (id == kArpMode) std::snprintf(text, capacity, "%s", kArpNames[std::clamp(static_cast<int>(std::round(value)), 0, 5)]);
-  else if (id == kLayerMode) std::snprintf(text, capacity, "%s", kLayerNames[std::clamp(static_cast<int>(std::round(value)), 0, 5)]);
-  else if (id == kPreset) std::snprintf(text, capacity, "%s", kPresetNames[std::clamp(static_cast<int>(std::round(value)), 0, static_cast<int>(sizeof(kPresetNames) / sizeof(kPresetNames[0]) - 1))]);
-  else if (id == kAttackMs || id == kReleaseMs || id == kPortamentoMs || id == kEchoTime || id == kChorusDepth) std::snprintf(text, capacity, "%.1f ms", value);
-  else if (id == kGainDb || id == kMasterDb) std::snprintf(text, capacity, "%.1f dB", value);
-  else if (id == kFineTune) std::snprintf(text, capacity, "%.1f cents", value);
-  else if (id == kFmRatio) std::snprintf(text, capacity, "%.2f : 1", value);
-  else if (id == kFmIndex || id == kGenesisFeedback || id == kRetroAmount || id == kRfNoise || id == kHum || id == kSpeaker || id == kStereoWidth || id == kChipResonance || id == kWavetablePosition || id == kWavetableWarp || id == kAdditiveTilt || id == kFmBrightness || id == kLayerMix || id == kDrive || id == kEchoMix || id == kEchoFeedback || id == kChorusMix) std::snprintf(text, capacity, "%.2f", value);
-  else if (id == kVibratoRate || id == kChorusRate) std::snprintf(text, capacity, "%.2f Hz", value);
-  else if (id == kVibratoDepth) std::snprintf(text, capacity, "%.2f semitones", value);
-  else if (id == kChipCutoff) std::snprintf(text, capacity, "%.0f Hz", value);
-  else if (id == kOutputRate) std::snprintf(text, capacity, "%.0f Hz", value);
-  else std::snprintf(text, capacity, "%.0f", value);
-  return true;
+  return format_value(id, value, text, capacity);
 }
 bool text_to_value(const clap_plugin_t*, clap_id id, const char* text, double* value) {
-  if (id >= kParamCount || !text || !value) return false;
-  char* end = nullptr;
-  const double parsed = std::strtod(text, &end);
-  if (end == text || !std::isfinite(parsed)) return false;
-  *value = std::clamp(parsed, kSpecs[id].min, kSpecs[id].max);
-  return true;
+  return parse_value(id, text, value);
 }
 void params_flush(const clap_plugin_t* plugin, const clap_input_events_t* in, const clap_output_events_t* out) {
   auto* p = self(plugin);
@@ -1556,7 +1416,7 @@ const clap_plugin_params_t kParams{params_count, params_info, params_value, valu
 struct StateBlob { uint32_t magic; uint32_t version; double values[kParamCount]; uint32_t dpcm_sizes[16]; };
 bool state_save(const clap_plugin_t* plugin, const clap_ostream_t* stream) {
   if (!stream || !stream->write) return false;
-  StateBlob state{0x53454e59U, 13, {}, {}};
+  StateBlob state{0x53454e59U, 14, {}, {}};
   for (clap_id i = 0; i < kParamCount; ++i) state.values[i] = self(plugin)->params[i].load(std::memory_order_relaxed);
   std::array<std::shared_ptr<const std::vector<uint8_t>>,16> banks{};
   for (size_t i = 0; i < 16; ++i) {banks[i]=self(plugin)->dpcm_banks[i].load();state.dpcm_sizes[i]=static_cast<uint32_t>(banks[i]?std::min<size_t>(banks[i]->size(),1024U*1024U):0);}
@@ -1579,11 +1439,15 @@ bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
   std::array<double, kParamCount> values{};
   for (clap_id i = 0; i < kParamCount; ++i) values[i] = kSpecs[i].def;
   std::array<uint32_t, 16> sizes{};
-  if (header.version == 13) {
+  if (header.version == 14) {
     StateBlob state{}; state.magic = header.magic; state.version = header.version;
     if (!read_exact(reinterpret_cast<uint8_t*>(&state) + sizeof(header), sizeof(state) - sizeof(header))) return false;
     std::copy(std::begin(state.values), std::end(state.values), values.begin());
     std::copy(std::begin(state.dpcm_sizes), std::end(state.dpcm_sizes), sizes.begin());
+  } else if (header.version == 13) {
+    struct Legacy13 { uint32_t magic, version; double values[79]; uint32_t dpcm_sizes[16]; } state{};
+    if (!read_exact(reinterpret_cast<uint8_t*>(&state) + sizeof(header), sizeof(state) - sizeof(header))) return false;
+    std::copy(std::begin(state.values), std::end(state.values), values.begin());std::copy(std::begin(state.dpcm_sizes),std::end(state.dpcm_sizes),sizes.begin());
   } else if (header.version == 12) {
     struct Legacy12 { uint32_t magic, version; double values[77]; uint32_t dpcm_sizes[16]; } state{};
     if (!read_exact(reinterpret_cast<uint8_t*>(&state) + sizeof(header), sizeof(state) - sizeof(header))) return false;
@@ -1727,21 +1591,40 @@ const void* entry_factory(const char* id) { return id && !std::strcmp(id, CLAP_P
   auto* p = static_cast<Plugin*>(self.plugin);
   const int x = yanes::ui::unscale_x(static_cast<int>(point.x), static_cast<int>(p->gui_width));
   const int y = yanes::ui::unscale_y(static_cast<int>(point.y), static_cast<int>(p->gui_height));
-  editor_cocoa_input(self.plugin, action, button, x, y);
+  const NSEventModifierFlags flags = [event modifierFlags];
+  // Command is the Mac counterpart of Ctrl-click (reset); plain Ctrl-click already arrives as a right click.
+  const unsigned modifiers = ((flags & NSEventModifierFlagShift) ? yanes::ui::kShift : 0U) |
+                             ((flags & NSEventModifierFlagCommand) ? yanes::ui::kControl : 0U) |
+                             ((flags & NSEventModifierFlagOption) ? yanes::ui::kAlt : 0U);
+  editor_cocoa_input(self.plugin, action, button, x, y, modifiers);
+}
+// Without a tracking area AppKit never sends mouseMoved or mouseExited, so hover would not work.
+- (void)updateTrackingAreas {
+  for (NSTrackingArea* area in [[self.trackingAreas copy] autorelease]) [self removeTrackingArea:area];
+  NSTrackingArea* area = [[NSTrackingArea alloc]
+      initWithRect:NSZeroRect
+           options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
+             owner:self
+          userInfo:nil];
+  [self addTrackingArea:area];
+  [area release];
+  [super updateTrackingAreas];
 }
 - (void)mouseDown:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Down button:1]; }
 - (void)mouseDragged:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Move button:1]; }
 - (void)mouseUp:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Up button:1]; }
 - (void)rightMouseDown:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Down button:3]; }
 - (void)rightMouseUp:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Up button:3]; }
+- (void)rightMouseDragged:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Move button:3]; }
 - (void)otherMouseDown:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Down button:2]; }
 - (void)otherMouseUp:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Up button:2]; }
 - (void)scrollWheel:(NSEvent*)event {
+  if ([event deltaY] == 0) return;  // horizontal scrolling and momentum tails
   const int button = [event deltaY] > 0 ? 4 : 5;
   [self handleEvent:event action:GuiPointer::Down button:button];
 }
 - (void)mouseMoved:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Move button:0]; }
-- (void)mouseExited:(NSEvent*)event { (void)event; editor_cocoa_input(self.plugin, GuiPointer::Leave, 0, 0, 0); }
+- (void)mouseExited:(NSEvent*)event { (void)event; editor_cocoa_input(self.plugin, GuiPointer::Leave, 0, 0, 0, 0); }
 @end
 #endif
 

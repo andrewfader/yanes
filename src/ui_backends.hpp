@@ -59,57 +59,93 @@ void gui_poll_picker(Plugin* p) {
   gui_paint(p);
 }
 
+void gui_release_back_buffer(Plugin* p) {
+  if (p->gui_back_xft) XftDrawDestroy(p->gui_back_xft);
+  if (p->gui_back) XFreePixmap(p->display, p->gui_back);
+  p->gui_back_xft = nullptr; p->gui_back = 0; p->gui_back_width = p->gui_back_height = 0;
+}
+
+void gui_release_fonts(Plugin* p) {
+  for (auto& font : p->gui_fonts) { if (font) XftFontClose(p->display, font); font = nullptr; }
+  p->gui_font_pixels = {};
+}
+
 void gui_paint(Plugin* p) {
   if (!p->display || !p->window) return;
-  const int wanted = yanes::ui::font_pixels(static_cast<int>(p->gui_width), static_cast<int>(p->gui_height));
-  if (wanted != p->gui_font_pixels) {
+  const int w = static_cast<int>(p->gui_width), h = static_cast<int>(p->gui_height);
+  for (size_t i = 0; i < p->gui_fonts.size(); ++i) {
+    const int wanted = yanes::ui::font_pixels(static_cast<yanes::ui::TextSize>(i), w, h);
+    if (wanted == p->gui_font_pixels[i] && p->gui_fonts[i]) continue;
     char pattern[128]{};
-    std::snprintf(pattern, sizeof(pattern), "DejaVu Sans:weight=medium:pixelsize=%d", wanted);
+    std::snprintf(pattern, sizeof(pattern), "DejaVu Sans:weight=%s:pixelsize=%d", i == 2 ? "bold" : "medium", wanted);
     if (auto* font = XftFontOpenName(p->display, DefaultScreen(p->display), pattern)) {
-      if (p->gui_xft_font) XftFontClose(p->display, p->gui_xft_font);
-      p->gui_xft_font = font;
-      p->gui_font_pixels = wanted;
+      if (p->gui_fonts[i]) XftFontClose(p->display, p->gui_fonts[i]);
+      p->gui_fonts[i] = font;
+      p->gui_font_pixels[i] = wanted;
     }
   }
-  yanes::ui::X11Canvas canvas(p->display, p->window, p->gc, p->gui_xft_draw, p->gui_xft_font,
-                              static_cast<int>(p->gui_width), static_cast<int>(p->gui_height));
+  if (!p->gui_back || p->gui_back_width != w || p->gui_back_height != h) {
+    gui_release_back_buffer(p);
+    const int screen = DefaultScreen(p->display);
+    p->gui_back = XCreatePixmap(p->display, p->window, static_cast<unsigned>(w), static_cast<unsigned>(h),
+                                static_cast<unsigned>(DefaultDepth(p->display, screen)));
+    p->gui_back_xft = XftDrawCreate(p->display, p->gui_back, DefaultVisual(p->display, screen),
+                                    DefaultColormap(p->display, screen));
+    p->gui_back_width = w; p->gui_back_height = h;
+  }
+  if (!p->gui_back_xft) return;
+  yanes::ui::X11Canvas canvas(p->display, p->gui_back, p->gc, p->gui_back_xft, p->gui_fonts, w, h);
   gui_draw(p, canvas);
+  XCopyArea(p->display, p->gui_back, p->window, p->gc, 0, 0, static_cast<unsigned>(w), static_cast<unsigned>(h), 0, 0);
   XFlush(p->display);
 }
 
-// Drains whatever X has queued. Called from the host's main thread, either because the
-// connection became readable or because the editor's timer fired.
+unsigned gui_x11_modifiers(unsigned state) {
+  return ((state & ShiftMask) ? yanes::ui::kShift : 0U) | ((state & ControlMask) ? yanes::ui::kControl : 0U) |
+         ((state & Mod1Mask) ? yanes::ui::kAlt : 0U);
+}
+
+// Drains whatever X has queued, then paints at most once. Called from the host's main thread,
+// either because the connection became readable or because the editor's timer fired. Painting
+// per event is what made fast pointer movement lag and flicker.
 void gui_pump(Plugin* p) {
+  bool dirty = false;
   while (p->display && XPending(p->display)) {
     XEvent e{};
     XNextEvent(p->display, &e);
-    if (e.type == Expose) gui_paint(p);
-    if (e.type == ConfigureNotify) {
-      p->gui_width = static_cast<uint32_t>(std::max(1, e.xconfigure.width));
-      p->gui_height = static_cast<uint32_t>(std::max(1, e.xconfigure.height));
-      gui_paint(p);
-    }
-    if (e.type == LeaveNotify) { gui_input(p, GuiPointer::Leave, 0, 0, 0); gui_paint(p); }
     const auto logical = [&](int px, int py) {
       return std::pair<int,int>{yanes::ui::unscale_x(px, static_cast<int>(p->gui_width)),
                                 yanes::ui::unscale_y(py, static_cast<int>(p->gui_height))};
     };
-    if (e.type == ButtonPress) {
-      const auto [x, y] = logical(e.xbutton.x, e.xbutton.y);
-      gui_input(p, GuiPointer::Down, static_cast<int>(e.xbutton.button), x, y);
-      gui_paint(p);
-    }
-    if (e.type == ButtonRelease) {
-      const auto [x, y] = logical(e.xbutton.x, e.xbutton.y);
-      gui_input(p, GuiPointer::Up, static_cast<int>(e.xbutton.button), x, y);
-      gui_paint(p);
-    }
-    if (e.type == MotionNotify) {
-      const auto [x, y] = logical(e.xmotion.x, e.xmotion.y);
-      gui_input(p, GuiPointer::Move, 0, x, y);
-      gui_paint(p);
+    switch (e.type) {
+      case Expose: if (e.xexpose.count == 0) dirty = true; break;
+      case ConfigureNotify:
+        if (static_cast<uint32_t>(e.xconfigure.width) != p->gui_width || static_cast<uint32_t>(e.xconfigure.height) != p->gui_height) {
+          p->gui_width = static_cast<uint32_t>(std::max(1, e.xconfigure.width));
+          p->gui_height = static_cast<uint32_t>(std::max(1, e.xconfigure.height));
+          dirty = true;
+        }
+        break;
+      case LeaveNotify: gui_input(p, GuiPointer::Leave, 0, 0, 0); dirty = true; break;
+      case ButtonPress: case ButtonRelease: {
+        const auto [x, y] = logical(e.xbutton.x, e.xbutton.y);
+        gui_input(p, e.type == ButtonPress ? GuiPointer::Down : GuiPointer::Up, static_cast<int>(e.xbutton.button), x, y,
+                  gui_x11_modifiers(e.xbutton.state));
+        dirty = true;
+        break;
+      }
+      case MotionNotify: {
+        // Only the newest queued position matters.
+        while (XCheckTypedWindowEvent(p->display, p->window, MotionNotify, &e)) {}
+        const auto [x, y] = logical(e.xmotion.x, e.xmotion.y);
+        gui_input(p, GuiPointer::Move, 0, x, y, gui_x11_modifiers(e.xmotion.state));
+        dirty = true;
+        break;
+      }
+      default: break;
     }
   }
+  if (dirty) gui_paint(p);
 }
 
 void gui_on_timer(const clap_plugin_t* plugin, clap_id timer_id) {
@@ -118,14 +154,16 @@ void gui_on_timer(const clap_plugin_t* plugin, clap_id timer_id) {
   gui_pump(p);
   gui_poll_picker(p);
   if (!p->display) return;
+  bool dirty = gui_tick(p);
   const uint64_t revision = p->ui_revision.load(std::memory_order_acquire);
-  if (revision != p->gui_seen_revision) { p->gui_seen_revision = revision; gui_paint(p); }
-  // The scope redraws at a third of the tick rate, as it did on the old loop.
-  if (p->gui_page == 0 && ++p->gui_scope_ticks >= 3) {
+  if (revision != p->gui_seen_revision) { p->gui_seen_revision = revision; dirty = true; }
+  // The scope and meters redraw at a third of the tick rate.
+  if (++p->gui_scope_ticks >= 3) {
     p->gui_scope_ticks = 0;
     const uint64_t scope = p->scope_revision.load(std::memory_order_acquire);
-    if (scope != p->gui_seen_scope_revision) { p->gui_seen_scope_revision = scope; gui_paint(p); }
+    if (scope != p->gui_seen_scope_revision) { p->gui_seen_scope_revision = scope; dirty = true; }
   }
+  if (dirty) gui_paint(p);
 }
 
 void gui_on_fd(const clap_plugin_t* plugin, int fd, clap_posix_fd_flags_t) {
@@ -152,14 +190,12 @@ bool gui_create(const clap_plugin_t* plugin, const char* api, bool floating) {
   if (!gui_supported(plugin, api, floating) || p->display) return false;
   p->display = XOpenDisplay(nullptr);
   if (!p->display) return false;
-  p->window = XCreateSimpleWindow(p->display, DefaultRootWindow(p->display), 0, 0, p->gui_width, p->gui_height, 0, 0, 0x101722);
+  p->window = XCreateSimpleWindow(p->display, DefaultRootWindow(p->display), 0, 0, p->gui_width, p->gui_height, 0, 0, 0x0b1119);
+  // No server-side background: the back buffer covers every pixel, and letting X clear the
+  // window first on every expose or resize is a visible flash.
+  XSetWindowBackgroundPixmap(p->display, p->window, None);
   p->gc = XCreateGC(p->display, p->window, 0, nullptr);
-  p->gui_xft_draw = XftDrawCreate(p->display, p->window, DefaultVisual(p->display, DefaultScreen(p->display)),
-                                  DefaultColormap(p->display, DefaultScreen(p->display)));
-  if (!p->gui_xft_draw) {
-    XFreeGC(p->display, p->gc); XDestroyWindow(p->display, p->window); XCloseDisplay(p->display);
-    p->display = nullptr; p->window = 0; p->gc = nullptr; return false;
-  }
+  XSetGraphicsExposures(p->display, p->gc, False);
   p->gui_seen_revision = p->ui_revision.load(std::memory_order_acquire);
   p->gui_seen_scope_revision = p->scope_revision.load(std::memory_order_acquire);
   p->gui_scope_ticks = 0;
@@ -187,14 +223,13 @@ void gui_destroy(const clap_plugin_t* plugin) {
   p->gui_fd = -1;
   gui_close_picker(p);
   if (p->display) {
-    if (p->gui_xft_font) XftFontClose(p->display, p->gui_xft_font);
-    if (p->gui_xft_draw) XftDrawDestroy(p->gui_xft_draw);
+    gui_release_back_buffer(p);
+    gui_release_fonts(p);
     if (p->gc) XFreeGC(p->display, p->gc);
     if (p->window) XDestroyWindow(p->display, p->window);
     XCloseDisplay(p->display);
   }
-  p->display = nullptr; p->window = 0; p->gc = nullptr; p->gui_xft_draw = nullptr;
-  p->gui_xft_font = nullptr; p->gui_font_pixels = 0;
+  p->display = nullptr; p->window = 0; p->gc = nullptr;
 }
 bool gui_scale(const clap_plugin_t*, double) { return false; }
 bool gui_get_size(const clap_plugin_t* plugin, uint32_t* w, uint32_t* h) {
@@ -218,7 +253,7 @@ bool gui_set_size(const clap_plugin_t* plugin, uint32_t w, uint32_t h) {
   auto* p = self(plugin);
   if (w < static_cast<uint32_t>(yanes::ui::minimum_width) || h < static_cast<uint32_t>(yanes::ui::minimum_height)) return false;
   p->gui_width = w; p->gui_height = h;
-  if (p->display) XResizeWindow(p->display, p->window, w, h);
+  if (p->display) { XResizeWindow(p->display, p->window, w, h); gui_paint(p); }
   return true;
 }
 bool gui_parent(const clap_plugin_t* plugin, const clap_window_t* parent) {
@@ -302,17 +337,25 @@ LRESULT CALLBACK gui_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     return std::pair<int,int>{yanes::ui::unscale_x(GET_X_LPARAM(lp), static_cast<int>(p->gui_width)),
                               yanes::ui::unscale_y(GET_Y_LPARAM(lp), static_cast<int>(p->gui_height))};
   };
+  // Mouse messages carry Shift and Ctrl in wparam; Alt has to be asked for.
+  const auto modifiers = [&](WPARAM keys) {
+    return ((keys & MK_SHIFT) ? yanes::ui::kShift : 0U) | ((keys & MK_CONTROL) ? yanes::ui::kControl : 0U) |
+           (GetKeyState(VK_MENU) < 0 ? yanes::ui::kAlt : 0U);
+  };
   switch (msg) {
     case WM_PAINT: gui_paint(p); return 0;
+    // The back buffer paints every pixel; letting Windows erase first is a visible flash.
+    case WM_ERASEBKGND: return 1;
     case WM_SIZE:
       p->gui_width = static_cast<uint32_t>(std::max(1, static_cast<int>(LOWORD(lparam))));
       p->gui_height = static_cast<uint32_t>(std::max(1, static_cast<int>(HIWORD(lparam))));
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     case WM_TIMER: {
+      const bool animating = gui_tick(p);
       const uint64_t revision = p->ui_revision.load(std::memory_order_acquire);
       const uint64_t scope = p->scope_revision.load(std::memory_order_acquire);
-      if (revision != p->gui_seen_revision || scope != p->gui_seen_scope_revision) {
+      if (animating || revision != p->gui_seen_revision || scope != p->gui_seen_scope_revision) {
         p->gui_seen_revision = revision;
         p->gui_seen_scope_revision = scope;
         InvalidateRect(hwnd, nullptr, FALSE);
@@ -320,8 +363,11 @@ LRESULT CALLBACK gui_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
     }
     case WM_MOUSEMOVE: {
+      // Ask for WM_MOUSELEAVE, so hover highlights clear when the pointer leaves.
+      TRACKMOUSEEVENT track{sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0};
+      TrackMouseEvent(&track);
       const auto [x, y] = logical(lparam);
-      gui_input(p, GuiPointer::Move, 0, x, y);
+      gui_input(p, GuiPointer::Move, 0, x, y, modifiers(wparam));
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     }
@@ -329,14 +375,14 @@ LRESULT CALLBACK gui_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       SetCapture(hwnd);
       const int button = msg == WM_LBUTTONDOWN ? 1 : (msg == WM_MBUTTONDOWN ? 2 : 3);
       const auto [x, y] = logical(lparam);
-      gui_input(p, GuiPointer::Down, button, x, y);
+      gui_input(p, GuiPointer::Down, button, x, y, modifiers(wparam));
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     }
     case WM_LBUTTONUP: case WM_MBUTTONUP: case WM_RBUTTONUP: {
       const int button = msg == WM_LBUTTONUP ? 1 : (msg == WM_MBUTTONUP ? 2 : 3);
       const auto [x, y] = logical(lparam);
-      gui_input(p, GuiPointer::Up, button, x, y);
+      gui_input(p, GuiPointer::Up, button, x, y, modifiers(wparam));
       ReleaseCapture();
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
@@ -346,7 +392,8 @@ LRESULT CALLBACK gui_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       ScreenToClient(hwnd, &pt);
       const int x = yanes::ui::unscale_x(pt.x, static_cast<int>(p->gui_width));
       const int y = yanes::ui::unscale_y(pt.y, static_cast<int>(p->gui_height));
-      gui_input(p, GuiPointer::Down, GET_WHEEL_DELTA_WPARAM(wparam) > 0 ? 4 : 5, x, y);
+      gui_input(p, GuiPointer::Down, GET_WHEEL_DELTA_WPARAM(wparam) > 0 ? 4 : 5, x, y,
+                modifiers(GET_KEYSTATE_WPARAM(wparam)));
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     }
@@ -546,16 +593,17 @@ bool gui_hide(const clap_plugin_t* plugin) {
 }
 
 void editor_cocoa_draw(void* plugin) { gui_paint(static_cast<Plugin*>(plugin)); }
-void editor_cocoa_input(void* plugin, GuiPointer action, int button, int x, int y) {
-  gui_input(static_cast<Plugin*>(plugin), action, button, x, y);
+void editor_cocoa_input(void* plugin, GuiPointer action, int button, int x, int y, unsigned modifiers) {
+  gui_input(static_cast<Plugin*>(plugin), action, button, x, y, modifiers);
   auto* p = static_cast<Plugin*>(plugin);
   if (p->view) [p->view setNeedsDisplay:YES];
 }
 void editor_cocoa_refresh(void* plugin) {
   auto* p = static_cast<Plugin*>(plugin);
+  const bool animating = gui_tick(p);
   const uint64_t revision = p->ui_revision.load(std::memory_order_acquire);
   const uint64_t scope = p->scope_revision.load(std::memory_order_acquire);
-  if (revision != p->gui_seen_revision || scope != p->gui_seen_scope_revision) {
+  if (animating || revision != p->gui_seen_revision || scope != p->gui_seen_scope_revision) {
     p->gui_seen_revision = revision;
     p->gui_seen_scope_revision = scope;
     if (p->view) [p->view setNeedsDisplay:YES];
