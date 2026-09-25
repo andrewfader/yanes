@@ -190,6 +190,8 @@ struct Plugin {
 #ifdef YANES_HAS_EDITOR
   // Editor state that has nothing to do with the window system, shared by all three backends.
   uint32_t gui_width{yanes::ui::width}, gui_height{yanes::ui::height};
+  // A SIZE-button request, applied once the pointer event that made it has been handled.
+  uint32_t gui_request_width{}, gui_request_height{};
   uint64_t gui_seen_revision{};
   uint64_t gui_seen_scope_revision{};
   unsigned gui_scope_ticks{};
@@ -676,6 +678,19 @@ int voice_duty(const Plugin* p, const Voice& v) {
   return std::clamp(static_cast<int>(p->params[static_cast<clap_id>(kDutyStep1 + step)].load(std::memory_order_relaxed)), 0, 3);
 }
 
+// This voice's fine-pitch offset in semitones from the cents lane, a tracker-style pitch macro
+// for detuned chirps, slides and chorus-like wobbles. Same restart and one-shot rules as the
+// duty sequence.
+double voice_cents(const Plugin* p, const Voice& v) {
+  const int mode = static_cast<int>(p->params[kCentsSeqMode].load(std::memory_order_relaxed));
+  if (mode <= 0) return 0.0;
+  const int length = std::clamp(static_cast<int>(p->params[kCentsSeqLength].load(std::memory_order_relaxed)), 1, 8);
+  const double rate = sequence_rate(p, p->params[kCentsSeqRate].load(std::memory_order_relaxed));
+  int step = static_cast<int>(static_cast<double>(v.samples) * rate / p->sample_rate);
+  step = mode == 2 ? std::min(step, length - 1) : step % length;
+  return p->params[static_cast<clap_id>(kCentsStep1 + step)].load(std::memory_order_relaxed) / 100.0;
+}
+
 float render_voice(Plugin* p, Voice& v) {
   const double attack = p->params[kAttackMs].load(std::memory_order_relaxed);
   double release = p->params[kReleaseMs].load(std::memory_order_relaxed);
@@ -717,9 +732,15 @@ float render_voice(Plugin* p, Voice& v) {
   const double sweep_depth = p->params[kSweepDepth].load(std::memory_order_relaxed);
   const double sweep_time = p->params[kSweepTime].load(std::memory_order_relaxed) * 0.001;
   sequence_pitch += sweep_depth * std::min(1.0, elapsed_samples / (p->sample_rate * sweep_time));
-  const double vibrato_depth = p->params[kVibratoDepth].load(std::memory_order_relaxed) + p->mod_wheel * 0.75;
-  const double vibrato = std::sin(6.28318530718 * elapsed_samples *
-      p->params[kVibratoRate].load(std::memory_order_relaxed) / p->sample_rate) * vibrato_depth;
+  sequence_pitch += voice_cents(p, v);
+  // Vibrato depth waits out the delay and then starts from zero phase, like a tracker's delayed
+  // vibrato; the mod wheel stays immediate so a player can always add it by hand.
+  const double vibrato_rate = p->params[kVibratoRate].load(std::memory_order_relaxed);
+  const double vibrato_delay = p->params[kVibratoDelay].load(std::memory_order_relaxed) * 0.001 * p->sample_rate;
+  double vibrato = std::sin(6.28318530718 * elapsed_samples * vibrato_rate / p->sample_rate) * p->mod_wheel * 0.75;
+  if (elapsed_samples >= vibrato_delay)
+    vibrato += std::sin(6.28318530718 * (elapsed_samples - vibrato_delay) * vibrato_rate / p->sample_rate) *
+               p->params[kVibratoDepth].load(std::memory_order_relaxed);
   const double bend_range = p->params[kPitchBendRange].load(std::memory_order_relaxed);
   double frequency = yanes::midi_frequency(v.note + transpose + fine + sequence_pitch +
                                             v.tuning_expression + p->pitch_bend * bend_range + vibrato);
@@ -1413,10 +1434,15 @@ void params_flush(const clap_plugin_t* plugin, const clap_input_events_t* in, co
 }
 const clap_plugin_params_t kParams{params_count, params_info, params_value, value_to_text, text_to_value, params_flush};
 
-struct StateBlob { uint32_t magic; uint32_t version; double values[kParamCount]; uint32_t dpcm_sizes[16]; };
+// The editor size rides along so a project reopens the editor at the size it was left at; zero
+// means "never resized".
+struct StateBlob { uint32_t magic; uint32_t version; double values[kParamCount]; uint32_t dpcm_sizes[16]; uint32_t gui_width, gui_height; };
 bool state_save(const clap_plugin_t* plugin, const clap_ostream_t* stream) {
   if (!stream || !stream->write) return false;
-  StateBlob state{0x53454e59U, 14, {}, {}};
+  StateBlob state{0x53454e59U, 15, {}, {}, 0, 0};
+#ifdef YANES_HAS_EDITOR
+  state.gui_width = self(plugin)->gui_width; state.gui_height = self(plugin)->gui_height;
+#endif
   for (clap_id i = 0; i < kParamCount; ++i) state.values[i] = self(plugin)->params[i].load(std::memory_order_relaxed);
   std::array<std::shared_ptr<const std::vector<uint8_t>>,16> banks{};
   for (size_t i = 0; i < 16; ++i) {banks[i]=self(plugin)->dpcm_banks[i].load();state.dpcm_sizes[i]=static_cast<uint32_t>(banks[i]?std::min<size_t>(banks[i]->size(),1024U*1024U):0);}
@@ -1439,11 +1465,17 @@ bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
   std::array<double, kParamCount> values{};
   for (clap_id i = 0; i < kParamCount; ++i) values[i] = kSpecs[i].def;
   std::array<uint32_t, 16> sizes{};
-  if (header.version == 14) {
+  uint32_t gui_width = 0, gui_height = 0;
+  if (header.version == 15) {
     StateBlob state{}; state.magic = header.magic; state.version = header.version;
     if (!read_exact(reinterpret_cast<uint8_t*>(&state) + sizeof(header), sizeof(state) - sizeof(header))) return false;
     std::copy(std::begin(state.values), std::end(state.values), values.begin());
     std::copy(std::begin(state.dpcm_sizes), std::end(state.dpcm_sizes), sizes.begin());
+    gui_width = state.gui_width; gui_height = state.gui_height;
+  } else if (header.version == 14) {
+    struct Legacy14 { uint32_t magic, version; double values[91]; uint32_t dpcm_sizes[16]; } state{};
+    if (!read_exact(reinterpret_cast<uint8_t*>(&state) + sizeof(header), sizeof(state) - sizeof(header))) return false;
+    std::copy(std::begin(state.values), std::end(state.values), values.begin());std::copy(std::begin(state.dpcm_sizes),std::end(state.dpcm_sizes),sizes.begin());
   } else if (header.version == 13) {
     struct Legacy13 { uint32_t magic, version; double values[79]; uint32_t dpcm_sizes[16]; } state{};
     if (!read_exact(reinterpret_cast<uint8_t*>(&state) + sizeof(header), sizeof(state) - sizeof(header))) return false;
@@ -1475,6 +1507,16 @@ bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
   for (clap_id i = 0; i < kParamCount; ++i) set_param(self(plugin), i, values[i], false);
   auto* p = self(plugin);
   for (size_t i = 0; i < 16; ++i) { auto bank=std::make_shared<std::vector<uint8_t>>(sizes[i]);if (!read_exact(bank->data(), sizes[i])) return false;install_dpcm_bank(p,i,std::move(bank)); }
+#ifdef YANES_HAS_EDITOR
+  // An open editor keeps its size; the host already owns that window's geometry.
+  if (!gui_is_open(p) && gui_width >= static_cast<uint32_t>(yanes::ui::minimum_width) &&
+      gui_height >= static_cast<uint32_t>(yanes::ui::minimum_height) && gui_width <= 4 * yanes::ui::width &&
+      gui_height <= 4 * yanes::ui::height) {
+    p->gui_width = gui_width; p->gui_height = gui_height;
+  }
+#else
+  (void)gui_width; (void)gui_height;
+#endif
   return true;
 }
 const clap_plugin_state_t kState{state_save, state_load};
@@ -1545,7 +1587,7 @@ const char* kFeatures[] = {CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_S
                            CLAP_PLUGIN_FEATURE_STEREO, nullptr};
 const clap_plugin_descriptor_t kDescriptor{
     CLAP_VERSION_INIT, "org.yanes.native", "YANES", "YANES contributors",
-    "", "", "", "0.2.0", "Native multi-console chiptune synthesizer", kFeatures};
+    "", "", "", "0.3.0", "Native multi-console chiptune synthesizer", kFeatures};
 
 const clap_plugin_t* create_plugin(const clap_host_t* host) {
   auto* p = new (std::nothrow) Plugin;

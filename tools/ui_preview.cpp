@@ -54,6 +54,8 @@ class PreviewHost final : public EditorHost {
     if (id == P::kFmRatio || id == P::kFmIndex || id == P::kNoisePeriod) return false;
     return true;
   }
+  int size_percent() const override { return percent; }
+  int percent = 100;
   void draw_strip(int page, Painter& g, const Rect& r) override {
     char label[64]{};
     std::snprintf(label, sizeof(label), "page %d artwork (drawn by the plug-in)", page + 1);
@@ -119,7 +121,10 @@ int main(int argc, char** argv) {
     s.fonts[static_cast<size_t>(i)] = XftFontOpenName(s.display, screen, pattern);
   }
   PreviewHost host;
+  host.percent = static_cast<int>(std::lround(100.0 * uniform_scale(s.w, s.h)));
   host.values[P::kArpMode] = 5;
+  host.values[P::kCentsSeqMode] = 1;
+  host.values[P::kCentsStep1] = 50; host.values[P::kCentsStep2] = -30; host.values[P::kCentsStep3] = 100;
   host.values[P::kDutySeqMode] = 1;
   host.values[P::kSequence2] = 7; host.values[P::kSequence3] = 12; host.values[P::kSequence4] = -5;
   Editor editor(host, yanes_pages(), yanes_header_control());

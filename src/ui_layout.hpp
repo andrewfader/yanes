@@ -11,7 +11,11 @@ namespace yanes::ui {
 
 constexpr int width = 1600;
 constexpr int height = 1050;
-constexpr int minimum_width = 960, minimum_height = 630;
+// Half the design size: small enough to sit beside a mixer on a laptop screen, and still legible
+// with the minimum type sizes below.
+constexpr int minimum_width = width / 2, minimum_height = height / 2;
+// Steps offered by the editor's SIZE button, in percent of the design size.
+constexpr int size_steps[] = {50, 60, 75, 90, 100, 125};
 
 inline int scale_x(int logical,int window_width){return static_cast<int>(std::lround(static_cast<double>(logical)*window_width/width));}
 inline int scale_y(int logical,int window_height){return static_cast<int>(std::lround(static_cast<double>(logical)*window_height/height));}
@@ -25,7 +29,7 @@ constexpr int text_pixels(TextSize size) {
   return size == TextSize::Small ? 19 : (size == TextSize::Large ? 34 : 24);
 }
 inline int font_pixels(TextSize size, int window_width, int window_height) {
-  const int minimum = size == TextSize::Small ? 11 : (size == TextSize::Large ? 20 : 14);
+  const int minimum = size == TextSize::Small ? 9 : (size == TextSize::Large ? 16 : 11);
   return std::clamp(static_cast<int>(std::lround(text_pixels(size) * uniform_scale(window_width, window_height))),
                     minimum, 96);
 }
@@ -44,7 +48,8 @@ struct Rect {
 // content_bottom.
 constexpr int margin = 32;
 constexpr Rect header_rect{0, 0, width, 64};
-constexpr Rect preset_rect{480, 12, 540, 44};
+constexpr Rect preset_rect{480, 12, 450, 44};
+constexpr Rect size_rect{942, 12, 156, 44};
 constexpr Rect meter_rect{1110, 16, 458, 34};
 constexpr int tab_y = 76, tab_height = 46;
 constexpr int tab_count = 6;

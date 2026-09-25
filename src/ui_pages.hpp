@@ -29,11 +29,12 @@ inline std::vector<PageSpec> yanes_pages() {
         {"Level", 1, {knob(kGainDb), knob(kMasterDb), toggle(kVelocity), knob(kStereoWidth)}},
         {"Pitch", 2,
          {knob(kTranspose), knob(kFineTune), knob(kPitchBendRange), knob(kPortamentoMs), knob(kVibratoRate),
-          knob(kVibratoDepth)}}}},
-      {"SEQUENCE", "Tracker-style macros: paint pitch and duty steps that restart with every note", theme::amber, 2, 0,
+          knob(kVibratoDepth), knob(kVibratoDelay)}}}},
+      {"SEQUENCE", "Tracker-style macros: paint pitch, duty, and cents steps that restart with every note", theme::amber, 2, 0,
        {{"Pitch steps", 0, {menu(kArpMode, 2), knob(kArpRate), knob(kSequenceLength), lane(kSequence1, 8, kSequenceLength, "Semitones per step")}},
         {"Duty steps", 0, {segments(kDutySeqMode, 2), knob(kDutySeqRate), knob(kDutySeqLength), lane(kDutyStep1, 8, kDutySeqLength, "Pulse duty per step")}},
         {"Timing", 1, {toggle(kTempoSync), knob(kSyncDivision)}},
+        {"Cents steps", 1, {segments(kCentsSeqMode, 2), knob(kCentsSeqRate), knob(kCentsSeqLength), lane(kCentsStep1, 8, kCentsSeqLength, "Cents per step")}},
         {"Pitch sweep", 1, {knob(kSweepDepth), knob(kSweepTime)}}}},
       {"SYNTH", "Original digital tones: wavetables, additive partials, the chip filter, and layers", theme::green, 3, 112,
        {{"Wavetable", 0, {knob(kWavetablePosition), knob(kWavetableWarp), knob(kAdditiveTilt)}},
@@ -68,6 +69,12 @@ inline const char* yanes_short_name(int id) {
     case kDutySeqLength: return "Steps";
     case kDutySeqRate: return "Step rate";
     case kDutySeqMode: return "Duty sequence";
+    case kCentsSeqLength: return "Steps";
+    case kCentsSeqRate: return "Step rate";
+    case kCentsSeqMode: return "Cents sequence";
+    case kVibratoDelay: return "Vib delay";
+    case kVibratoRate: return "Vib rate";
+    case kVibratoDepth: return "Vib depth";
     case kArpRate: return "Step rate";
     case kFmAttack: return "Attack";
     case kFmDecay: return "Decay";

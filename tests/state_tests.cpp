@@ -1,11 +1,13 @@
-// CLAP state coverage: the current v14 round trip including DPCM bank payloads, the
-// legacy v8..v13 migration paths, and rejection of malformed blobs.
+// CLAP state coverage: the current v15 round trip including DPCM bank payloads, the
+// legacy v8..v14 migration paths, and rejection of malformed blobs.
 //
 // The legacy layouts are reconstructed here from the reader's own struct definitions.
 // That pins the on-disk contract so a future parameter insertion cannot silently shift
 // an old project's values: adding a parameter anywhere other than the end of the enum
 // breaks these tests.
 #include "clap_harness.hpp"
+
+#include <array>
 
 using namespace harness;
 
@@ -25,6 +27,8 @@ class Blob {
     bytes_.resize(values_at_ + value_count * sizeof(double), 0);
     sizes_at_ = bytes_.size();
     bytes_.resize(sizes_at_ + size_count * sizeof(uint32_t), 0);
+    // From v15 the editor size follows the sizes; these are the editor's defaults.
+    if (version >= 15) { put32(1600); put32(1050); }
     // Trailing padding to the natural alignment of the writer's struct.
     while (bytes_.size() % alignof(double) != 0) bytes_.push_back(0);
   }
@@ -60,7 +64,7 @@ double distinct_value(const clap_param_info_t& info) {
   return candidate;
 }
 
-void test_v14_round_trip(const Library& library) {
+void test_v15_round_trip(const Library& library) {
   const clap_plugin_t* plugin = library.create();
   const auto* params = params_of(plugin);
   const uint32_t count = params->count(plugin);
@@ -108,12 +112,12 @@ void test_v14_round_trip(const Library& library) {
 
 // Saving and reloading must preserve DPCM bank payloads byte for byte, which is what
 // lets a project reopen without the original sample files.
-void test_v14_bank_payload_round_trip(const Library& library) {
+void test_v15_bank_payload_round_trip(const Library& library) {
   const clap_plugin_t* plugin = library.create();
 
-  // Install banks through a v14 blob, then save and compare the produced bytes.
+  // Install banks through a v15 blob, then save and compare the produced bytes.
   const uint32_t count = params_of(plugin)->count(plugin);
-  Blob blob(14, count, 16);
+  Blob blob(15, count, 16);
   for (clap_id i = 0; i < count; ++i) blob.value(i, param_info(plugin, i).default_value);
   std::vector<uint8_t> payload;
   const uint32_t slot_sizes[16] = {32, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1024};
@@ -132,11 +136,39 @@ void test_v14_bank_payload_round_trip(const Library& library) {
   plugin->destroy(plugin);
 }
 
+// The editor size saved with a project comes back with it; nonsense sizes are ignored.
+void test_editor_size_round_trip(const Library& library) {
+  const clap_plugin_t* plugin = library.create();
+  const uint32_t count = params_of(plugin)->count(plugin);
+  const size_t gui_at = 8 + count * sizeof(double) + 16 * sizeof(uint32_t);
+  const auto saved_size = [&](const clap_plugin_t* instance) {
+    StateMemory out;
+    assert(save_state(instance, &out));
+    uint32_t size[2]{};
+    std::memcpy(size, out.bytes.data() + gui_at, sizeof(size));
+    return std::array<uint32_t, 2>{size[0], size[1]};
+  };
+  assert((saved_size(plugin) == std::array<uint32_t, 2>{1600, 1050}));
+
+  Blob blob(15, count, 16);
+  for (clap_id i = 0; i < count; ++i) blob.value(i, param_info(plugin, i).default_value);
+  const uint32_t small[2] = {800, 525};
+  std::memcpy(blob.bytes().data() + gui_at, small, sizeof(small));
+  assert(load_state(plugin, blob.memory()));
+  assert((saved_size(plugin) == std::array<uint32_t, 2>{800, 525}));
+
+  const uint32_t tiny[2] = {20, 20};
+  std::memcpy(blob.bytes().data() + gui_at, tiny, sizeof(tiny));
+  assert(load_state(plugin, blob.memory()));
+  assert((saved_size(plugin) == std::array<uint32_t, 2>{800, 525}));
+  plugin->destroy(plugin);
+}
+
 // Legacy layouts, as declared by the reader. Each entry is {version, value_count,
 // size_count}; versions 8 and 9 stored a single DPCM size rather than sixteen.
 struct LegacyLayout { uint32_t version; size_t values; size_t sizes; };
 constexpr LegacyLayout kLegacy[] = {
-    {13, 79, 16}, {12, 77, 16}, {11, 75, 16}, {10, 73, 16}, {9, 72, 1}, {8, 62, 1},
+    {14, 91, 16}, {13, 79, 16}, {12, 77, 16}, {11, 75, 16}, {10, 73, 16}, {9, 72, 1}, {8, 62, 1},
 };
 
 void test_legacy_migration(const Library& library) {
@@ -207,13 +239,13 @@ void test_legacy_sample_lands_in_first_slot(const Library& library) {
 
   StateMemory resaved;
   assert(save_state(plugin, &resaved));
-  // v14 header: magic, version, kParamCount doubles, then sixteen sizes.
+  // v15 header: magic, version, kParamCount doubles, sixteen sizes, then the editor size.
   const size_t sizes_at = 8 + count * sizeof(double);
   uint32_t sizes[16]{};
   std::memcpy(sizes, resaved.bytes.data() + sizes_at, sizeof(sizes));
   assert(sizes[0] == payload.size());
   for (size_t slot = 1; slot < 16; ++slot) assert(sizes[slot] == 0);
-  const size_t payload_at = sizes_at + sizeof(sizes);
+  const size_t payload_at = sizes_at + sizeof(sizes) + 2 * sizeof(uint32_t);
   assert(resaved.bytes.size() == payload_at + payload.size());
   assert(std::equal(payload.begin(), payload.end(), resaved.bytes.begin() + static_cast<long>(payload_at)));
   plugin->destroy(plugin);
@@ -243,26 +275,26 @@ void test_rejects_malformed_state(const Library& library) {
   assert(!load_state(plugin, bad_magic));
 
   // Unknown versions, both older and newer than the supported range.
-  for (const uint32_t version : {0U, 1U, 7U, 15U, 99U, 0xffffffffU}) {
+  for (const uint32_t version : {0U, 1U, 7U, 16U, 99U, 0xffffffffU}) {
     StateMemory wrong = saved;
     std::memcpy(wrong.bytes.data() + 4, &version, sizeof(version));
     assert(!load_state(plugin, wrong));
   }
 
   // A bank size beyond the 1 MiB per-slot limit must be refused rather than allocated.
-  Blob oversized(14, count, 16);
+  Blob oversized(15, count, 16);
   for (clap_id i = 0; i < count; ++i) oversized.value(i, param_info(plugin, i).default_value);
   oversized.size(3, 1024U * 1024U + 1U);
   assert(!load_state(plugin, oversized.memory()));
 
   // A declared bank size with no payload behind it must fail rather than read past the end.
-  Blob missing_payload(14, count, 16);
+  Blob missing_payload(15, count, 16);
   for (clap_id i = 0; i < count; ++i) missing_payload.value(i, param_info(plugin, i).default_value);
   missing_payload.size(0, 512);
   assert(!load_state(plugin, missing_payload.memory()));
 
   // Exactly at the limit is accepted.
-  Blob at_limit(14, count, 16);
+  Blob at_limit(15, count, 16);
   for (clap_id i = 0; i < count; ++i) at_limit.value(i, param_info(plugin, i).default_value);
   at_limit.size(0, 1024U * 1024U);
   at_limit.append(std::vector<uint8_t>(1024U * 1024U, 0x5a));
@@ -278,7 +310,7 @@ void test_state_values_are_clamped(const Library& library) {
   const uint32_t count = params_of(plugin)->count(plugin);
 
   for (const double poison : {-1.0e30, 1.0e30}) {
-    Blob blob(14, count, 16);
+    Blob blob(15, count, 16);
     for (clap_id i = 0; i < count; ++i) blob.value(i, poison);
     assert(load_state(plugin, blob.memory()));
     for (clap_id i = 0; i < count; ++i) {
@@ -409,8 +441,9 @@ int main(int argc, char** argv) {
   assert(argc == 2);
   const Library library(argv[1]);
 
-  test_v14_round_trip(library);
-  test_v14_bank_payload_round_trip(library);
+  test_v15_round_trip(library);
+  test_v15_bank_payload_round_trip(library);
+  test_editor_size_round_trip(library);
   test_legacy_migration(library);
   test_legacy_sample_lands_in_first_slot(library);
   test_rejects_malformed_state(library);

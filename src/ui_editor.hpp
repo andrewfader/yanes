@@ -134,7 +134,22 @@ class EditorHost {
   }
   virtual const char* strip_help(int page) const { (void)page; return nullptr; }
   virtual void draw_meters(Painter& painter, const Rect& area) { (void)painter; (void)area; }
+  // Editor window size in percent of the design size, or 0 when the host cannot resize it (the
+  // SIZE button is then hidden). request_size asks for a new size; it may take effect later.
+  virtual int size_percent() const { return 0; }
+  virtual void request_size(int percent) { (void)percent; }
 };
+
+// The next SIZE step from `current` in `direction` (-1 smaller, +1 larger), clamped at the ends.
+inline int next_size_step(int current, int direction) {
+  constexpr int count = static_cast<int>(sizeof(size_steps) / sizeof(size_steps[0]));
+  if (direction < 0) {
+    for (int i = count - 1; i >= 0; --i) if (size_steps[i] < current) return size_steps[i];
+    return size_steps[0];
+  }
+  for (int i = 0; i < count; ++i) if (size_steps[i] > current) return size_steps[i];
+  return size_steps[count - 1];
+}
 
 // --- page description --------------------------------------------------------------------------
 
@@ -362,7 +377,7 @@ class Editor {
   }
 
  private:
-  enum class Target : uint8_t { Empty, Tab, Section, Control, Header, Strip };
+  enum class Target : uint8_t { Empty, Tab, Section, Control, Header, Strip, Size };
   struct Hit {
     Target target = Target::Empty;
     int index = -1;    // tab, section
@@ -414,6 +429,10 @@ class Editor {
     Hit hit;
     if (preset_rect.contains(x, y)) {
       hit.target = Target::Header; hit.param = header_control_.param; hit.rect = preset_rect;
+      return hit;
+    }
+    if (host_.size_percent() > 0 && size_rect.contains(x, y)) {
+      hit.target = Target::Size; hit.rect = size_rect;
       return hit;
     }
     if (const int tab = tab_at(x, y); tab >= 0 && tab < page_count()) {
@@ -520,6 +539,13 @@ class Editor {
         if (button == 1) open_menu(hit.param, hit.rect);
         else if (button == 3) reset(hit.param);
         return;
+      case Target::Size: {
+        // Click steps down and wraps from the smallest back to the largest; right-click restores 100%.
+        const int current = host_.size_percent();
+        if (button == 3) host_.request_size(100);
+        else if (button == 1) host_.request_size(current <= size_steps[0] ? next_size_step(1000, 1) : next_size_step(current, -1));
+        return;
+      }
       case Target::Strip: {
         const PageLayout lay = layout();
         host_.strip_pointer(page_, button, x, y, lay.strip);
@@ -613,6 +639,7 @@ class Editor {
   void wheel(int x, int y, int direction, unsigned modifiers) {
     if (menu_.param >= 0) return;
     const Hit hit = hit_test(x, y);
+    if (hit.target == Target::Size) { host_.request_size(next_size_step(host_.size_percent(), direction)); return; }
     int param = hit.param;
     if (hit.target == Target::Header) param = header_control_.param;
     if (param < 0 || (hit.target != Target::Control && hit.target != Target::Header)) return;
@@ -674,6 +701,13 @@ class Editor {
     host_.format(header_control_.param, host_.value(header_control_.param), value, sizeof(value));
     p.text(preset_rect.x + 104, preset_rect.y + 30, value, text, preset_rect.w - 150);
     draw_chevron(p, preset_rect.right() - 30, preset_rect.y + 20, hover ? cyan : muted);
+    if (const int percent = host_.size_percent(); percent > 0) {
+      p.round_rect(size_rect, 8, hover_.target == Target::Size ? raised : panel_hi);
+      p.text(size_rect.x + 14, size_rect.y + 29, "SIZE", muted, 50, TextSize::Small);
+      char label[16]{};
+      std::snprintf(label, sizeof(label), "%d%%", percent);
+      p.text_right(size_rect.right() - 16, size_rect.y + 30, label, text, 80, TextSize::Normal);
+    }
     host_.draw_meters(p, meter_rect);
   }
 
@@ -905,6 +939,8 @@ class Editor {
     const char* help = pages_[static_cast<size_t>(page_)].help;
     if (hover_.target == Target::Strip) if (const char* strip = host_.strip_help(page_)) help = strip;
     if (hover_.target == Target::Section) help = "Click a section title to collapse or expand it.";
+    if (hover_.target == Target::Size)
+      help = "Editor size  —  click steps smaller (wraps to largest)  •  wheel resizes  •  right-click resets to 100%  •  dragging the window edge works too";
     p.text(footer_rect.x + 18, footer_rect.y + 27, help, muted, footer_rect.w - 36, TextSize::Small);
   }
 

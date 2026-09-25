@@ -67,6 +67,10 @@ class FakeHost final : public EditorHost {
     strip_clicks.push_back(page * 10 + button);
     return true;
   }
+  int size_percent() const override { return percent; }
+  void request_size(int p) override { requested.push_back(p); percent = p; }
+  int percent = 0;
+  std::vector<int> requested;
   void reset_counts() { begins = edits = ends = 0; }
   bool idle() const { return open.empty(); }
 };
@@ -627,6 +631,33 @@ void test_short_names_fit() {
 
 }  // namespace
 
+// The SIZE button: hidden without host support, otherwise click steps down and wraps, the wheel
+// steps either way, right-click restores 100%. None of it is a parameter edit.
+void test_size_button() {
+  Rig rig;
+  const int x = size_rect.x + 20, y = size_rect.y + 20;
+  rig.click(1, x, y);
+  assert(rig.host.requested.empty());
+  rig.host.percent = 100;
+  for (const int expected : {90, 75, 60, 50, 125, 100}) {
+    rig.click(1, x, y);
+    assert(rig.host.requested.back() == expected);
+  }
+  rig.wheel(1, x, y);
+  assert(rig.host.requested.back() == 125);
+  rig.wheel(1, x, y);
+  assert(rig.host.requested.back() == 125);
+  rig.wheel(-1, x, y);
+  assert(rig.host.requested.back() == 100);
+  rig.host.percent = 83;  // after a free drag-resize
+  rig.click(1, x, y);
+  assert(rig.host.requested.back() == 75);
+  rig.click(3, x, y);
+  assert(rig.host.requested.back() == 100);
+  assert(rig.host.edits == 0 && rig.host.idle());
+  assert(!size_rect.overlaps(preset_rect) && !size_rect.overlaps(meter_rect));
+}
+
 int main() {
   test_scaling();
   test_every_parameter_is_placed_once();
@@ -644,6 +675,7 @@ int main() {
   test_duty_lane_levels();
   test_lost_release_and_leave();
   test_strip_clicks_reach_host();
+  test_size_button();
   test_drawing();
   test_short_names_fit();
   std::printf("ui_tests: all checks passed\n");

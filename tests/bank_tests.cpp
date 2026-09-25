@@ -281,7 +281,7 @@ void test_matches_command_line_tool(const Library& library) {
 
     StateMemory saved;
     assert(save_state(plugin, &saved));
-    const size_t payload_at = 8 + params_of(plugin)->count(plugin) * sizeof(double) + 16 * sizeof(uint32_t);
+    const size_t payload_at = 8 + params_of(plugin)->count(plugin) * sizeof(double) + 16 * sizeof(uint32_t) + 2 * sizeof(uint32_t);
     // Slot 0 (encoded by the plug-in) must byte-match slot 1 (encoded by the tool).
     assert(std::equal(from_tool.begin(), from_tool.end(), saved.bytes.begin() + static_cast<long>(payload_at)));
     assert(std::equal(from_tool.begin(), from_tool.end(),

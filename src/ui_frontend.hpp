@@ -25,11 +25,14 @@ bool gui_param_relevant(const Plugin* p, clap_id id) {
   const int waveform = static_cast<int>(value(kWaveform));
   if (id >= kSequence1 && id <= kSequence8) return static_cast<int>(value(kArpMode)) == 5;
   if (id >= kDutyStep1 && id <= kDutyStep8) return duty_waveform(waveform) && value(kDutySeqMode) >= 0.5;
+  if (id >= kCentsStep1 && id <= kCentsStep8) return value(kCentsSeqMode) >= 0.5;
   if (id >= kFmAttack && id <= kFmPmDepth) return hardware_fm_waveform(waveform);
   if (id >= kDpcmBaseKey && id <= kDpcmTrimEnd) return dpcm_waveform(waveform);
   switch(id){
     case kDuty:case kDutySeqMode:return duty_waveform(waveform);
     case kDutySeqLength:case kDutySeqRate:return duty_waveform(waveform) && value(kDutySeqMode) >= 0.5;
+    case kCentsSeqLength:case kCentsSeqRate:return value(kCentsSeqMode) >= 0.5;
+    case kVibratoDelay:return value(kVibratoDepth) > 0.0;
     case kSequenceLength:return static_cast<int>(value(kArpMode)) == 5;
     case kArpRate:return static_cast<int>(value(kArpMode)) != 0;
     case kSyncDivision:return value(kTempoSync) >= 0.5;
@@ -82,7 +85,7 @@ const char* gui_help(clap_id id) {
     case kFmBrightness:return "Changes carrier level and the perceived brightness of FM voices.";
     case kLayerMode:return "Adds a tuned or noise-based companion oscillator to every voice.";
     case kLayerMix:return "Balances the added layer against the primary oscillator.";
-    case kTempoSync:return "Locks the arpeggio, duty steps, and echo timing to host tempo.";
+    case kTempoSync:return "Locks the arpeggio, duty and cents steps, and echo timing to host tempo.";
     case kSyncDivision:return "Sets how many sequence steps play per beat while tempo sync is on.";
     case kStrictHardware:return "Hardware-like stack retriggering, and raw (non-bandlimited) NES pulses into the mixer.";
     case kArpMode:return "Chooses a built-in arpeggio, or User steps to play the pitch lane below.";
@@ -91,6 +94,12 @@ const char* gui_help(clap_id id) {
     case kDutySeqMode:return "Steps through the duty lane on every note: looping, or once and then holding the last step.";
     case kDutySeqLength:return "Sets how many duty steps play; drag the lane's ruler to change it too.";
     case kDutySeqRate:return "Sets how many duty steps play per second; tempo sync uses the sync division instead.";
+    case kCentsSeqMode:return "Steps through the cents lane on every note for detuned chirps and wobbles: looping, or once and then holding.";
+    case kCentsSeqLength:return "Sets how many cents steps play; drag the lane's ruler to change it too.";
+    case kCentsSeqRate:return "Sets how many cents steps play per second; tempo sync uses the sync division instead.";
+    case kVibratoRate:return "Sets how fast the vibrato wobbles.";
+    case kVibratoDepth:return "Sets how far the vibrato bends the pitch; the mod wheel adds more on top.";
+    case kVibratoDelay:return "Holds the vibrato off for this long after each note starts, then brings it in.";
     case kDpcmBaseKey:return "Maps this MIDI note to sample slot 1; following notes select following slots.";
     case kDpcmLoopMask:return "Stores which of the sixteen DPCM slots repeat after reaching trim end.";
     case kDpcmInitialLevel:return "Sets the NES seven-bit DAC level before the first DPCM bit is decoded.";
@@ -104,6 +113,7 @@ const char* gui_help(clap_id id) {
   }
   if(id>=kSequence1&&id<=kSequence8)return "Sets this step's pitch offset in semitones; plays when Arpeggio is User steps.";
   if(id>=kDutyStep1&&id<=kDutyStep8)return "Sets this step's pulse duty; plays when the duty sequence is on.";
+  if(id>=kCentsStep1&&id<=kCentsStep8)return "Sets this step's fine pitch offset, up to a semitone either way; plays when the cents sequence is on.";
   if(id>=kFmAttack&&id<=kFmRelease)return "Shapes the hardware FM operators' amplitude envelope.";
   if(id>=kFmDetune&&id<=kFmPmDepth)return "Programs the corresponding hardware FM operator or LFO register.";
   if(id>=kDrive&&id<=kChorusDepth)return "Shapes the internal drive, echo, and chorus effects rack.";
@@ -170,6 +180,15 @@ class PluginEditorHost final : public yanes::ui::EditorHost {
     return label(id);
   }
   bool relevant(int id) const override { return gui_param_relevant(p_, static_cast<clap_id>(id)); }
+
+  int size_percent() const override {
+    return static_cast<int>(std::lround(100.0 * yanes::ui::uniform_scale(static_cast<int>(p_->gui_width),
+                                                                          static_cast<int>(p_->gui_height))));
+  }
+  void request_size(int percent) override {
+    p_->gui_request_width = static_cast<uint32_t>(yanes::ui::width * percent / 100);
+    p_->gui_request_height = static_cast<uint32_t>(yanes::ui::height * percent / 100);
+  }
 
   const char* strip_help(int page) const override {
     if (page == 4) return "Channel tiles: left-click mute, right-click solo  •  Sample slots: left-click loop, middle-click load, right-click clear";
@@ -340,8 +359,23 @@ void gui_draw(Plugin* p, yanes::ui::Canvas& canvas) { gui_editor(p).draw(canvas)
 
 using GuiPointer = yanes::ui::PointerAction;
 
+bool gui_set_size(const clap_plugin_t* plugin, uint32_t w, uint32_t h);
+
+// Asks the host to resize its editor frame; only once it agrees does the editor window follow.
+// Hosts that cannot resize embedded editors just decline, and the size stays as it was.
+void gui_apply_requested_size(Plugin* p) {
+  const uint32_t w = p->gui_request_width, h = p->gui_request_height;
+  p->gui_request_width = p->gui_request_height = 0;
+  if (!w || !h || (w == p->gui_width && h == p->gui_height) || !p->host) return;
+  const auto* host_gui = static_cast<const clap_host_gui_t*>(p->host->get_extension(p->host, CLAP_EXT_GUI));
+  if (!host_gui || !host_gui->request_resize || !host_gui->request_resize(p->host, w, h)) return;
+  gui_set_size(&p->api, w, h);
+  gui_mark_state(p);
+}
+
 void gui_input(Plugin* p, GuiPointer action, int button, int x, int y, unsigned modifiers = 0) {
   gui_editor(p).pointer(action, button, x, y, modifiers, yanes::ui::now_ms());
+  gui_apply_requested_size(p);
 }
 
 // True when the editor needs a repaint for its own animations.

@@ -1,7 +1,5 @@
-# CMake build trees and generated files. Keep the checked-in Linux CLAP binary
-# below available as a convenience for users who do not want to build first.
-/build/*
-!/build/YANES.clap
+# CMake build trees and generated files. Prebuilt binaries live on the GitHub Releases page.
+/build/
 /build-*/
 /cmake-build-*/
 CMakeCache.txt
@@ -19,7 +17,6 @@ compile_commands.json
 *.obj
 *.so
 *.vst3
-!/build/YANES.clap
 
 # Test and profiling output
 Testing/

@@ -202,8 +202,10 @@ Trick, Hyper Arpeggio Lead, Duty-Cycle Lead, Fake Echo Lead, Octave Power Bass, 
 They are inspired by general tracker and cartridge-era techniques and contain no game samples or
 extracted instrument data.
 
-The embedded editor opens at 1600 x 1050 and can be freely resized down to 960 x 630; text,
-controls, and hit-testing scale with the window. Six pages group controls by what you are
+The embedded editor opens at 1600 x 1050 and can be freely resized down to 800 x 525; text,
+controls, and hit-testing scale with the window. The **SIZE** button in the header steps through
+50%, 60%, 75%, 90%, 100%, and 125% for hosts without a resize handle (click steps smaller and
+wraps, the wheel goes either way, right-click restores 100%), and the project remembers the size. Six pages group controls by what you are
 adjusting — Voice, Sequence, Synth, FM, Hardware, and FX + TV — in collapsible cards, with the
 preset selector always in the header. Controls that do nothing for the current sound source stay
 in place but are dimmed, so the layout never jumps when the source changes.
@@ -212,7 +214,7 @@ in place but are dimmed, so the layout never jumps when the source changes.
   reset, and use the wheel to nudge.
 - **Choices**: short lists are segmented buttons; long ones (sound source, preset, arpeggio,
   layer) open a pop-up list.
-- **Step lanes** (Sequence page): drag to paint pitch or duty steps, right-drag to draw a line,
+- **Step lanes** (Sequence page): drag to paint pitch, duty, or cents steps, right-drag to draw a line,
   right-click a step to reset it, and click or drag the ruler to set how many steps play.
 - **Page artwork**: a live oscilloscope and spectrum, wavetable and filter previews, FM routing,
   and the channel mixer and DPCM slot tiles.
@@ -227,6 +229,11 @@ Linux it draws into a back buffer, so it never shows a half-painted frame. Linux
 The **duty sequence** steps a pulse voice's duty through up to eight steps on every note, like a
 tracker duty macro: looping or one-shot, at a free rate or locked to host tempo with the sync
 division. It applies to NES, Game Boy, and SID pulses and to the NES stack's two pulse channels.
+The **cents sequence** works the same way on fine pitch: up to eight steps of ±100 cents for
+detuned chirps, slides into a note, or a stepped chorus wobble, on every sound source, and it
+stacks on top of the arpeggio. **Vibrato delay** holds the vibrato off for up to three seconds after
+each note starts and then brings it in from zero phase, like a tracker's delayed
+vibrato; mod-wheel vibrato stays immediate.
 **Pitch bend range** sets the wheel's range from 0 to 48 semitones (default 2); selecting a preset
 keeps it. Parameter display text parses back, so typing a value a host shows (a sound-source name,
 "50%", "C2 (36)") works.
@@ -302,19 +309,32 @@ CMake downloads the small official CLAP headers. For an offline build, pass
 `-DCLAP_ROOT=/path/to/clap`. It also fetches the pinned `ymfm` source used by the hardware FM
 models, so the first online configuration requires Git and network access.
 
-## Install 
+## Install
 
-This repository includes a prebuilt Linux x86-64 CLAP binary at
-[`build/YANES.clap`](build/YANES.clap). It is a convenience build from the current source tree;
-copy it directly if your system provides the required X11/Xft runtime libraries:
+Download a prebuilt package from the
+[Releases page](https://github.com/andrewfader/yanes/releases/latest):
+
+| Platform | Package | Copy `YANES.clap` to |
+| --- | --- | --- |
+| Linux x86-64 | `YANES-<version>-linux-x64.tar.gz` | `~/.clap/` (or `/usr/lib/clap/`) |
+| Windows x64 | `YANES-<version>-windows-x64.zip` | `C:\Program Files\Common Files\CLAP\` |
+| macOS (Apple Silicon and Intel) | `YANES-<version>-macos-universal.zip` | `~/Library/Audio/Plug-Ins/CLAP/` |
+
+Then rescan plug-ins in your DAW. On Linux, for example:
 
 ```sh
+tar xzf YANES-*-linux-x64.tar.gz
 mkdir -p ~/.clap
-cp build/YANES.clap ~/.clap/
+cp YANES-*-linux-x64/YANES.clap ~/.clap/
 ```
 
-For another architecture, a different distribution, or a source change, build the plug-in locally
-as described above. The locally built file has the same name and replaces the checked-in binary.
+The Linux build needs only the X11 and Xft libraries that every desktop distribution ships. The
+Windows and macOS builds are unsigned; if macOS refuses to load the plug-in, run
+`xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/CLAP/YANES.clap`. For another
+architecture or a source change, build locally as described above and copy `build/YANES.clap`.
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds and tests every platform and
+publishes the packages with SHA-256 checksums.
 
 When REAPER is installed, CMake registers `reaper_clap_integration`. The test creates an isolated
 REAPER profile, instantiates YANES, writes a MIDI drum passage and waveform automation, saves and

@@ -33,7 +33,9 @@ enum ParamId : uint32_t {
   kDpcmLoopMask, kDpcmInitialLevel, kDpcmTrimStart, kDpcmTrimEnd, kStackMuteMask, kStackSoloMask,
   kPreset, kPitchBendRange, kDutySeqMode, kDutySeqLength, kDutySeqRate,
   kDutyStep1, kDutyStep2, kDutyStep3, kDutyStep4, kDutyStep5, kDutyStep6,
-  kDutyStep7, kDutyStep8, kParamCount
+  kDutyStep7, kDutyStep8, kVibratoDelay, kCentsSeqMode, kCentsSeqLength, kCentsSeqRate,
+  kCentsStep1, kCentsStep2, kCentsStep3, kCentsStep4, kCentsStep5, kCentsStep6,
+  kCentsStep7, kCentsStep8, kParamCount
 };
 
 struct ParamSpec {
@@ -137,6 +139,18 @@ constexpr std::array<ParamSpec, kParamCount> kSpecs{{
     {"Duty step 6", "Sequences/Duty", 0, 3, 2, true},
     {"Duty step 7", "Sequences/Duty", 0, 3, 1, true},
     {"Duty step 8", "Sequences/Duty", 0, 3, 0, true},
+    {"Vibrato delay", "Performance", 0, 3000, 0, false},
+    {"Cents sequence", "Sequences/Cents", 0, 2, 0, true},
+    {"Cents length", "Sequences/Cents", 1, 8, 4, true},
+    {"Cents step rate", "Sequences/Cents", 1, 60, 15, false},
+    {"Cents step 1", "Sequences/Cents", -100, 100, 0, true},
+    {"Cents step 2", "Sequences/Cents", -100, 100, 0, true},
+    {"Cents step 3", "Sequences/Cents", -100, 100, 0, true},
+    {"Cents step 4", "Sequences/Cents", -100, 100, 0, true},
+    {"Cents step 5", "Sequences/Cents", -100, 100, 0, true},
+    {"Cents step 6", "Sequences/Cents", -100, 100, 0, true},
+    {"Cents step 7", "Sequences/Cents", -100, 100, 0, true},
+    {"Cents step 8", "Sequences/Cents", -100, 100, 0, true},
 }};
 
 constexpr const char* kWaveNames[] = {
@@ -189,15 +203,16 @@ inline bool format_value(uint32_t id, double value, char* text, uint32_t capacit
   else if (id == kArpMode) std::snprintf(text, capacity, "%s", kArpNames[std::clamp(static_cast<int>(std::round(value)), 0, 5)]);
   else if (id == kLayerMode) std::snprintf(text, capacity, "%s", kLayerNames[std::clamp(static_cast<int>(std::round(value)), 0, 5)]);
   else if (id == kPreset) std::snprintf(text, capacity, "%s", kPresetNames[std::clamp(static_cast<int>(std::round(value)), 0, static_cast<int>(sizeof(kPresetNames) / sizeof(kPresetNames[0]) - 1))]);
-  else if (id == kAttackMs || id == kReleaseMs || id == kPortamentoMs || id == kEchoTime || id == kChorusDepth) std::snprintf(text, capacity, "%.1f ms", value);
+  else if (id == kAttackMs || id == kReleaseMs || id == kPortamentoMs || id == kVibratoDelay || id == kEchoTime || id == kChorusDepth) std::snprintf(text, capacity, "%.1f ms", value);
   else if (id == kGainDb || id == kMasterDb) std::snprintf(text, capacity, "%.1f dB", value);
   else if (id == kFineTune) std::snprintf(text, capacity, "%.1f cents", value);
+  else if (id >= kCentsStep1 && id <= kCentsStep8) std::snprintf(text, capacity, "%+.0f cents", value);
   else if (id == kFmRatio) std::snprintf(text, capacity, "%.2f : 1", value);
   else if (id == kFmIndex || id == kGenesisFeedback || id == kRetroAmount || id == kRfNoise || id == kHum || id == kSpeaker || id == kStereoWidth || id == kChipResonance || id == kWavetablePosition || id == kWavetableWarp || id == kAdditiveTilt || id == kFmBrightness || id == kLayerMix || id == kDrive || id == kEchoMix || id == kEchoFeedback || id == kChorusMix) std::snprintf(text, capacity, "%.2f", value);
   else if (id == kVibratoRate || id == kChorusRate) std::snprintf(text, capacity, "%.2f Hz", value);
   else if (id == kVibratoDepth) std::snprintf(text, capacity, "%.2f semitones", value);
-  else if (id == kDutySeqMode) std::snprintf(text, capacity, "%s", kDutySeqNames[std::clamp(static_cast<int>(std::round(value)), 0, 2)]);
-  else if (id == kDutySeqRate || id == kArpRate) std::snprintf(text, capacity, "%.1f steps/s", value);
+  else if (id == kDutySeqMode || id == kCentsSeqMode) std::snprintf(text, capacity, "%s", kDutySeqNames[std::clamp(static_cast<int>(std::round(value)), 0, 2)]);
+  else if (id == kDutySeqRate || id == kCentsSeqRate || id == kArpRate) std::snprintf(text, capacity, "%.1f steps/s", value);
   else if (id == kSyncDivision) std::snprintf(text, capacity, "%s", kSyncDivisionNames[std::clamp(static_cast<int>(std::round(value)), 0, 7)]);
   else if (id == kDpcmTrimStart || id == kDpcmTrimEnd) std::snprintf(text, capacity, "%.0f%%", value * 100.0);
   else if (id == kDpcmBaseKey) {

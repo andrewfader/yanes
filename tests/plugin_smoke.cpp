@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
   const auto* tail = static_cast<const clap_plugin_tail_t*>(plugin->get_extension(plugin, CLAP_EXT_TAIL));
   assert(audio && audio->count(plugin, false) == 1 && audio->count(plugin, true) == 0);
   assert(notes && notes->count(plugin, true) == 1);
-  assert(params && params->count(plugin) == 91);
+  assert(params && params->count(plugin) == 103);
   assert(latency && latency->get(plugin) == 0);
   assert(tail);
 #ifdef __linux__
@@ -125,9 +125,9 @@ int main(int argc, char** argv) {
   uint32_t gui_width=0,gui_height=0;assert(gui->get_size(plugin,&gui_width,&gui_height));
   assert(gui_width==1600&&gui_height==1050);assert(gui->can_resize(plugin));
   clap_gui_resize_hints_t hints{};assert(gui->get_resize_hints(plugin,&hints));assert(hints.can_resize_horizontally&&hints.can_resize_vertically&&!hints.preserve_aspect_ratio);
-  uint32_t adjusted_width=400,adjusted_height=300;assert(gui->adjust_size(plugin,&adjusted_width,&adjusted_height));assert(adjusted_width==960&&adjusted_height==630);
+  uint32_t adjusted_width=400,adjusted_height=300;assert(gui->adjust_size(plugin,&adjusted_width,&adjusted_height));assert(adjusted_width==800&&adjusted_height==525);
   assert(gui->set_size(plugin,1920,900));assert(gui->get_size(plugin,&gui_width,&gui_height));assert(gui_width==1920&&gui_height==900);
-  assert(!gui->set_size(plugin,800,600));assert(gui->set_size(plugin,1600,1050));
+  assert(!gui->set_size(plugin,799,600));assert(gui->set_size(plugin,800,525));assert(gui->set_size(plugin,1600,1050));
   for(uint32_t i=0;i<params->count(plugin);++i){clap_param_info_t info{};assert(params->get_info(plugin,i,&info));assert(info.id==i);assert(info.name[0]&&info.module[0]);char text[128]{};assert(params->value_to_text(plugin,i,info.default_value,text,sizeof(text)));assert(text[0]);}
   // Whatever the plug-in displays, it must parse back: hosts offer that text for typed entry.
   for(uint32_t i=0;i<params->count(plugin);++i){

@@ -529,6 +529,84 @@ void test_duty_sequence(const Library& library) {
   plugin->destroy(plugin);
 }
 
+// Interpolated rising zero crossings of samples[from, to), in samples.
+std::vector<double> rising_crossings(const std::vector<float>& samples, size_t from, size_t to) {
+  std::vector<double> out;
+  for (size_t i = from + 1; i < to; ++i)
+    if (samples[i - 1] < 0.0f && samples[i] >= 0.0f)
+      out.push_back(static_cast<double>(i - 1) + samples[i - 1] / (samples[i - 1] - samples[i]));
+  return out;
+}
+
+double mean_hz(const std::vector<float>& samples, size_t from, size_t to) {
+  const std::vector<double> c = rising_crossings(samples, from, to);
+  assert(c.size() >= 3);
+  return kRate * static_cast<double>(c.size() - 1) / (c.back() - c.front());
+}
+
+// Largest over smallest cycle length in the window: 1 for a steady pitch.
+double period_spread(const std::vector<float>& samples, size_t from, size_t to) {
+  const std::vector<double> c = rising_crossings(samples, from, to);
+  assert(c.size() >= 3);
+  double lo = 1.0e9, hi = 0.0;
+  for (size_t i = 1; i < c.size(); ++i) { lo = std::min(lo, c[i] - c[i - 1]); hi = std::max(hi, c[i] - c[i - 1]); }
+  return hi / lo;
+}
+
+// A sine-like source so zero crossings give the pitch directly.
+void set_sine(Runner& runner, const clap_plugin_t* plugin) {
+  runner.set(find_param(plugin, "Waveform"), 46);
+  runner.set(find_param(plugin, "Table position"), 0);
+}
+
+// The cents lane detunes each step by its own amount, looping or holding the last step.
+void test_cents_sequence(const Library& library) {
+  for (const int mode : {1, 2}) {
+    const clap_plugin_t* plugin = library.create();
+    {
+      Runner runner(plugin, kRate, kBlock);
+      set_sine(runner, plugin);
+      runner.set(find_param(plugin, "Cents sequence"), mode);
+      runner.set(find_param(plugin, "Cents length"), 2);
+      runner.set(find_param(plugin, "Cents step rate"), 5);  // 9600 samples per step
+      runner.set(find_param(plugin, "Cents step 1"), 0);
+      runner.set(find_param(plugin, "Cents step 2"), 100);
+      const std::vector<float> samples = render_note(runner, 0, 69, 60);  // 30720 samples
+      const double first = mean_hz(samples, 1500, 9000);
+      const double second = mean_hz(samples, 11100, 18600);
+      const double third = mean_hz(samples, 20700, 28200);
+      const double up = 440.0 * std::pow(2.0, 1.0 / 12.0);
+      const auto close_to = [](double actual, double hz) { return std::abs(actual / hz - 1.0) < 0.01; };
+      if (!close_to(first, 440.0) || !close_to(second, up) || !close_to(third, mode == 1 ? 440.0 : up)) {
+        std::fprintf(stderr, "cents mode %d: %.2f, %.2f, %.2f Hz\n", mode, first, second, third);
+        assert(false);
+      }
+    }
+    plugin->destroy(plugin);
+  }
+}
+
+// Delayed vibrato: the pitch holds steady for the delay, then wobbles.
+void test_vibrato_delay(const Library& library) {
+  const clap_plugin_t* plugin = library.create();
+  {
+    Runner runner(plugin, kRate, kBlock);
+    set_sine(runner, plugin);
+    runner.set(find_param(plugin, "Vibrato depth"), 1.0);
+    runner.set(find_param(plugin, "Vibrato rate"), 6.0);
+    runner.set(find_param(plugin, "Vibrato delay"), 300.0);  // 14400 samples
+    const std::vector<float> samples = render_note(runner, 0, 69, 70);  // 35840 samples
+    const double before = period_spread(samples, 1500, 14000);
+    const double after = period_spread(samples, 16000, 35000);
+    if (!(before < 1.01) || !(after > 1.05)) {
+      std::fprintf(stderr, "vibrato delay: spread %.4f before, %.4f after\n", before, after);
+      assert(false);
+    }
+    assert(std::abs(mean_hz(samples, 1500, 14000) / 440.0 - 1.0) < 0.005);
+  }
+  plugin->destroy(plugin);
+}
+
 void test_channel_volume(const Library& library) {
   const clap_plugin_t* plugin = library.create();
   {
@@ -802,6 +880,8 @@ int main(int argc, char** argv) {
   test_unhandled_midi_is_ignored(library);
   test_polyphony_and_voice_stealing(library);
   test_reset_clears_voices(library);
+  test_cents_sequence(library);
+  test_vibrato_delay(library);
   test_transport_tempo(library);
   test_mixer_masks(library);
   test_strict_hardware_choke(library);

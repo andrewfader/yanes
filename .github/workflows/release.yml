@@ -1,0 +1,128 @@
+name: Release
+
+# Pushing a version tag (v0.3.0, ...) builds, tests, and packages the plug-in on every platform
+# and publishes the archives as a GitHub release. The builds are unsigned.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build and publish
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # The oldest supported Ubuntu, so the binary runs on as many distributions as possible;
+          # libstdc++ is linked statically for the same reason.
+          - name: Linux x64
+            os: ubuntu-22.04
+            package: linux-x64
+            configure: >-
+              -DCMAKE_C_COMPILER=gcc-12 -DCMAKE_CXX_COMPILER=g++-12
+              "-DCMAKE_MODULE_LINKER_FLAGS=-static-libstdc++ -static-libgcc"
+          - name: Windows x64
+            os: windows-2022
+            package: windows-x64
+            configure: ''
+          # One universal bundle for Apple Silicon and Intel.
+          - name: macOS universal
+            os: macos-15
+            package: macos-universal
+            configure: >-
+              "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc-12 g++-12 cmake pkg-config libx11-dev libxft-dev
+
+      - name: Configure CMake
+        shell: bash
+        run: cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release ${{ matrix.configure }}
+
+      - name: Build
+        run: cmake --build build-release --config Release --parallel 3
+
+      - name: Run tests
+        run: ctest --test-dir build-release -C Release --output-on-failure
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          name="YANES-${tag}-${{ matrix.package }}"
+          mkdir -p "dist/${name}"
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md "dist/${name}/"
+          case "${{ runner.os }}" in
+            Linux)
+              cp build-release/YANES.clap "dist/${name}/"
+              printf 'Copy YANES.clap to ~/.clap/ (or /usr/lib/clap/) and rescan plug-ins in your DAW.\nNeeds the X11 and Xft libraries, which every desktop distribution ships.\n' > "dist/${name}/INSTALL.txt"
+              tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+              ;;
+            Windows)
+              cp build-release/Release/YANES.clap "dist/${name}/"
+              printf 'Copy YANES.clap to C:\\Program Files\\Common Files\\CLAP\\ and rescan plug-ins in your DAW.\r\n' > "dist/${name}/INSTALL.txt"
+              (cd dist && 7z a -tzip "${name}.zip" "${name}" > /dev/null)
+              ;;
+            macOS)
+              cp -R build-release/YANES.clap "dist/${name}/"
+              printf 'Copy YANES.clap to ~/Library/Audio/Plug-Ins/CLAP/ and rescan plug-ins in your DAW.\nThis build is not notarized. If macOS blocks it, run:\n  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/CLAP/YANES.clap\n' > "dist/${name}/INSTALL.txt"
+              (cd dist && ditto -c -k --keepParent "${name}" "${name}.zip")
+              ;;
+          esac
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.package }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "YANES $TAG" --generate-notes
+          fi
