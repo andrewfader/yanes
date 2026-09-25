@@ -506,8 +506,8 @@ void test_duty_sequence(const Library& library) {
         const double first = high_fraction(samples, 1200, 4400);
         const double second = high_fraction(samples, 6000, 9200);
         const double third = high_fraction(samples, 10800, 14000);
-        const auto near = [](double actual, double duty) { return std::abs(actual - duty) < 0.07; };
-        if (!near(first, 0.125) || !near(second, 0.5) || !near(third, mode == 1 ? 0.125 : 0.5)) {
+        const auto close_to = [](double actual, double duty) { return std::abs(actual - duty) < 0.07; };
+        if (!close_to(first, 0.125) || !close_to(second, 0.5) || !close_to(third, mode == 1 ? 0.125 : 0.5)) {
           std::fprintf(stderr, "%s, mode %d: duty %.3f, %.3f, %.3f\n", c.name, mode, first, second, third);
           assert(false);
         }
