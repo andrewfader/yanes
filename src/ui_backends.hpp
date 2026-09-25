@@ -420,7 +420,7 @@ bool gui_create(const clap_plugin_t* plugin, const char* api, bool floating) {
   wc.cbSize = sizeof(wc);
   wc.lpfnWndProc = gui_wndproc;
   wc.hInstance = GetModuleHandleW(nullptr);
-  wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(OCR_NORMAL));
+  wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   wc.lpszClassName = L"YANES_Editor_0_2_0";
   RegisterClassExW(&wc);
   p->hwnd = CreateWindowExW(0, wc.lpszClassName, L"YANES", WS_CHILD,

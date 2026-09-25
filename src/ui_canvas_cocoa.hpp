@@ -69,8 +69,8 @@ class CocoaCanvas final : public Canvas {
     NSFont* font_ = fonts_[static_cast<size_t>(size)];
     NSString* string = to_string(text);
     if (!string) return 0;
-    const NSSize size = [string sizeWithAttributes:@{NSFontAttributeName : font_}];
-    return unscale_x(static_cast<int>(size.width), window_width_);
+    const NSSize extent = [string sizeWithAttributes:@{NSFontAttributeName : font_}];
+    return unscale_x(static_cast<int>(extent.width), window_width_);
   }
 
  private:

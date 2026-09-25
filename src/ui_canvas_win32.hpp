@@ -93,10 +93,10 @@ class Win32Canvas final : public Canvas {
   int measure_text(const std::string& text, TextSize size) override {
     const std::wstring wide = widen(text);
     SelectObject(dc_, fonts_[static_cast<size_t>(size)]);
-    SIZE size{};
-    if (wide.empty() || !GetTextExtentPoint32W(dc_, wide.c_str(), static_cast<int>(wide.size()), &size))
+    SIZE extent{};
+    if (wide.empty() || !GetTextExtentPoint32W(dc_, wide.c_str(), static_cast<int>(wide.size()), &extent))
       return 0;
-    return unscale_x(size.cx, window_width_);
+    return unscale_x(extent.cx, window_width_);
   }
 
  private:
