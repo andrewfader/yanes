@@ -160,15 +160,17 @@ struct Plugin {
   std::atomic<float> output_peak_l{}, output_peak_r{};
   std::atomic<bool> output_clipped{};
   std::atomic<bool> params_rescan_pending{};
+  std::atomic<bool> tail_changed_pending{};
+  const clap_host_tail_t* host_tail{};
   double hum_phase{};
-  double pitch_bend{};
-  double mod_wheel{};
+  std::array<double,16> pitch_bend{};
+  std::array<double,16> mod_wheel{};
   std::array<double,16> channel_volume{1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,
                                        1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0};
   std::vector<float> delay_buffer{};
   size_t delay_write{};
   double chorus_phase{};
-  double tempo{120.0};
+  std::atomic<double> tempo{120.0};
   std::array<AtomicSharedPtr<const std::vector<uint8_t>>, 16> dpcm_banks{};
   std::vector<std::shared_ptr<const std::vector<uint8_t>>> retired_dpcm_banks{};
   std::array<std::atomic<float>,256> scope_samples{};
@@ -300,6 +302,19 @@ constexpr VoiceDefaults kVoiceDefaults[] = {
 
 void set_param(Plugin* p, clap_id id, double value, bool apply_preset);
 
+void tail_changed(Plugin* p) {
+  if (p->initialized && p->host_tail && p->host_tail->changed &&
+      !p->tail_changed_pending.exchange(true, std::memory_order_acq_rel) &&
+      p->host && p->host->request_process)
+    p->host->request_process(p->host);
+}
+
+void update_tempo(Plugin* p, double tempo) {
+  if (std::isfinite(tempo) && tempo > 1.0 &&
+      p->tempo.exchange(tempo, std::memory_order_relaxed) != tempo)
+    tail_changed(p);
+}
+
 void apply_voice_defaults(Plugin* p, int waveform) {
   for (const auto& voice : kVoiceDefaults) {
     if (voice.waveform != waveform) continue;
@@ -321,19 +336,16 @@ void apply_voice_defaults(Plugin* p, int waveform) {
 }
 
 void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
-  if (id >= kParamCount) return;
+  if (id >= kParamCount || !std::isfinite(value)) return;
   const auto& s = kSpecs[id];
   value = std::clamp(value, s.min, s.max);
   if (s.stepped) value = std::round(value);
   const double previous=p->params[id].exchange(value,std::memory_order_relaxed);
   if(previous!=value)p->ui_revision.fetch_add(1,std::memory_order_release);
-  if (previous != value && p->initialized &&
-      (id == kReleaseMs || id == kEchoMix || id == kEchoTime || id == kEchoFeedback) &&
-      p->host && p->host->get_extension) {
-    if (const auto* tail = static_cast<const clap_host_tail_t*>(
-            p->host->get_extension(p->host, CLAP_EXT_TAIL)); tail && tail->changed)
-      tail->changed(p->host);
-  }
+  if (previous != value &&
+      (id == kReleaseMs || id == kEchoMix || id == kEchoTime || id == kEchoFeedback ||
+       id == kChorusMix || id == kTempoSync || id == kSyncDivision))
+    tail_changed(p);
   if (id == kGenesisAlgorithm || id == kGenesisFeedback || id == kFmBrightness ||
       (id >= kFmAttack && id <= kFmPmDepth)) p->fm_revision.fetch_add(1, std::memory_order_release);
   // Only on an actual change, so re-sending the current voice never overwrites
@@ -617,7 +629,7 @@ void handle_event(Plugin* p, const clap_event_header_t* h, const clap_output_eve
     }
   } else if (h->type == CLAP_EVENT_TRANSPORT) {
     const auto* e = reinterpret_cast<const clap_event_transport_t*>(h);
-    if ((e->flags & CLAP_TRANSPORT_HAS_TEMPO) && e->tempo > 1.0) p->tempo = e->tempo;
+    if (e->flags & CLAP_TRANSPORT_HAS_TEMPO) update_tempo(p, e->tempo);
   } else if (h->type == CLAP_EVENT_MIDI) {
     const auto* e = reinterpret_cast<const clap_event_midi_t*>(h);
     const int status = e->data[0] & 0xf0;
@@ -629,7 +641,8 @@ void handle_event(Plugin* p, const clap_event_header_t* h, const clap_output_eve
         else release_voice(p, v);
       }
     }
-    if (status == 0xb0 && e->data[1] == 1) p->mod_wheel = e->data[2] / 127.0;
+    if (status == 0xb0 && e->data[1] == 1)
+      p->mod_wheel[static_cast<size_t>(channel)] = e->data[2] / 127.0;
     // CC7 is live performance input, like pitch bend and sustain, and applies
     // independently to each MIDI channel/stack part.
     if (status == 0xb0 && e->data[1] == 7)
@@ -649,7 +662,7 @@ void handle_event(Plugin* p, const clap_event_header_t* h, const clap_output_eve
     }
     if (status == 0xe0) {
       const int bend = e->data[1] | (e->data[2] << 7);
-      p->pitch_bend = (bend - 8192) / 8192.0;
+      p->pitch_bend[static_cast<size_t>(channel)] = (bend - 8192) / 8192.0;
     }
   }
 }
@@ -661,7 +674,7 @@ constexpr double kSyncDivisions[] = {0.25, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0};
 double sequence_rate(const Plugin* p, double free_rate) {
   if (p->params[kTempoSync].load(std::memory_order_relaxed) < 0.5) return free_rate;
   const int division = static_cast<int>(p->params[kSyncDivision].load(std::memory_order_relaxed));
-  return p->tempo / 60.0 * kSyncDivisions[std::clamp(division, 0, 7)];
+  return p->tempo.load(std::memory_order_relaxed) / 60.0 * kSyncDivisions[std::clamp(division, 0, 7)];
 }
 
 // The pulse duty index (0..3) this voice plays right now: the Pulse duty parameter, or, with
@@ -737,13 +750,15 @@ float render_voice(Plugin* p, Voice& v) {
   // vibrato; the mod wheel stays immediate so a player can always add it by hand.
   const double vibrato_rate = p->params[kVibratoRate].load(std::memory_order_relaxed);
   const double vibrato_delay = p->params[kVibratoDelay].load(std::memory_order_relaxed) * 0.001 * p->sample_rate;
-  double vibrato = std::sin(6.28318530718 * elapsed_samples * vibrato_rate / p->sample_rate) * p->mod_wheel * 0.75;
+  const size_t midi_channel = static_cast<size_t>(std::clamp<int>(v.channel, 0, 15));
+  double vibrato = std::sin(6.28318530718 * elapsed_samples * vibrato_rate / p->sample_rate) *
+                   p->mod_wheel[midi_channel] * 0.75;
   if (elapsed_samples >= vibrato_delay)
     vibrato += std::sin(6.28318530718 * (elapsed_samples - vibrato_delay) * vibrato_rate / p->sample_rate) *
                p->params[kVibratoDepth].load(std::memory_order_relaxed);
   const double bend_range = p->params[kPitchBendRange].load(std::memory_order_relaxed);
   double frequency = yanes::midi_frequency(v.note + transpose + fine + sequence_pitch +
-                                            v.tuning_expression + p->pitch_bend * bend_range + vibrato);
+                                            v.tuning_expression + p->pitch_bend[midi_channel] * bend_range + vibrato);
   const int selected_waveform=static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
   int waveform=selected_waveform;
   if (waveform == 18) { // NES: MIDI channels 1..5 = pulse 1, pulse 2, triangle, noise, DPCM.
@@ -1177,6 +1192,19 @@ float process_retro(Plugin* p, float input) {
 }
 
 struct StereoSample { float left{}, right{}; };
+// Share the actual tap length with tail reporting, including tempo sync and the
+// delay buffer's two-second limit.
+size_t echo_delay_samples(const Plugin* p) {
+  double seconds = p->params[kEchoTime].load(std::memory_order_relaxed) * 0.001;
+  if (p->params[kTempoSync].load(std::memory_order_relaxed) >= 0.5) {
+    constexpr double beat_lengths[] = {0.0625, 0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0};
+    const int division = static_cast<int>(p->params[kSyncDivision].load(std::memory_order_relaxed));
+    seconds = 60.0 / p->tempo.load(std::memory_order_relaxed) * beat_lengths[std::clamp(division, 0, 7)];
+  }
+  const size_t capacity = static_cast<size_t>(std::max(2.0, p->sample_rate * 2.0));
+  return std::clamp<size_t>(static_cast<size_t>(seconds * p->sample_rate), 1, capacity - 1);
+}
+
 StereoSample process_rack(Plugin* p, float input) {
   const double drive = p->params[kDrive].load(std::memory_order_relaxed);
   // Drive at zero must be a transparent chip out — tanh(x) still rounds peaks.
@@ -1186,13 +1214,7 @@ StereoSample process_rack(Plugin* p, float input) {
           : std::tanh(input * static_cast<float>(1.0 + 7.0 * drive));
   if (p->delay_buffer.empty()) return {driven, driven};
   const size_t size = p->delay_buffer.size();
-  double echo_seconds = p->params[kEchoTime].load(std::memory_order_relaxed) * 0.001;
-  if (p->params[kTempoSync].load(std::memory_order_relaxed) >= 0.5) {
-    constexpr double beat_lengths[] = {0.0625, 0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0};
-    const int division = static_cast<int>(p->params[kSyncDivision].load(std::memory_order_relaxed));
-    echo_seconds = 60.0 / p->tempo * beat_lengths[std::clamp(division, 0, 7)];
-  }
-  const size_t echo_samples = std::clamp<size_t>(static_cast<size_t>(echo_seconds * p->sample_rate), 1, size - 1);
+  const size_t echo_samples = echo_delay_samples(p);
   const float delayed = p->delay_buffer[(p->delay_write + size - echo_samples) % size];
   const float feedback = static_cast<float>(p->params[kEchoFeedback].load(std::memory_order_relaxed));
   p->delay_buffer[p->delay_write] = driven + delayed * feedback;
@@ -1222,6 +1244,9 @@ bool gui_is_open(const Plugin* p);
 bool plugin_init(const clap_plugin_t* plugin) {
   auto* p = self(plugin);
   p->initialized = true;
+  if (p->host && p->host->get_extension)
+    p->host_tail = static_cast<const clap_host_tail_t*>(
+        p->host->get_extension(p->host, CLAP_EXT_TAIL));
 #if defined(YANES_HAS_EDITOR) && defined(__linux__)
   // init() is the first point where asking the host for extensions is legal, and the editor
   // needs both answers before it can decide whether it can open at all.
@@ -1277,8 +1302,16 @@ void plugin_reset(const clap_plugin_t* plugin) {
   for (size_t i = 0; i < p->voices.size(); ++i) { p->voices[i] = Voice{}; p->hardware_fm[i].reset(); }
   p->sustain_pedal.fill(false);
   std::fill(p->delay_buffer.begin(), p->delay_buffer.end(), 0.0f);
-  p->delay_write = 0; p->pitch_bend = 0; p->mod_wheel = 0;
+  p->delay_write = 0;
+  p->pitch_bend.fill(0.0);
+  p->mod_wheel.fill(0.0);
   p->channel_volume.fill(1.0);
+  p->previous_note = 60.0;
+  p->age_counter = 0;
+  p->effect_rng = 0x12345678U;
+  p->held_sample = p->hold_phase = 0.0;
+  p->hp_x = p->hp_y = p->lp_y = 0.0;
+  p->hum_phase = p->chorus_phase = 0.0;
   p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;
   p->output_peak_l.store(0.0f);p->output_peak_r.store(0.0f);p->output_clipped.store(false);
   p->nes_apu.reset();
@@ -1288,8 +1321,8 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
   auto* p = self(plugin);
   if (process->audio_outputs_count == 0 || !process->audio_outputs[0].data32) return CLAP_PROCESS_ERROR;
   auto& out = process->audio_outputs[0];
-  if (process->transport && (process->transport->flags & CLAP_TRANSPORT_HAS_TEMPO) && process->transport->tempo > 1.0)
-    p->tempo = process->transport->tempo;
+  if (process->transport && (process->transport->flags & CLAP_TRANSPORT_HAS_TEMPO))
+    update_tempo(p, process->transport->tempo);
   const uint64_t revision=p->fm_revision.load(std::memory_order_acquire);
   if(revision!=p->applied_fm_revision){const auto controls=fm_controls(p);for(auto& core:p->hardware_fm)core.update_controls(controls);p->applied_fm_revision=revision;}
   const clap_output_events_t* out_events = process->out_events;
@@ -1375,6 +1408,11 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
   take_events(process->frames_count, true);
   p->output_peak_l.store(block_peak_l,std::memory_order_relaxed);p->output_peak_r.store(block_peak_r,std::memory_order_relaxed);
   p->output_clipped.store(block_clipped,std::memory_order_relaxed);
+  // CLAP reserves this callback for the audio thread. UI edits and state loads
+  // only set the pending flag; all changes in this block produce one callback.
+  if (p->tail_changed_pending.exchange(false, std::memory_order_acq_rel) &&
+      p->host_tail && p->host_tail->changed)
+    p->host_tail->changed(p->host);
   return CLAP_PROCESS_CONTINUE;
 }
 
@@ -1502,11 +1540,26 @@ bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
     std::copy(std::begin(state.values), std::end(state.values), values.begin()); sizes[0] = state.dpcm_size;
   } else return false;
   for (uint32_t size : sizes) if (size > 1024U * 1024U) return false;
+  for (double value : values) if (!std::isfinite(value)) return false;
+  // Stage every payload before touching the running patch. A truncated later
+  // slot must not leave new parameters and earlier banks partially installed.
+  auto* p = self(plugin);
+  std::array<std::shared_ptr<const std::vector<uint8_t>>,16> banks{};
+  try {
+    for (size_t i = 0; i < banks.size(); ++i) {
+      if (sizes[i] == 0) continue;
+      auto bank = std::make_shared<std::vector<uint8_t>>(sizes[i]);
+      if (!read_exact(bank->data(), sizes[i])) return false;
+      banks[i] = std::move(bank);
+    }
+    p->retired_dpcm_banks.reserve(p->retired_dpcm_banks.size() + banks.size());
+  } catch (const std::bad_alloc&) {
+    return false;
+  }
   // State is an exact parameter snapshot. Restoring the Preset selector must not
   // execute its recipe and overwrite the other values in that snapshot.
-  for (clap_id i = 0; i < kParamCount; ++i) set_param(self(plugin), i, values[i], false);
-  auto* p = self(plugin);
-  for (size_t i = 0; i < 16; ++i) { auto bank=std::make_shared<std::vector<uint8_t>>(sizes[i]);if (!read_exact(bank->data(), sizes[i])) return false;install_dpcm_bank(p,i,std::move(bank)); }
+  for (clap_id i = 0; i < kParamCount; ++i) set_param(p, i, values[i], false);
+  for (size_t i = 0; i < banks.size(); ++i) install_dpcm_bank(p, i, std::move(banks[i]));
 #ifdef YANES_HAS_EDITOR
   // An open editor keeps its size; the host already owns that window's geometry.
   if (!gui_is_open(p) && gui_width >= static_cast<uint32_t>(yanes::ui::minimum_width) &&
@@ -1529,12 +1582,15 @@ uint32_t tail_get(const clap_plugin_t* plugin) {
   double seconds = p->params[kReleaseMs].load(std::memory_order_relaxed) * 0.001;
   const double mix = p->params[kEchoMix].load(std::memory_order_relaxed);
   const double feedback = p->params[kEchoFeedback].load(std::memory_order_relaxed);
-  if (mix > 1.0e-6 && feedback > 1.0e-6) {
-    // Number of repeats needed to fall below -100 dB, plus the voice release.
-    const double repeats = std::log(1.0e-5) / std::log(std::clamp(feedback, 1.0e-6, 0.999999));
-    seconds += p->params[kEchoTime].load(std::memory_order_relaxed) * 0.001 * repeats;
+  const double chorus = p->params[kChorusMix].load(std::memory_order_relaxed);
+  if (mix > 1.0e-6 || chorus > 1.0e-6) {
+    // The first echo is audible even with no feedback. Chorus taps share the
+    // same feedback buffer, so they can also carry the later repeats.
+    const double repeats = feedback > 1.0e-6
+        ? 1.0 + std::ceil(std::log(1.0e-5) / std::log(feedback)) : 1.0;
+    seconds += static_cast<double>(echo_delay_samples(p)) / p->sample_rate * repeats;
   }
-  if (p->params[kChorusMix].load(std::memory_order_relaxed) > 1.0e-6)
+  if (chorus > 1.0e-6)
     seconds += 0.026; // 14 ms base delay plus the maximum 12 ms modulation depth.
   return static_cast<uint32_t>(std::min<double>(std::ceil(seconds * p->sample_rate), INT32_MAX - 1.0));
 }

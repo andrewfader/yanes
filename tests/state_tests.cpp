@@ -8,6 +8,7 @@
 #include "clap_harness.hpp"
 
 #include <array>
+#include <limits>
 
 using namespace harness;
 
@@ -322,6 +323,62 @@ void test_state_values_are_clamped(const Library& library) {
   plugin->destroy(plugin);
 }
 
+// A failed load must leave the entire current patch (including every bank) intact.
+void test_failed_load_preserves_patch(const Library& library) {
+  const clap_plugin_t* plugin = library.create();
+  const uint32_t count = params_of(plugin)->count(plugin);
+  Blob original(15, count, 16);
+  for (clap_id i = 0; i < count; ++i) original.value(i, param_info(plugin, i).default_value);
+  original.value(find_param(plugin, "Master"), -24.0);
+  original.size(0, 8);
+  original.size(15, 8);
+  original.append(std::vector<uint8_t>(16, 0x5a));
+  assert(load_state(plugin, original.memory()));
+  StateMemory before;
+  assert(save_state(plugin, &before));
+
+  Blob replacement(15, count, 16);
+  for (clap_id i = 0; i < count; ++i) replacement.value(i, param_info(plugin, i).default_value);
+  replacement.value(find_param(plugin, "Waveform"), 17);
+  replacement.size(0, 8);
+  replacement.size(15, 8);
+  replacement.append(std::vector<uint8_t>(16, 0xa5));
+  const StateMemory full = replacement.memory();
+  for (const size_t missing : {size_t{16}, size_t{8}, size_t{1}}) {
+    assert(!load_state(plugin, slice(full, full.bytes.size() - missing)));
+    StateMemory after;
+    assert(save_state(plugin, &after));
+    assert(after.bytes == before.bytes);
+  }
+  plugin->destroy(plugin);
+}
+
+// Corrupt floating-point values must be rejected before any state is installed,
+// including when they arrive in one of the supported legacy formats.
+void test_nonfinite_state_is_rejected(const Library& library) {
+  const clap_plugin_t* plugin = library.create();
+  const uint32_t count = params_of(plugin)->count(plugin);
+  StateMemory before;
+  assert(save_state(plugin, &before));
+  std::vector<LegacyLayout> layouts(std::begin(kLegacy), std::end(kLegacy));
+  layouts.push_back({15, count, 16});
+  for (const auto& layout : layouts) {
+    for (const double poison : {std::numeric_limits<double>::quiet_NaN(),
+                               std::numeric_limits<double>::infinity(),
+                               -std::numeric_limits<double>::infinity()}) {
+      Blob blob(layout.version, layout.values, layout.sizes);
+      for (size_t i = 0; i < layout.values; ++i)
+        blob.value(i, param_info(plugin, static_cast<clap_id>(i)).default_value);
+      blob.value(find_param(plugin, "Master"), poison);
+      assert(!load_state(plugin, blob.memory()));
+      StateMemory after;
+      assert(save_state(plugin, &after));
+      assert(after.bytes == before.bytes);
+    }
+  }
+  plugin->destroy(plugin);
+}
+
 // A stream that only returns a few bytes per call must still be read completely.
 int64_t dribble_read(const clap_istream_t* stream, void* data, uint64_t size) {
   auto* memory = static_cast<StateMemory*>(stream->ctx);
@@ -448,6 +505,8 @@ int main(int argc, char** argv) {
   test_legacy_sample_lands_in_first_slot(library);
   test_rejects_malformed_state(library);
   test_state_values_are_clamped(library);
+  test_failed_load_preserves_patch(library);
+  test_nonfinite_state_is_rejected(library);
   test_partial_stream_transfers(library);
   test_state_load_during_playback(library);
   test_presets_do_not_accumulate(library);

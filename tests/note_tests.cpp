@@ -7,6 +7,8 @@
 // "the voice was released" is directly observable as silence.
 #include "clap_harness.hpp"
 
+#include <limits>
+
 using namespace harness;
 
 namespace {
@@ -392,6 +394,72 @@ void test_mod_wheel_and_pitch_bend(const Library& library) {
   plugin->destroy(plugin);
 }
 
+// Channel controllers must affect only that channel, starting at the event frame.
+void test_wheels_are_per_channel(const Library& library) {
+  for (const uint8_t note_channel : {uint8_t{0}, uint8_t{7}, uint8_t{15}}) {
+    for (const bool bend : {false, true}) {
+      const auto render = [&](int controller_channel) {
+        const clap_plugin_t* plugin = library.create();
+        std::vector<float> audio;
+        {
+          Runner runner(plugin, kRate, kBlock);
+          runner.set(find_param(plugin, "Waveform"), 1);
+          Events on;
+          on.push(midi_event(static_cast<uint8_t>(0x90 | note_channel), 57, 127));
+          runner.run(&on);
+          Events control;
+          if (controller_channel >= 0) {
+            auto event = bend
+                ? midi_event(static_cast<uint8_t>(0xe0 | controller_channel), 127, 127)
+                : midi_event(static_cast<uint8_t>(0xb0 | controller_channel), 1, 127);
+            event.header.time = kBlock / 2;
+            control.push(event);
+          }
+          runner.run(&control);
+          audio = runner.left();
+          for (int i = 0; i < 4; ++i) {
+            runner.run();
+            audio.insert(audio.end(), runner.left().begin(), runner.left().end());
+          }
+        }
+        plugin->destroy(plugin);
+        return audio;
+      };
+      const auto reference = render(-1);
+      assert(render((note_channel + 1) % 16) == reference);
+      const auto changed = render(note_channel);
+      assert(std::equal(reference.begin(), reference.begin() + kBlock / 2, changed.begin()));
+      assert(changed != reference);
+    }
+  }
+}
+
+void test_nonfinite_parameter_events_are_ignored(const Library& library) {
+  const clap_plugin_t* plugin = library.create();
+  StateMemory before;
+  assert(save_state(plugin, &before));
+  for (const double poison : {std::numeric_limits<double>::quiet_NaN(),
+                             std::numeric_limits<double>::infinity(),
+                             -std::numeric_limits<double>::infinity()}) {
+    Events changes;
+    for (clap_id id = 0; id < params_of(plugin)->count(plugin); ++id)
+      changes.push(param_event(id, poison));
+    flush(plugin, changes);
+    StateMemory after;
+    assert(save_state(plugin, &after));
+    assert(after.bytes == before.bytes);
+    {
+      Runner runner(plugin, kRate, kBlock);
+      Events on;
+      on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
+      expect_audible(runner.run(&on), "note after invalid parameter flush");
+      expect_audible(runner.run(&changes), "note after invalid parameter automation");
+      plugin->reset(plugin);
+    }
+  }
+  plugin->destroy(plugin);
+}
+
 // Estimates the fundamental of a steady tone from rising zero crossings, interpolated
 // to sub-sample precision, over `blocks` rendered blocks.
 double measure_hz(Runner& runner, int blocks) {
@@ -696,6 +764,145 @@ void test_reset_clears_voices(const Library& library) {
   plugin->destroy(plugin);
 }
 
+void test_reset_clears_effects(const Library& library) {
+  const clap_plugin_t* plugin = library.create();
+  {
+    Runner runner(plugin, kRate, kBlock);
+    runner.set(find_param(plugin, "Retro amount"), 1.0);
+    runner.set(find_param(plugin, "Output rate"), 4000.0);
+    runner.set(find_param(plugin, "TV speaker"), 1.0);
+    runner.set(find_param(plugin, "Portamento"), 200.0);
+    runner.set(find_param(plugin, "Chorus mix"), 0.3);
+    plugin->reset(plugin);
+    Events on;
+    on.push(midi_event(0x90, 72, 127));
+    expect_audible(runner.run(&on), "retro voice before reset");
+    const auto reference = runner.left();
+    runner.settle(4);
+    Events wheels;
+    wheels.push(midi_event(0xb0, 1, 127));
+    wheels.push(midi_event(0xe0, 127, 127));
+    runner.run(&wheels);
+    plugin->reset(plugin);
+    expect_silent(runner.run(), "reset clears retro filter and sample hold");
+
+    plugin->reset(plugin);
+    runner.run(&on);
+    assert(runner.left() == reference);
+  }
+  plugin->destroy(plugin);
+}
+
+// A host stops rendering after the reported tail; even a zero-feedback echo
+// needs one complete delay, and tempo sync can make it longer than Echo time.
+void test_tail_covers_delayed_audio(const Library& library) {
+  for (const bool synced : {false, true}) {
+    const clap_plugin_t* plugin = library.create();
+    const auto* tail = static_cast<const clap_plugin_tail_t*>(
+        plugin->get_extension(plugin, CLAP_EXT_TAIL));
+    assert(tail);
+    {
+      Runner runner(plugin, kRate, kBlock);
+      runner.set(find_param(plugin, "Release"), 0.0);
+      runner.set(find_param(plugin, "Echo mix"), 1.0);
+      runner.set(find_param(plugin, "Echo feedback"), 0.0);
+      runner.set(find_param(plugin, "Echo time"), 100.0);
+      runner.set(find_param(plugin, "Tempo sync"), synced ? 1.0 : 0.0);
+      runner.set(find_param(plugin, "Sync division"), 7.0);
+      Events on;
+      clap_event_transport_t transport{};
+      transport.header = {sizeof(transport), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT, 0};
+      transport.flags = CLAP_TRANSPORT_HAS_TEMPO;
+      transport.tempo = 60.0;
+      on.push(transport);
+      on.push(midi_event(0x90, 60, 127));
+      runner.run(&on);
+      const uint32_t reported = tail->get(plugin);
+      Events off;
+      off.push(midi_event(0x80, 60, 0));
+      uint32_t last_audible = 0;
+      for (uint32_t block = 0; block < 200; ++block) {
+        runner.run(block == 0 ? &off : nullptr);
+        for (uint32_t frame = 0; frame < kBlock; ++frame)
+          if (std::abs(runner.left()[frame]) > 1.0e-5f)
+            last_audible = block * kBlock + frame + 1;
+      }
+      assert(last_audible > (synced ? 90000U : 4000U));
+      assert(reported >= last_audible);
+    }
+    plugin->destroy(plugin);
+  }
+}
+
+// UI edits and project loads run on the main thread; CLAP's tail notification
+// must be deferred until processing, and include chorus and tempo changes.
+void test_tail_notifications(const Library& library) {
+  struct Context {
+    bool processing{};
+    unsigned changes{}, requests{};
+    const clap_host_tail_t* tail{};
+  } context;
+  const clap_host_tail_t tail_host{
+      [](const clap_host_t* host) {
+        auto& state = *static_cast<Context*>(host->host_data);
+        assert(state.processing);
+        ++state.changes;
+      }};
+  context.tail = &tail_host;
+  clap_host_t host = kHost;
+  host.host_data = &context;
+  host.get_extension = [](const clap_host_t* h, const char* id) -> const void* {
+    return std::strcmp(id, CLAP_EXT_TAIL) == 0
+        ? static_cast<Context*>(h->host_data)->tail : nullptr;
+  };
+  host.request_process = [](const clap_host_t* h) {
+    ++static_cast<Context*>(h->host_data)->requests;
+  };
+  const clap_plugin_t* plugin = library.factory->create_plugin(
+      library.factory, &host, library.descriptor->id);
+  assert(plugin && plugin->init(plugin));
+  Events changes;
+  changes.push(param_event(find_param(plugin, "Release"), 200.0));
+  changes.push(param_event(find_param(plugin, "Echo mix"), 0.4));
+  // An inactive parameter flush, like state loading, is a main-thread call.
+  flush(plugin, changes);
+  assert(context.changes == 0 && context.requests == 1);
+  {
+    Runner runner(plugin, kRate, kBlock);
+    context.processing = true;
+    runner.run();
+    context.processing = false;
+    assert(context.changes == 1);
+
+    StateMemory saved;
+    assert(save_state(plugin, &saved));
+    changes.clear();
+    changes.push(param_event(find_param(plugin, "Chorus mix"), 0.5));
+    context.processing = true;
+    runner.run(&changes);
+    context.processing = false;
+    assert(context.changes == 2);
+    assert(load_state(plugin, saved));
+    assert(context.changes == 2);
+    context.processing = true;
+    runner.run();
+    context.processing = false;
+    assert(context.changes == 3);
+
+    clap_event_transport_t transport{};
+    transport.header = {sizeof(transport), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT, 0};
+    transport.flags = CLAP_TRANSPORT_HAS_TEMPO;
+    transport.tempo = 90.0;
+    changes.clear();
+    changes.push(transport);
+    context.processing = true;
+    runner.run(&changes);
+    context.processing = false;
+    assert(context.changes == 4);
+  }
+  plugin->destroy(plugin);
+}
+
 // --- transport ---------------------------------------------------------------------
 
 void test_transport_tempo(const Library& library) {
@@ -874,12 +1081,17 @@ int main(int argc, char** argv) {
   test_panic_controllers(library);
   test_panic_is_per_channel(library);
   test_mod_wheel_and_pitch_bend(library);
+  test_wheels_are_per_channel(library);
+  test_nonfinite_parameter_events_are_ignored(library);
   test_pitch_bend_range(library);
   test_duty_sequence(library);
   test_channel_volume(library);
   test_unhandled_midi_is_ignored(library);
   test_polyphony_and_voice_stealing(library);
   test_reset_clears_voices(library);
+  test_reset_clears_effects(library);
+  test_tail_covers_delayed_audio(library);
+  test_tail_notifications(library);
   test_cents_sequence(library);
   test_vibrato_delay(library);
   test_transport_tempo(library);

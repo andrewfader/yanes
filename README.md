@@ -188,7 +188,8 @@ transpose the kit, velocity controls level, and every hit decays automatically f
 The Layer control can add an octave, fifth, sub-octave, stepped triangle, or noise component to any
 chip or synthesis mode. Layer Mix keeps the recipe usable as either subtle reinforcement or an
 obvious fake multi-channel stack. Vibrato supports direct automation, MIDI modulation wheel, and
-Bitwig modulation. MIDI pitch bend uses a two-semitone range, while CLAP note expressions provide
+Bitwig modulation. MIDI pitch bend and mod wheel act independently on each channel; the bend range
+defaults to two semitones and is adjustable up to 48. CLAP note expressions provide
 sample-accurate per-note tuning, volume, brightness, and pressure. Bitwig transport tempo can sync
 the arpeggiator and echo. Eight programmable pitch steps support tracker-style riffs, and Strict
 Hardware mode chokes an existing voice when a hardware-stack channel is retriggered.
