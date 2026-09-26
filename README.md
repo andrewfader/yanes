@@ -4,6 +4,8 @@ YANES is a clean-room CLAP instrument for NES and other retro console, computer,
 It builds on Linux, Windows, and macOS and is designed for Bitwig Studio and other CLAP hosts. A
 custom editor is included on all three platforms (X11 on Linux, Win32, and Cocoa).
 
+![YANES editor showing the NES pulse voice controls](docs/screenshots/page1.png)
+
 ## What is implemented
 
 YANES is a polyphonic multi-chip synthesizer. Its core oscillator set covers NES pulse, triangle,
