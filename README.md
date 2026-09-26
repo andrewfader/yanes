@@ -4,7 +4,16 @@ YANES is a clean-room CLAP instrument for NES and other retro console, computer,
 It builds on Linux, Windows, and macOS and is designed for Bitwig Studio and other CLAP hosts. A
 custom editor is included on all three platforms (X11 on Linux, Win32, and Cocoa).
 
-![YANES editor showing the Voice controls](docs/screenshots/editor.png)
+![YANES editor showing the Voice controls](docs/ui-review-2026-09-26/page1.png)
+
+Screenshots of every editor page: [Voice](docs/ui-review-2026-09-26/page1.png),
+[Sequence](docs/ui-review-2026-09-26/page2.png),
+[Synth](docs/ui-review-2026-09-26/page3.png),
+[FM](docs/ui-review-2026-09-26/page4.png),
+[Hardware](docs/ui-review-2026-09-26/page5.png),
+[FX + TV](docs/ui-review-2026-09-26/page6.png), and
+[Custom](docs/ui-review-2026-09-26/page7.png).
+Also see the [preset browser](docs/ui-review-2026-09-26/presets.png).
 
 ## What is implemented
 
