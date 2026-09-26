@@ -1790,7 +1790,7 @@ const char* kFeatures[] = {CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_S
                            CLAP_PLUGIN_FEATURE_STEREO, nullptr};
 const clap_plugin_descriptor_t kDescriptor{
     CLAP_VERSION_INIT, "org.yanes.native", "YANES", "YANES contributors",
-    "", "", "", "0.3.0", "Native multi-console chiptune synthesizer", kFeatures};
+    "", "", "", "0.3.1", "Native multi-console chiptune synthesizer", kFeatures};
 
 const clap_plugin_t* create_plugin(const clap_host_t* host) {
   auto* p = new (std::nothrow) Plugin;
