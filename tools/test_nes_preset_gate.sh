@@ -9,6 +9,7 @@ rom_emu=${YANES_NES_ROM_EMU:-$root_dir/build/yanes-nes-rom-emu}
 audio_compare=${YANES_AUDIO_COMPARE:-$root_dir/build/yanes-audio-compare}
 parity_compare=${YANES_PARITY_COMPARE:-$root_dir/build/yanes-parity-compare}
 rom_dir=${NES_ROM_DIR:-/mnt/crucial/roms/nes}
+output_dir=${YANES_NES_GATE_OUTPUT:-$root_dir/build/reaper_projects}
 
 echo "=========================================================="
 echo "    YANES Independent 2A03 Hardware Gate vs Preset Path   "
@@ -36,8 +37,8 @@ if [ -d "$rom_dir" ]; then
   done
   echo "Found and verified $count valid iNES ROMs."
 else
-  echo "Error: $rom_dir not found." >&2
-  exit 1
+  echo "SKIP: optional ROM directory $rom_dir not found."
+  exit 77
 fi
 
 echo ""
@@ -58,10 +59,10 @@ test -n "$test_rom" || { echo "No NES ROMs found in $rom_dir" >&2; exit 1; }
 echo "Selected ROM (score identity): $test_rom"
 "$rom_emu" "$test_rom" "$plugin" "$work" 3.0
 
-mkdir -p "$root_dir/build/reaper_projects"
-cp "$work/rom_song.rpp" "$root_dir/build/reaper_projects/rom_song.rpp"
-cp "$work/rom_extracted.wav" "$root_dir/build/reaper_projects/rom_extracted.wav"
-cp "$work/yanes_extracted.wav" "$root_dir/build/reaper_projects/yanes_extracted.wav"
+mkdir -p "$output_dir"
+cp "$work/rom_song.rpp" "$output_dir/rom_song.rpp"
+cp "$work/rom_extracted.wav" "$output_dir/rom_extracted.wav"
+cp "$work/yanes_extracted.wav" "$output_dir/yanes_extracted.wav"
 
 echo ""
 echo "[3/3] Hardware gate (independent APU) vs YANES preset path..."
@@ -82,7 +83,7 @@ esac
 echo ""
 echo "=========================================================="
 echo "  PASS: Independent 2A03 gate clears the YANES NES stack  "
-echo "  REAPER Project: build/reaper_projects/rom_song.rpp      "
-echo "  Hardware APU WAV: build/reaper_projects/rom_extracted.wav"
-echo "  YANES preset WAV: build/reaper_projects/yanes_extracted.wav"
+echo "  REAPER Project: $output_dir/rom_song.rpp"
+echo "  Hardware APU WAV: $output_dir/rom_extracted.wav"
+echo "  YANES preset WAV: $output_dir/yanes_extracted.wav"
 echo "=========================================================="

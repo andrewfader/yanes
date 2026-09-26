@@ -13,6 +13,7 @@
 // Requires the SameBoy APU register hook (third_party/sameboy-apu-register-log.patch).
 
 #include <Core/gb.h>
+#include <Core/random.h>
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -101,10 +102,13 @@ static void write_wav(const char *path, const int16_t *pcm, size_t len) {
   fclose(f);
 }
 
-// One deterministic run from power-on. `solo` < 0 renders the full mix and logs
-// registers; otherwise only that channel sounds and no log is written.
+// One deterministic run from power-on. `solo` < 0 renders the full mix;
+// otherwise only that channel sounds. All passes log registers for verification.
 static void run_pass(const char *rom, GB_model_t model, double seconds,
                      int solo, const char *wav_path, const char *reg_path) {
+  // SameBoy randomizes power-on RAM. Every solo pass must start from the same
+  // machine state as the register-logging mix pass.
+  GB_random_seed(0);
   // GB_gameboy_t is far too large for the stack; SameBoy's own header documents
   // the GB_alloc form for exactly this reason.
   GB_gameboy_t *gb = GB_init(GB_alloc(), model);
@@ -115,6 +119,8 @@ static void run_pass(const char *rom, GB_model_t model, double seconds,
   GB_set_sample_rate(gb, SAMPLE_RATE);
   GB_apu_set_sample_callback(gb, push_sample);
   GB_reset(gb);
+  // Capture is paced by emulated audio samples, not wall-clock video refresh.
+  GB_set_turbo_mode(gb, true, true);
 
   for (int ch = 0; ch < GB_N_CHANNELS; ++ch) {
     GB_set_channel_muted(gb, (GB_channel_t)ch, solo >= 0 && ch != solo);
@@ -189,7 +195,8 @@ int main(int argc, char **argv) {
   static const char *names[GB_N_CHANNELS] = {"ch1_pulse", "ch2_pulse", "ch3_wave", "ch4_noise"};
   for (int ch = 0; ch < GB_N_CHANNELS; ++ch) {
     snprintf(path, sizeof path, "%s/gb_%s.wav", out_dir, names[ch]);
-    run_pass(rom, model, seconds, ch, path, NULL);
+    snprintf(reg, sizeof reg, "%s/gb_%s_registers.log", out_dir, names[ch]);
+    run_pass(rom, model, seconds, ch, path, reg);
   }
   return 0;
 }

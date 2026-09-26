@@ -5,8 +5,8 @@
 // writes (see third_party/*.patch): one run yields both the register stream and
 // the reference audio those registers produced, sample-aligned.
 //
-// Deliberately headless, and the only input it supplies is a scripted Start
-// press on fixed frames, so a run is deterministic and a fixture is
+// Deliberately headless, with scripted Start and optional A presses on fixed
+// frames, so a run is deterministic and a fixture is
 // reproducible.
 
 #include <libretro.h>
@@ -52,9 +52,8 @@ static void input_poll(void) {}
 // frontend supplies that press. YANES_AUTO_START_FRAMES lists the frames to hold
 // Start on (six frames each, long enough for any poll rate); the default gets
 // past a title screen and one following menu.
-static int auto_start_held(long frame) {
-  const char *list = getenv("YANES_AUTO_START_FRAMES");
-  if (!list || !*list) list = "60,240";
+static int scripted_button_held(long frame, const char *list) {
+  if (!list) return 0;
   while (*list) {
     char *end = NULL;
     const long at = strtol(list, &end, 10);
@@ -68,8 +67,13 @@ static int auto_start_held(long frame) {
 static int16_t input_state(unsigned a, unsigned b, unsigned c, unsigned d) {
   (void)c;
   const char *auto_start = getenv("YANES_AUTO_START");
+  const char *start_frames = getenv("YANES_AUTO_START_FRAMES");
+  if (!start_frames || !*start_frames) start_frames = "60,240";
   if (auto_start && *auto_start && a == 0 && b == RETRO_DEVICE_JOYPAD &&
-      d == RETRO_DEVICE_ID_JOYPAD_START && auto_start_held(g_frame_index))
+      d == RETRO_DEVICE_ID_JOYPAD_START && scripted_button_held(g_frame_index, start_frames))
+    return 1;
+  if (a == 0 && b == RETRO_DEVICE_JOYPAD && d == RETRO_DEVICE_ID_JOYPAD_A &&
+      scripted_button_held(g_frame_index, getenv("YANES_AUTO_A_FRAMES")))
     return 1;
   return 0;
 }
@@ -129,7 +133,8 @@ int main(int argc, char **argv) {
             "usage: yanes-libretro-host <core.so> <rom> <out.wav> [seconds] [system_dir]\n"
             "  YANES_PSG_LOG (patched Beetle PCE) / YANES_APU_LOG (patched Nestopia)\n"
             "  also capture the chip's register stream.\n"
-            "  YANES_AUTO_START=1 presses Start on YANES_AUTO_START_FRAMES (default 60,240).\n");
+            "  YANES_AUTO_START=1 presses Start on YANES_AUTO_START_FRAMES (default 60,240).\n"
+            "  YANES_AUTO_A_FRAMES optionally presses A (for example, to register a Zelda name).\n");
     return 2;
   }
   const char *core_path = argv[1], *rom = argv[2], *wav = argv[3];

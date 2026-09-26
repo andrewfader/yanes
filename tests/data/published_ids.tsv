@@ -1,0 +1,278 @@
+# Published IDs at f16918f; append new IDs, never renumber existing entries.
+parameter	0	Waveform
+parameter	1	Pulse duty
+parameter	2	Noise period
+parameter	3	Noise mode
+parameter	4	Attack
+parameter	5	Release
+parameter	6	Shape
+parameter	7	FM ratio
+parameter	8	FM index
+parameter	9	Voice gain
+parameter	10	Velocity
+parameter	11	Transpose
+parameter	12	Fine tune
+parameter	13	Portamento
+parameter	14	Master
+parameter	15	Clock
+parameter	16	Hardware envelope
+parameter	17	Envelope rate
+parameter	18	Sweep depth
+parameter	19	Sweep time
+parameter	20	Arpeggio
+parameter	21	Arpeggio rate
+parameter	22	DPCM rate
+parameter	23	FM algorithm
+parameter	24	FM feedback
+parameter	25	Retro amount
+parameter	26	Bit depth
+parameter	27	Output rate
+parameter	28	RF noise
+parameter	29	Mains hum
+parameter	30	TV speaker
+parameter	31	Stereo width
+parameter	32	Chip cutoff
+parameter	33	Chip resonance
+parameter	34	Table position
+parameter	35	Table warp
+parameter	36	Harmonic tilt
+parameter	37	FM brightness
+parameter	38	Layer
+parameter	39	Layer mix
+parameter	40	Vibrato rate
+parameter	41	Vibrato depth
+parameter	42	Drive
+parameter	43	Echo mix
+parameter	44	Echo time
+parameter	45	Echo feedback
+parameter	46	Chorus mix
+parameter	47	Chorus rate
+parameter	48	Chorus depth
+parameter	49	Tempo sync
+parameter	50	Sync division
+parameter	51	Strict hardware
+parameter	52	Sequence length
+parameter	53	Step 1
+parameter	54	Step 2
+parameter	55	Step 3
+parameter	56	Step 4
+parameter	57	Step 5
+parameter	58	Step 6
+parameter	59	Step 7
+parameter	60	Step 8
+parameter	61	FM attack
+parameter	62	FM decay
+parameter	63	FM sustain rate
+parameter	64	FM sustain level
+parameter	65	FM release
+parameter	66	FM detune
+parameter	67	FM key scale
+parameter	68	FM LFO rate
+parameter	69	FM AM depth
+parameter	70	FM PM depth
+parameter	71	DPCM base key
+parameter	72	DPCM loop mask
+parameter	73	DPCM initial level
+parameter	74	DPCM trim start
+parameter	75	DPCM trim end
+parameter	76	Channel mute mask
+parameter	77	Channel solo mask
+parameter	78	Preset
+parameter	79	Pitch bend range
+parameter	80	Duty sequence
+parameter	81	Duty length
+parameter	82	Duty step rate
+parameter	83	Duty step 1
+parameter	84	Duty step 2
+parameter	85	Duty step 3
+parameter	86	Duty step 4
+parameter	87	Duty step 5
+parameter	88	Duty step 6
+parameter	89	Duty step 7
+parameter	90	Duty step 8
+parameter	91	Vibrato delay
+parameter	92	Cents sequence
+parameter	93	Cents length
+parameter	94	Cents step rate
+parameter	95	Cents step 1
+parameter	96	Cents step 2
+parameter	97	Cents step 3
+parameter	98	Cents step 4
+parameter	99	Cents step 5
+parameter	100	Cents step 6
+parameter	101	Cents step 7
+parameter	102	Cents step 8
+parameter	103	Custom wave
+parameter	104	Wave sample 1
+parameter	105	Wave sample 2
+parameter	106	Wave sample 3
+parameter	107	Wave sample 4
+parameter	108	Wave sample 5
+parameter	109	Wave sample 6
+parameter	110	Wave sample 7
+parameter	111	Wave sample 8
+parameter	112	Wave sample 9
+parameter	113	Wave sample 10
+parameter	114	Wave sample 11
+parameter	115	Wave sample 12
+parameter	116	Wave sample 13
+parameter	117	Wave sample 14
+parameter	118	Wave sample 15
+parameter	119	Wave sample 16
+parameter	120	Wave sample 17
+parameter	121	Wave sample 18
+parameter	122	Wave sample 19
+parameter	123	Wave sample 20
+parameter	124	Wave sample 21
+parameter	125	Wave sample 22
+parameter	126	Wave sample 23
+parameter	127	Wave sample 24
+parameter	128	Wave sample 25
+parameter	129	Wave sample 26
+parameter	130	Wave sample 27
+parameter	131	Wave sample 28
+parameter	132	Wave sample 29
+parameter	133	Wave sample 30
+parameter	134	Wave sample 31
+parameter	135	Wave sample 32
+source	0	NES pulse
+source	1	NES triangle
+source	2	NES noise
+source	3	VRC6 pulse
+source	4	VRC6 saw
+source	5	FDS wavetable
+source	6	Namco 163 wavetable
+source	7	VRC7 FM
+source	8	Sunsoft 5B tone
+source	9	NES DPCM drums
+source	10	Game Boy pulse
+source	11	Game Boy wave
+source	12	Game Boy noise
+source	13	SMS tone
+source	14	SMS noise
+source	15	Genesis PSG tone
+source	16	Genesis PSG noise
+source	17	Genesis YM2612 FM
+source	18	NES five-channel stack
+source	19	Game Boy four-channel stack
+source	20	SMS four-channel stack
+source	21	Genesis ten-channel stack
+source	22	AY-3-8910 tone
+source	23	AY-3-8910 noise
+source	24	Atari POKEY tone
+source	25	Atari POKEY poly noise
+source	26	PC Engine wavetable
+source	27	OPL2 two-operator FM
+source	28	OPL3 four-operator FM
+source	29	Yamaha OPN/OPNA FM
+source	30	Yamaha OPM FM
+source	31	PC-88 YM2203 stack
+source	32	PC-98 YM2608 stack
+source	33	X68000 YM2151 stack
+source	34	Atari four-channel stack
+source	35	PC Engine six-channel stack
+source	36	Sound Blaster OPL3 stack
+source	37	PC Engine noise
+source	38	SID 6581
+source	39	SID 8580
+source	40	Konami SCC wavetable
+source	41	Konami SCC five-channel stack
+source	42	Philips SAA1099 tone
+source	43	SAA1099 six-channel stack
+source	44	Atari TIA polynomial tone
+source	45	Atari TIA two-channel stack
+source	46	Morphing wavetable
+source	47	Phase distortion
+source	48	Harmonic additive
+source	49	Six-operator FM
+source	50	Digital partial pair
+source	51	Porta FM keyboard
+source	52	Vintage analog poly
+source	53	Matrix brass poly
+source	54	Early digital ensemble
+source	55	Electromechanical tine
+source	56	Ladder mono synth
+source	57	Retro chip drum kit
+source	58	Custom wavetable
+preset	0	Manual
+preset	1	Clean NES lead
+preset	2	NES chord lead
+preset	3	NES DPCM kit
+preset	4	Game Boy wave
+preset	5	SMS bass
+preset	6	Genesis FM bell
+preset	7	Bedroom CRT
+preset	8	Noisy RF television
+preset	9	PC Engine glass
+preset	10	DOS OPL2 organ
+preset	11	OPL3 brass
+preset	12	PC-88 adventure
+preset	13	PC-98 FM piano
+preset	14	X68000 arcade
+preset	15	Atari POKEY zap
+preset	16	SID 6581 bass
+preset	17	SID 8580 lead
+preset	18	Konami SCC lead
+preset	19	Game Blaster bells
+preset	20	Vector wavetable pad
+preset	21	Phase-distortion brass
+preset	22	Additive drawbars
+preset	23	Six-operator electric piano
+preset	24	Digital partial strings
+preset	25	Envelope bass trick
+preset	26	Hyper arpeggio lead
+preset	27	Duty-cycle lead
+preset	28	Fake echo lead
+preset	29	Octave power bass
+preset	30	Worn chorus pad
+preset	31	VRC6 heroic lead
+preset	32	FDS glass organ
+preset	33	N163 ensemble
+preset	34	YM2612 growl bass
+preset	35	YM2151 arcade bell
+preset	36	POKEY metallic zap
+preset	37	SID combined reed
+preset	38	DPCM sixteen-key bank
+preset	39	User-sequence spark
+preset	40	Arcade CRT cabinet
+preset	41	Porta FM electric piano
+preset	42	Porta FM toy organ
+preset	43	Japanese analog poly
+preset	44	American matrix brass
+preset	45	Early sampler choir
+preset	46	Tine suitcase piano
+preset	47	Classic ladder bass
+preset	48	Retro chip drum kit
+preset	49	Game Boy bubble bloop
+preset	50	Game Boy coin chirp
+preset	51	Game Boy 7-bit zap
+preset	52	LSDJ wave pluck
+preset	53	Game Boy fast chord
+preset	54	Game Boy tracker delay
+preset	55	Custom wave lead
+preset	56	Game Boy custom bass
+preset	57	Custom wave organ
+preset	58	Game Boy duty macro
+preset	59	NES triangle bass
+preset	60	NES noise percussion
+preset	61	VRC6 saw lead
+preset	62	VRC7 hollow keys
+preset	63	SMS noise percussion
+preset	64	Genesis PSG lead
+preset	65	Genesis noise percussion
+preset	66	NES channel stack
+preset	67	Game Boy channel stack
+preset	68	SMS channel stack
+preset	69	Genesis channel stack
+preset	70	AY arcade lead
+preset	71	AY noise percussion
+preset	72	POKEY pure lead
+preset	73	OPNA FM keys
+preset	74	Atari channel stack
+preset	75	PC Engine channel stack
+preset	76	Sound Blaster channel stack
+preset	77	PC Engine noise percussion
+preset	78	SCC channel stack
+preset	79	SAA1099 channel stack
+preset	80	TIA pulse bass
+preset	81	TIA channel stack

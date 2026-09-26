@@ -152,17 +152,20 @@ set(YANES_NES_ROM "" CACHE FILEPATH "NES ROM for the Nestopia parity gate")
 if(YANES_GB_ROM)
   add_test(NAME gb_rom_parity COMMAND
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_gb_rom_parity.sh ${YANES_GB_ROM})
-  set_tests_properties(gb_rom_parity PROPERTIES TIMEOUT 300)
+  set_tests_properties(gb_rom_parity PROPERTIES TIMEOUT 300 ENVIRONMENT
+    "YANES_GB_REPLAY=$<TARGET_FILE:yanes-gb-replay>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
 endif()
 if(YANES_PCE_ROM)
   add_test(NAME pce_rom_parity COMMAND
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_pce_rom_parity.sh ${YANES_PCE_ROM})
-  set_tests_properties(pce_rom_parity PROPERTIES TIMEOUT 120)
+  set_tests_properties(pce_rom_parity PROPERTIES TIMEOUT 120 ENVIRONMENT
+    "YANES_PCE_REPLAY=$<TARGET_FILE:yanes-pce-replay>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
 endif()
 if(YANES_NES_ROM)
   add_test(NAME nes_rom_parity COMMAND
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nes_rom_parity.sh ${YANES_NES_ROM})
-  set_tests_properties(nes_rom_parity PROPERTIES TIMEOUT 120)
+  set_tests_properties(nes_rom_parity PROPERTIES TIMEOUT 120 ENVIRONMENT
+    "YANES_NES_REPLAY=$<TARGET_FILE:yanes-nes-replay>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
 endif()
 add_executable(yanes-benchmark tools/yanes_benchmark.cpp)
 target_compile_features(yanes-benchmark PRIVATE cxx_std_20)
@@ -230,7 +233,7 @@ target_link_libraries(plugin_smoke PRIVATE ${CMAKE_DL_LIBS})
 add_test(NAME plugin_smoke COMMAND plugin_smoke $<TARGET_FILE:yanes_clap>)
 
 # Behavioural suites that drive the built plug-in through the public CLAP interfaces.
-foreach(suite note_tests state_tests bank_tests preset_tests)
+foreach(suite note_tests state_tests bank_tests preset_tests modulation_tests)
   add_executable(${suite} tests/${suite}.cpp)
   target_compile_features(${suite} PRIVATE cxx_std_20)
   yanes_warnings(${suite})
@@ -241,6 +244,14 @@ foreach(suite note_tests state_tests bank_tests preset_tests)
 endforeach()
 set_tests_properties(bank_tests PROPERTIES
   ENVIRONMENT "YANES_DPCM_TOOL=$<TARGET_FILE:yanes-dpcm>")
+add_executable(compatibility_tests tests/compatibility_tests.cpp)
+target_compile_features(compatibility_tests PRIVATE cxx_std_20)
+yanes_warnings(compatibility_tests)
+yanes_enable_assertions(compatibility_tests)
+target_include_directories(compatibility_tests PRIVATE "${clap_SOURCE_DIR}/include")
+target_link_libraries(compatibility_tests PRIVATE ${CMAKE_DL_LIBS})
+add_test(NAME compatibility_tests COMMAND compatibility_tests $<TARGET_FILE:yanes_clap>
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/published_ids.tsv)
 add_test(NAME ymfm_register_render COMMAND yanes-register-render ym2612
   ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ym2612_tone.reg
   ${CMAKE_CURRENT_BINARY_DIR}/ym2612_tone.wav)
@@ -338,6 +349,9 @@ endif()
 # Preset gate selects a score using NES_ROM_DIR (or the script's default ROM directory).
 if(UNIX)
   add_test(NAME nes_preset_gate COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nes_preset_gate.sh)
-  set_tests_properties(nes_preset_gate PROPERTIES TIMEOUT 120 ENVIRONMENT
-    "YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_NES_ROM_EMU=$<TARGET_FILE:yanes-nes-rom-emu>;YANES_AUDIO_COMPARE=$<TARGET_FILE:yanes-audio-compare>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
+  set_tests_properties(nes_preset_gate PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT
+    "YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_NES_ROM_EMU=$<TARGET_FILE:yanes-nes-rom-emu>;YANES_AUDIO_COMPARE=$<TARGET_FILE:yanes-audio-compare>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>;YANES_NES_GATE_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/reaper_projects")
+  add_test(NAME nes_oscillator_gate COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nes_oscillator_gate.sh)
+  set_tests_properties(nes_oscillator_gate PROPERTIES TIMEOUT 120 ENVIRONMENT
+    "YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_NES_ROM_EMU=$<TARGET_FILE:yanes-nes-rom-emu>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
 endif()

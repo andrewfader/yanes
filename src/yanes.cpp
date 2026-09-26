@@ -152,6 +152,8 @@ struct Plugin {
   const clap_host_t* host{};
   bool initialized{false};
   std::array<std::atomic<double>, kParamCount> params{};
+  // Host modulation is a transient offset; saved state and UI retain base values.
+  std::array<std::atomic<double>, kParamCount> modulation{};
   std::array<Voice, 16> voices{};
   std::array<yanes::HardwareFmVoice, 16> hardware_fm{};
   yanes::NesApu nes_apu{};
@@ -480,13 +482,20 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
   }
 }
 
+template <clap_id id>
+inline double effective_param(const Plugin* p) {
+  const double base = p->params[id].load(std::memory_order_relaxed);
+  const double offset = p->modulation[id].load(std::memory_order_relaxed);
+  return offset == 0.0 ? base : std::clamp(base + offset, kSpecs[id].min, kSpecs[id].max);
+}
+
 yanes::FmControls fm_controls(const Plugin* p) {
   yanes::FmControls c;
-  c.algorithm=static_cast<int>(p->params[kGenesisAlgorithm].load());c.feedback=static_cast<int>(p->params[kGenesisFeedback].load());
+  c.algorithm=static_cast<int>(p->params[kGenesisAlgorithm].load());c.feedback=static_cast<int>(effective_param<kGenesisFeedback>(p));
   c.attack=static_cast<int>(p->params[kFmAttack].load());c.decay=static_cast<int>(p->params[kFmDecay].load());c.sustain_rate=static_cast<int>(p->params[kFmSustainRate].load());
   c.sustain_level=static_cast<int>(p->params[kFmSustainLevel].load());c.release=static_cast<int>(p->params[kFmRelease].load());c.detune=static_cast<int>(p->params[kFmDetune].load());
   c.key_scale=static_cast<int>(p->params[kFmKeyScale].load());c.lfo_rate=static_cast<int>(p->params[kFmLfoRate].load());c.am_depth=static_cast<int>(p->params[kFmAmDepth].load());
-  c.pm_depth=static_cast<int>(p->params[kFmPmDepth].load());c.brightness=p->params[kFmBrightness].load();return c;
+  c.pm_depth=static_cast<int>(p->params[kFmPmDepth].load());c.brightness=effective_param<kFmBrightness>(p);return c;
 }
 yanes::HardwareFmVoice::Kind fm_kind(int waveform,int selected){
   if(waveform==27)return yanes::HardwareFmVoice::Kind::Opl2;
@@ -601,7 +610,7 @@ void note_on(Plugin* p, int channel, int key, int note_id, double velocity, int1
         [](const Voice& a, const Voice& b) { return a.age < b.age; });
     kill_voice(p, *voice, out, time);
   }
-  const double glide = p->params[kPortamentoMs].load(std::memory_order_relaxed);
+  const double glide = effective_param<kPortamentoMs>(p);
   *voice = Voice{};
   voice->active = true;
   voice->channel = static_cast<int16_t>(channel);
@@ -616,7 +625,7 @@ void note_on(Plugin* p, int channel, int key, int note_id, double velocity, int1
   voice->age = ++p->age_counter;
   voice->dpcm_slot = static_cast<uint8_t>(std::clamp(key - static_cast<int>(p->params[kDpcmBaseKey].load()), 0, 15));
   voice->dpcm_data = p->dpcm_banks[voice->dpcm_slot].load(std::memory_order_acquire);
-  if(voice->dpcm_data)voice->dpcm_bit=static_cast<size_t>(static_cast<double>(voice->dpcm_data->size()*8U)*p->params[kDpcmTrimStart].load());
+  if(voice->dpcm_data)voice->dpcm_bit=static_cast<size_t>(static_cast<double>(voice->dpcm_data->size()*8U)*effective_param<kDpcmTrimStart>(p));
   voice->dpcm_level = static_cast<int>(p->params[kDpcmInitialLevel].load());
   const size_t voice_index = static_cast<size_t>(voice - p->voices.data());
   const int selected_waveform = static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
@@ -647,6 +656,7 @@ void handle_event(Plugin* p, const clap_event_header_t* h, const clap_output_eve
   const auto required_size = [h]() -> size_t {
     switch (h->type) {
       case CLAP_EVENT_PARAM_VALUE: return sizeof(clap_event_param_value_t);
+      case CLAP_EVENT_PARAM_MOD: return sizeof(clap_event_param_mod_t);
       case CLAP_EVENT_NOTE_ON: case CLAP_EVENT_NOTE_OFF: case CLAP_EVENT_NOTE_CHOKE: return sizeof(clap_event_note_t);
       case CLAP_EVENT_NOTE_EXPRESSION: return sizeof(clap_event_note_expression_t);
       case CLAP_EVENT_TRANSPORT: return sizeof(clap_event_transport_t);
@@ -658,6 +668,21 @@ void handle_event(Plugin* p, const clap_event_header_t* h, const clap_output_eve
   if (h->type == CLAP_EVENT_PARAM_VALUE) {
     const auto* e = reinterpret_cast<const clap_event_param_value_t*>(h);
     set_param(p, e->param_id, e->value);
+  } else if (h->type == CLAP_EVENT_PARAM_MOD) {
+    const auto* e = reinterpret_cast<const clap_event_param_mod_t*>(h);
+    if (e->param_id >= kParamCount || kSpecs[e->param_id].stepped ||
+        !std::isfinite(e->amount) || e->note_id != -1 || e->port_index != -1 ||
+        e->channel != -1 || e->key != -1) return;
+    const auto& spec = kSpecs[e->param_id];
+    const double range = spec.max - spec.min;
+    const double amount = std::clamp(e->amount, -range, range);
+    if (p->modulation[e->param_id].exchange(amount, std::memory_order_relaxed) != amount) {
+      if (e->param_id == kGenesisFeedback || e->param_id == kFmBrightness)
+        p->fm_revision.fetch_add(1, std::memory_order_release);
+      if (e->param_id == kReleaseMs || e->param_id == kEchoMix || e->param_id == kEchoTime ||
+          e->param_id == kEchoFeedback || e->param_id == kChorusMix)
+        tail_changed(p);
+    }
   } else if (h->type == CLAP_EVENT_NOTE_ON) {
     const auto* e = reinterpret_cast<const clap_event_note_t*>(h);
     if (e->port_index == 0 && e->channel >= 0 && e->channel < 16 && e->key >= 0 && e->key <= 127 && std::isfinite(e->velocity))
@@ -740,7 +765,7 @@ int voice_duty(const Plugin* p, const Voice& v) {
   const int mode = static_cast<int>(p->params[kDutySeqMode].load(std::memory_order_relaxed));
   if (mode <= 0) return std::clamp(base, 0, 3);
   const int length = std::clamp(static_cast<int>(p->params[kDutySeqLength].load(std::memory_order_relaxed)), 1, 8);
-  const double rate = sequence_rate(p, p->params[kDutySeqRate].load(std::memory_order_relaxed));
+  const double rate = sequence_rate(p, effective_param<kDutySeqRate>(p));
   const double elapsed_steps = std::floor(static_cast<double>(v.samples) * rate / p->sample_rate);
   const int step = mode == 2 ? static_cast<int>(std::min(elapsed_steps, static_cast<double>(length - 1)))
                             : static_cast<int>(std::fmod(elapsed_steps, length));
@@ -754,7 +779,7 @@ double voice_cents(const Plugin* p, const Voice& v) {
   const int mode = static_cast<int>(p->params[kCentsSeqMode].load(std::memory_order_relaxed));
   if (mode <= 0) return 0.0;
   const int length = std::clamp(static_cast<int>(p->params[kCentsSeqLength].load(std::memory_order_relaxed)), 1, 8);
-  const double rate = sequence_rate(p, p->params[kCentsSeqRate].load(std::memory_order_relaxed));
+  const double rate = sequence_rate(p, effective_param<kCentsSeqRate>(p));
   const double elapsed_steps = std::floor(static_cast<double>(v.samples) * rate / p->sample_rate);
   const int step = mode == 2 ? static_cast<int>(std::min(elapsed_steps, static_cast<double>(length - 1)))
                             : static_cast<int>(std::fmod(elapsed_steps, length));
@@ -763,8 +788,8 @@ double voice_cents(const Plugin* p, const Voice& v) {
 
 float render_voice(Plugin* p, Voice& v) {
   v.layer_sample = 0.0f;
-  const double attack = p->params[kAttackMs].load(std::memory_order_relaxed);
-  double release = p->params[kReleaseMs].load(std::memory_order_relaxed);
+  const double attack = effective_param<kAttackMs>(p);
+  double release = effective_param<kReleaseMs>(p);
   if(static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed))==7&&v.key<60&&release<1.0)release=58.0;
   if (v.releasing) {
     if (release <= 0.0) {
@@ -778,16 +803,16 @@ float render_voice(Plugin* p, Voice& v) {
     v.env = attack <= 0.0 ? 1.0 : std::min(1.0, v.env + 1.0 / (p->sample_rate * attack * 0.001));
   }
 
-  const double glide = p->params[kPortamentoMs].load(std::memory_order_relaxed);
+  const double glide = effective_param<kPortamentoMs>(p);
   if (glide <= 0.0) v.note = v.target_note;
   else {
     const double coefficient = 1.0 - std::exp(-1.0 / (p->sample_rate * glide * 0.001));
     v.note += (v.target_note - v.note) * coefficient;
   }
   const double transpose = p->params[kTranspose].load(std::memory_order_relaxed);
-  const double fine = p->params[kFineTune].load(std::memory_order_relaxed) / 100.0;
+  const double fine = effective_param<kFineTune>(p) / 100.0;
   const int arp = static_cast<int>(p->params[kArpMode].load(std::memory_order_relaxed));
-  double arp_rate = p->params[kArpRate].load(std::memory_order_relaxed);
+  double arp_rate = effective_param<kArpRate>(p);
   arp_rate = sequence_rate(p, arp_rate);
   const double elapsed_samples = static_cast<double>(v.samples);
   const int arp_step = static_cast<int>(std::fmod(elapsed_samples * arp_rate / p->sample_rate, 3.0));
@@ -800,20 +825,20 @@ float render_voice(Plugin* p, Voice& v) {
   } else {
     sequence_pitch = arp_intervals[std::clamp(arp, 0, 4)][arp_step];
   }
-  const double sweep_depth = p->params[kSweepDepth].load(std::memory_order_relaxed);
-  const double sweep_time = p->params[kSweepTime].load(std::memory_order_relaxed) * 0.001;
+  const double sweep_depth = effective_param<kSweepDepth>(p);
+  const double sweep_time = effective_param<kSweepTime>(p) * 0.001;
   sequence_pitch += sweep_depth * std::min(1.0, elapsed_samples / (p->sample_rate * sweep_time));
   sequence_pitch += voice_cents(p, v);
   // Vibrato depth waits out the delay and then starts from zero phase, like a tracker's delayed
   // vibrato; the mod wheel stays immediate so a player can always add it by hand.
-  const double vibrato_rate = p->params[kVibratoRate].load(std::memory_order_relaxed);
-  const double vibrato_delay = p->params[kVibratoDelay].load(std::memory_order_relaxed) * 0.001 * p->sample_rate;
+  const double vibrato_rate = effective_param<kVibratoRate>(p);
+  const double vibrato_delay = effective_param<kVibratoDelay>(p) * 0.001 * p->sample_rate;
   const size_t midi_channel = static_cast<size_t>(std::clamp<int>(v.channel, 0, 15));
   double vibrato = std::sin(6.28318530718 * elapsed_samples * vibrato_rate / p->sample_rate) *
                    p->mod_wheel[midi_channel] * 0.75;
   if (elapsed_samples >= vibrato_delay)
     vibrato += std::sin(6.28318530718 * (elapsed_samples - vibrato_delay) * vibrato_rate / p->sample_rate) *
-               p->params[kVibratoDepth].load(std::memory_order_relaxed);
+               effective_param<kVibratoDepth>(p);
   const double bend_range = p->params[kPitchBendRange].load(std::memory_order_relaxed);
   double frequency = yanes::midi_frequency(v.note + transpose + fine + sequence_pitch +
                                             v.tuning_expression + p->pitch_bend[midi_channel] * bend_range + vibrato);
@@ -946,8 +971,8 @@ float render_voice(Plugin* p, Voice& v) {
   } else if (waveform == 6) {
     value = yanes::n163_wave(v.phase, shape);
   } else if (waveform == 7) {
-    const double ratio = p->params[kFmRatio].load(std::memory_order_relaxed);
-    const double index = p->params[kFmIndex].load(std::memory_order_relaxed);
+    const double ratio = effective_param<kFmRatio>(p);
+    const double index = effective_param<kFmIndex>(p);
     value = yanes::vrc7_fm(v.phase, ratio, index);
   } else if (waveform == 8) {
     value = yanes::pulse(v.phase, increment, 0.5);
@@ -958,8 +983,8 @@ float render_voice(Plugin* p, Voice& v) {
                                    ? yanes::kDpcmPeriodsPal : yanes::kDpcmPeriods;
     v.dpcm_phase += (chip_clock / dpcm_periods[std::clamp(rate, 0, 15)]) / p->sample_rate;
     while (v.dpcm_phase >= 1.0) {
-      const size_t trim_start=dpcm_bank?static_cast<size_t>(static_cast<double>(dpcm_bank->size()*8U)*p->params[kDpcmTrimStart].load()):0;
-      const size_t trim_end=dpcm_bank?static_cast<size_t>(static_cast<double>(dpcm_bank->size()*8U)*p->params[kDpcmTrimEnd].load()):0;
+      const size_t trim_start=dpcm_bank?static_cast<size_t>(static_cast<double>(dpcm_bank->size()*8U)*effective_param<kDpcmTrimStart>(p)):0;
+      const size_t trim_end=dpcm_bank?static_cast<size_t>(static_cast<double>(dpcm_bank->size()*8U)*effective_param<kDpcmTrimEnd>(p)):0;
       if (dpcm_bank && !dpcm_bank->empty() && v.dpcm_bit < std::max(trim_start+1,trim_end)) {
         const bool bit = ((*dpcm_bank)[v.dpcm_bit >> 3U] >> (v.dpcm_bit & 7U)) & 1U;
         v.dpcm_level = std::clamp(v.dpcm_level + (bit ? 2 : -2), 0, 127);
@@ -1083,12 +1108,12 @@ float render_voice(Plugin* p, Voice& v) {
       bled |= static_cast<uint16_t>((dac << 1U) & 0xfffU); bled |= static_cast<uint16_t>(dac >> 1U);
       raw = (static_cast<double>(bled) / 2047.5 - 1.0) * 0.42;
     }
-    const double cutoff_control = p->params[kChipCutoff].load(std::memory_order_relaxed);
+    const double cutoff_control = effective_param<kChipCutoff>(p);
     const double cutoff = waveform == 38
         ? 30.0 + 12000.0 * std::pow(cutoff_control / 16000.0, 1.65)
         : 30.0 + cutoff_control * 0.94;
     const double f = std::clamp(2.0 * std::sin(3.14159265359 * std::min(cutoff, p->sample_rate * 0.42) / p->sample_rate), 0.0, 0.95);
-    const double q = 1.6 - 1.45 * p->params[kChipResonance].load(std::memory_order_relaxed);
+    const double q = 1.6 - 1.45 * effective_param<kChipResonance>(p);
     v.chip_lp += f * v.chip_bp;
     const double hp = raw - v.chip_lp - q * v.chip_bp;
     v.chip_bp += f * hp;
@@ -1117,51 +1142,51 @@ float render_voice(Plugin* p, Voice& v) {
       value = (v.console_lfsr & 1U) ? 1.0f : -1.0f;
     }
   } else if (waveform == 46) {
-    value = yanes::morph_wavetable(v.phase, p->params[kWavetablePosition].load(std::memory_order_relaxed),
-                                   p->params[kWavetableWarp].load(std::memory_order_relaxed));
+    value = yanes::morph_wavetable(v.phase, effective_param<kWavetablePosition>(p),
+                                   effective_param<kWavetableWarp>(p));
   } else if (waveform == 47) {
-    value = yanes::phase_distortion(v.phase, p->params[kWavetablePosition].load(std::memory_order_relaxed),
-                                    p->params[kWavetableWarp].load(std::memory_order_relaxed));
+    value = yanes::phase_distortion(v.phase, effective_param<kWavetablePosition>(p),
+                                    effective_param<kWavetableWarp>(p));
   } else if (waveform == 48) {
-    value = yanes::additive(v.phase, p->params[kAdditiveTilt].load(std::memory_order_relaxed),
-                            p->params[kWavetablePosition].load(std::memory_order_relaxed));
+    value = yanes::additive(v.phase, effective_param<kAdditiveTilt>(p),
+                            effective_param<kWavetablePosition>(p));
   } else if (waveform == 49) {
     value = yanes::six_operator_fm(v.phase, static_cast<int>(p->params[kGenesisAlgorithm].load(std::memory_order_relaxed)),
-                                   p->params[kFmIndex].load(std::memory_order_relaxed),
-                                   p->params[kFmBrightness].load(std::memory_order_relaxed));
+                                   effective_param<kFmIndex>(p),
+                                   effective_param<kFmBrightness>(p));
   } else if (waveform == 50) {
     const double transient = std::exp(-static_cast<double>(v.samples) / (p->sample_rate * 0.045));
-    const float digital = yanes::morph_wavetable(v.phase, p->params[kWavetablePosition].load(std::memory_order_relaxed), 0.5);
+    const float digital = yanes::morph_wavetable(v.phase, effective_param<kWavetablePosition>(p), 0.5);
     const float partial = yanes::additive(v.phase, 0.72, 0.3);
     value = digital * 0.55f + partial * 0.35f + static_cast<float>(transient) * v.noise_value * 0.1f;
   } else if (waveform == 51) {
-    value = yanes::porta_fm(v.phase,p->params[kFmRatio].load(std::memory_order_relaxed),
-                            p->params[kFmIndex].load(std::memory_order_relaxed),
-                            p->params[kFmBrightness].load(std::memory_order_relaxed));
+    value = yanes::porta_fm(v.phase,effective_param<kFmRatio>(p),
+                            effective_param<kFmIndex>(p),
+                            effective_param<kFmBrightness>(p));
   } else if (waveform == 52 || waveform == 53) {
     const double shape_norm=static_cast<double>(shape)/7.0;
     const double raw=yanes::analog_poly(v.phase,v.aux_phase,shape_norm);
     const double age=elapsed_samples/p->sample_rate;
     const double brass_sweep=waveform==53?5200.0*std::exp(-age*5.5):0.0;
-    const double cutoff=std::clamp(p->params[kChipCutoff].load(std::memory_order_relaxed)+brass_sweep,40.0,p->sample_rate*0.42);
+    const double cutoff=std::clamp(effective_param<kChipCutoff>(p)+brass_sweep,40.0,p->sample_rate*0.42);
     const double f=std::clamp(2.0*std::sin(3.14159265359*cutoff/p->sample_rate),0.0,0.92);
-    const double q=1.55-1.35*p->params[kChipResonance].load(std::memory_order_relaxed);
+    const double q=1.55-1.35*effective_param<kChipResonance>(p);
     v.chip_lp+=f*v.chip_bp;const double hp=raw-v.chip_lp-q*v.chip_bp;v.chip_bp+=f*hp;
     value=static_cast<float>(std::tanh(v.chip_lp*1.25));
     v.aux_phase=std::fmod(v.aux_phase+increment*(waveform==53?0.996:1.0045),1.0);
   } else if (waveform == 54) {
     const double transient=std::exp(-elapsed_samples/(p->sample_rate*0.075));
-    value=yanes::digital_ensemble(v.phase,p->params[kWavetablePosition].load(std::memory_order_relaxed));
+    value=yanes::digital_ensemble(v.phase,effective_param<kWavetablePosition>(p));
     value=static_cast<float>(value*0.88+v.noise_value*transient*0.12);
   } else if (waveform == 55) {
-    value=yanes::tine_piano(v.phase,p->params[kFmIndex].load(std::memory_order_relaxed),
-                            p->params[kFmBrightness].load(std::memory_order_relaxed),elapsed_samples/p->sample_rate);
+    value=yanes::tine_piano(v.phase,effective_param<kFmIndex>(p),
+                            effective_param<kFmBrightness>(p),elapsed_samples/p->sample_rate);
   } else if (waveform == 56) {
     const double saw=v.phase*2.0-1.0,sub=v.aux_phase<0.5?1.0:-1.0;
     const double raw=saw*0.78+sub*0.22;
-    const double cutoff=std::clamp(p->params[kChipCutoff].load(std::memory_order_relaxed),40.0,p->sample_rate*0.42);
+    const double cutoff=std::clamp(effective_param<kChipCutoff>(p),40.0,p->sample_rate*0.42);
     const double f=std::clamp(2.0*std::sin(3.14159265359*cutoff/p->sample_rate),0.0,0.9);
-    const double q=1.48-1.3*p->params[kChipResonance].load(std::memory_order_relaxed);
+    const double q=1.48-1.3*effective_param<kChipResonance>(p);
     v.chip_lp+=f*v.chip_bp;const double hp=std::tanh(raw*1.4)-v.chip_lp-q*v.chip_bp;v.chip_bp+=f*hp;
     value=static_cast<float>(std::tanh(v.chip_lp*1.7));
     v.aux_phase=std::fmod(v.aux_phase+increment*0.5,1.0);
@@ -1191,11 +1216,11 @@ float render_voice(Plugin* p, Voice& v) {
     if(t>duration)v.releasing=true;
   } else {
     const int algorithm = static_cast<int>(p->params[kGenesisAlgorithm].load(std::memory_order_relaxed));
-    const double feedback = p->params[kGenesisFeedback].load(std::memory_order_relaxed);
+    const double feedback = effective_param<kGenesisFeedback>(p);
     value = yanes::genesis_fm(v.phase, algorithm, feedback);
   }
   const int layer_mode = static_cast<int>(p->params[kLayerMode].load(std::memory_order_relaxed));
-  const double layer_mix = p->params[kLayerMix].load(std::memory_order_relaxed);
+  const double layer_mix = effective_param<kLayerMix>(p);
   if (layer_mode > 0 && layer_mix > 0.0) {
     float layer = 0.0f;
     if (layer_mode == 1) layer = yanes::pulse(v.layer_phase, std::min(0.49, increment * 2.0), 0.5);
@@ -1245,9 +1270,9 @@ float render_voice(Plugin* p, Voice& v) {
 }
 
 float process_retro(Plugin* p, float input) {
-  const double amount = p->params[kRetroAmount].load(std::memory_order_relaxed);
+  const double amount = effective_param<kRetroAmount>(p);
   if (amount <= 0.00001) return input;
-  const double target_rate = std::min(p->sample_rate, p->params[kOutputRate].load(std::memory_order_relaxed));
+  const double target_rate = std::min(p->sample_rate, effective_param<kOutputRate>(p));
   p->hold_phase += target_rate / p->sample_rate;
   if (p->hold_phase >= 1.0) { p->held_sample = input; p->hold_phase -= 1.0; }
   const int bits = static_cast<int>(p->params[kBitDepth].load(std::memory_order_relaxed));
@@ -1256,16 +1281,16 @@ float process_retro(Plugin* p, float input) {
   // Approximate console coupling capacitor and a bandwidth-limited TV speaker.
   const double hp_a = std::exp(-6.28318530718 * 70.0 / p->sample_rate);
   p->hp_y = hp_a * (p->hp_y + sample - p->hp_x); p->hp_x = sample;
-  const double cutoff = 14000.0 - 10500.0 * p->params[kSpeaker].load(std::memory_order_relaxed);
+  const double cutoff = 14000.0 - 10500.0 * effective_param<kSpeaker>(p);
   const double lp_a = 1.0 - std::exp(-6.28318530718 * cutoff / p->sample_rate);
   p->lp_y += lp_a * (p->hp_y - p->lp_y);
   p->effect_rng = p->effect_rng * 1664525U + 1013904223U;
   const double noise = (static_cast<double>(p->effect_rng) / 2147483648.0 - 1.0) *
-                       p->params[kRfNoise].load(std::memory_order_relaxed) * 0.025;
+                       effective_param<kRfNoise>(p) * 0.025;
   const double mains = p->params[kClockMode].load(std::memory_order_relaxed) >= 0.5 ? 50.0 : 60.0;
   p->hum_phase = std::fmod(p->hum_phase + mains / p->sample_rate, 1.0);
-  const double hum = std::sin(6.28318530718 * p->hum_phase) * p->params[kHum].load(std::memory_order_relaxed) * 0.02;
-  const double colored = std::tanh((p->lp_y + noise + hum) * (1.0 + 2.5 * p->params[kSpeaker].load(std::memory_order_relaxed)));
+  const double hum = std::sin(6.28318530718 * p->hum_phase) * effective_param<kHum>(p) * 0.02;
+  const double colored = std::tanh((p->lp_y + noise + hum) * (1.0 + 2.5 * effective_param<kSpeaker>(p)));
   return static_cast<float>(input * (1.0 - amount) + colored * amount);
 }
 
@@ -1273,7 +1298,7 @@ struct StereoSample { float left{}, right{}; };
 // Share the actual tap length with tail reporting, including tempo sync and the
 // delay buffer's two-second limit.
 size_t echo_delay_samples(const Plugin* p) {
-  double seconds = p->params[kEchoTime].load(std::memory_order_relaxed) * 0.001;
+  double seconds = effective_param<kEchoTime>(p) * 0.001;
   if (p->params[kTempoSync].load(std::memory_order_relaxed) >= 0.5) {
     constexpr double beat_lengths[] = {0.0625, 0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0};
     const int division = static_cast<int>(p->params[kSyncDivision].load(std::memory_order_relaxed));
@@ -1284,7 +1309,7 @@ size_t echo_delay_samples(const Plugin* p) {
 }
 
 StereoSample process_rack(Plugin* p, float input) {
-  const double drive = p->params[kDrive].load(std::memory_order_relaxed);
+  const double drive = effective_param<kDrive>(p);
   // Drive at zero must be a transparent chip out — tanh(x) still rounds peaks.
   const float driven =
       drive <= 1.0e-6
@@ -1294,12 +1319,12 @@ StereoSample process_rack(Plugin* p, float input) {
   const size_t size = p->delay_buffer.size();
   const size_t echo_samples = echo_delay_samples(p);
   const float delayed = p->delay_buffer[(p->delay_write + size - echo_samples) % size];
-  const float feedback = static_cast<float>(p->params[kEchoFeedback].load(std::memory_order_relaxed));
+  const float feedback = static_cast<float>(effective_param<kEchoFeedback>(p));
   p->delay_buffer[p->delay_write] = driven + delayed * feedback;
 
-  p->chorus_phase = std::fmod(p->chorus_phase + p->params[kChorusRate].load(std::memory_order_relaxed) / p->sample_rate, 1.0);
+  p->chorus_phase = std::fmod(p->chorus_phase + effective_param<kChorusRate>(p) / p->sample_rate, 1.0);
   const double base = 0.014 * p->sample_rate;
-  const double depth = p->params[kChorusDepth].load(std::memory_order_relaxed) * 0.001 * p->sample_rate;
+  const double depth = effective_param<kChorusDepth>(p) * 0.001 * p->sample_rate;
   auto chorus_tap = [&](double phase_offset) {
     const double modulation = (std::sin(6.28318530718 * (p->chorus_phase + phase_offset)) * 0.5 + 0.5) * depth;
     const size_t tap = std::clamp<size_t>(static_cast<size_t>(base + modulation), 1, size - 1);
@@ -1308,8 +1333,8 @@ StereoSample process_rack(Plugin* p, float input) {
   const float chorus_l = chorus_tap(0.0);
   const float chorus_r = chorus_tap(0.5);
   p->delay_write = (p->delay_write + 1) % size;
-  const float echo_mix = static_cast<float>(p->params[kEchoMix].load(std::memory_order_relaxed));
-  const float chorus_mix = static_cast<float>(p->params[kChorusMix].load(std::memory_order_relaxed));
+  const float echo_mix = static_cast<float>(effective_param<kEchoMix>(p));
+  const float chorus_mix = static_cast<float>(effective_param<kChorusMix>(p));
   const float echoed = driven * (1.0f - echo_mix) + delayed * echo_mix;
   return {echoed * (1.0f - chorus_mix) + chorus_l * chorus_mix,
           echoed * (1.0f - chorus_mix) + chorus_r * chorus_mix};
@@ -1382,6 +1407,7 @@ bool plugin_start(const clap_plugin_t*) { return true; }
 void plugin_stop(const clap_plugin_t*) {}
 void plugin_reset(const clap_plugin_t* plugin) {
   auto* p = self(plugin);
+  for (auto& offset : p->modulation) offset.store(0.0, std::memory_order_relaxed);
   for (size_t i = 0; i < p->voices.size(); ++i) { p->voices[i] = Voice{}; p->hardware_fm[i].reset(); }
   p->sustain_pedal.fill(false);
   std::fill(p->delay_buffer.begin(), p->delay_buffer.end(), 0.0f);
@@ -1483,19 +1509,19 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
       }
     }
     if (nes_stack) {
-      const float layer_mix = p->params[kLayerMode].load() > 0 ? static_cast<float>(p->params[kLayerMix].load()) : 0.0f;
+      const float layer_mix = p->params[kLayerMode].load() > 0 ? static_cast<float>(effective_param<kLayerMix>(p)) : 0.0f;
       sample = p->nes_apu.render(mute_mask, solo_mask, dpcm_dac) * (1.0f - layer_mix) + layer_audio;
-      const double voice_gain = db_gain(p->params[kGainDb].load(std::memory_order_relaxed));
-      const double master = db_gain(p->params[kMasterDb].load(std::memory_order_relaxed));
+      const double voice_gain = db_gain(effective_param<kGainDb>(p));
+      const double master = db_gain(effective_param<kMasterDb>(p));
       sample = static_cast<float>(sample * voice_gain * master);
     } else {
-      const double voice_gain = db_gain(p->params[kGainDb].load(std::memory_order_relaxed));
-      const double master = db_gain(p->params[kMasterDb].load(std::memory_order_relaxed));
+      const double voice_gain = db_gain(effective_param<kGainDb>(p));
+      const double master = db_gain(effective_param<kMasterDb>(p));
       sample = std::tanh(sample * static_cast<float>(voice_gain)) * static_cast<float>(master);
     }
     sample = process_retro(p, sample);
     const StereoSample effected = process_rack(p, sample);
-    const float width = static_cast<float>(p->params[kStereoWidth].load(std::memory_order_relaxed));
+    const float width = static_cast<float>(effective_param<kStereoWidth>(p));
     const double raw_l=effected.left*(1.0f+width*0.08f),raw_r=effected.right*(1.0f-width*0.08f);
     const int output_waveform=static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
     const bool custom_wave = p->params[kCustomWave].load(std::memory_order_relaxed) >= 0.5 ||
@@ -1503,7 +1529,7 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
     const double dc_coefficient = custom_wave ? custom_dc_r : dc_r;
     const bool dc_enabled=custom_wave ||
         (!nes_stack && (output_waveform==38||output_waveform==39)) ||
-        p->params[kRetroAmount].load(std::memory_order_relaxed)>0.00001;
+        effective_param<kRetroAmount>(p)>0.00001;
     double dc_l=raw_l,dc_right=raw_r;
     if(dc_enabled){dc_l=raw_l-p->output_dc_x_l+dc_coefficient*p->output_dc_y_l;dc_right=raw_r-p->output_dc_x_r+dc_coefficient*p->output_dc_y_r;}
     else p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;
@@ -1562,7 +1588,8 @@ bool params_info(const clap_plugin_t*, uint32_t index, clap_param_info_t* info) 
   const auto& s = kSpecs[index];
   *info = {};
   info->id = index;
-  info->flags = CLAP_PARAM_IS_AUTOMATABLE | (s.stepped ? CLAP_PARAM_IS_STEPPED : 0);
+  info->flags = CLAP_PARAM_IS_AUTOMATABLE |
+      (s.stepped ? CLAP_PARAM_IS_STEPPED : CLAP_PARAM_IS_MODULATABLE);
   std::snprintf(info->name, sizeof(info->name), "%s", s.name);
   std::snprintf(info->module, sizeof(info->module), "%s", s.module);
   info->min_value = s.min; info->max_value = s.max; info->default_value = s.def;
@@ -1699,10 +1726,10 @@ const clap_plugin_latency_t kLatency{latency_get};
 
 uint32_t tail_get(const clap_plugin_t* plugin) {
   const auto* p = self(plugin);
-  double seconds = p->params[kReleaseMs].load(std::memory_order_relaxed) * 0.001;
-  const double mix = p->params[kEchoMix].load(std::memory_order_relaxed);
-  const double feedback = p->params[kEchoFeedback].load(std::memory_order_relaxed);
-  const double chorus = p->params[kChorusMix].load(std::memory_order_relaxed);
+  double seconds = effective_param<kReleaseMs>(p) * 0.001;
+  const double mix = effective_param<kEchoMix>(p);
+  const double feedback = effective_param<kEchoFeedback>(p);
+  const double chorus = effective_param<kChorusMix>(p);
   if (mix > 1.0e-6 || chorus > 1.0e-6) {
     // The first echo is audible even with no feedback. Chorus taps share the
     // same feedback buffer, so they can also carry the later repeats.

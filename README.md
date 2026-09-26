@@ -114,6 +114,20 @@ stay external. The scripts reject silent captures and compare a smoothed
 musical-energy contour plus log-band spectrum, avoiding a misleading raw-wave
 correlation between emulators with different analog filters and reset phase.
 
+`tools/test_real_roms.sh /path/to/roms /path/to/build` runs the 26-game regression
+matrix from `nes/`, `gb/`, and `pcengine/` subdirectories. Build the replay tools,
+`tools/build_gb_oracle.sh /path/to/build/yanes-gb-oracle`, and
+`tools/build_libretro_host.sh /path/to/build/yanes-libretro-host` first. Missing
+ROMs count as failures. The runner records the later Start presses needed by
+Super Mario Land and Battletoads, and the Start/A sequence that registers a
+name in Zelda; an idle title or name-entry screen is not an audio parity test.
+Individual NES runs can set `YANES_AUTO_A_FRAMES` alongside
+`YANES_AUTO_START_FRAMES` to reproduce that input sequence.
+
+The Game Boy oracle seeds power-on RAM identically for the mix and isolated
+passes. The gate requires all five register logs to match byte for byte before
+scoring audio, so different game execution cannot masquerade as a channel defect.
+
 POKEY modes now clock distinct 4-, 5-, 9-, and 17-bit polynomial generators and provide eight
 AUDC-style tone/noise gating combinations. Fast clock selection and strict-mode 16-bit channel
 pairing expand the earlier single-LFSR model. SID modes now combine quantized 12-bit triangle,
@@ -195,6 +209,12 @@ defaults to two semitones and is adjustable up to 48. CLAP note expressions prov
 sample-accurate per-note tuning, volume, brightness, and pressure. Bitwig transport tempo can sync
 the arpeggiator and echo. Eight programmable pitch steps support tracker-style riffs, and Strict
 Hardware mode chokes an existing voice when a hardware-stack channel is retriggered.
+
+All 39 continuous parameters accept sample-accurate global CLAP parameter modulation, including
+pitch, vibrato, FM brightness/feedback, filters, envelopes, and effects. Modulation offsets are
+added to the current automated base value and clamped to the parameter range; the editor and
+project state retain the base value. Reset clears transient offsets. Stepped choices remain
+automatable, and per-note control uses the note expressions listed above.
 
 The internal effects rack contains soft drive, a feedback echo, and stereo modulated chorus. These
 run alongside the existing console/TV section, allowing a clean chip source, a tracker-like fake
@@ -347,6 +367,10 @@ YM2612/OPNA play an octave higher and OPM a semitone lower than the buggy earlie
 so existing patches using those sources now follow the intended MIDI pitch. Parameter IDs and
 saved-state migration remain compatible.
 
+The [full history and real-ROM follow-up](docs/HISTORY_REVIEW_2026-09-26.md) records
+all 32 commits, retained features, capture corrections, CLAP modulation, and the
+additive oscillator and published-ID checks.
+
 `build/yanes-benchmark build/YANES.clap` prints per-source CPU measurements at 48 kHz, 128-frame
 blocks, and one or sixteen active MIDI voices. It excludes activation, note setup and warm-up;
 it is an informational throughput measurement, not a DAW dropout guarantee.
@@ -356,6 +380,12 @@ filename-derived score for comparison against a separate local APU model. It res
 `tonal 0.95` envelope/spectrum/pitch and onset/offset gate, prints audio comparison diagnostics,
 and saves `rom_song.rpp`, `rom_extracted.wav`, and `yanes_extracted.wav` under
 `build/reaper_projects/`. It does not run a ROM or extract game music.
+The directory-backed gate remains enabled when the ROM directory exists; CTest reports it
+as skipped when that optional directory is absent, so CI does not require private ROMs.
+An additional `nes_oscillator_gate` always runs a generated score and rejects deliberately
+wrong oscillator, duty, and octave renders at the unchanged 0.95 composite threshold.
+It does not replace or weaken the directory-backed gate or the real-ROM tests. CTest stores
+the REAPER/WAV exports in the configured build directory's `reaper_projects/` folder.
 Actual ROM capture/replay remains in the optional `*_rom_parity`
 gates described above. Full ROM mixes use `rom-mix` comparison, which rejects silence without
 requiring ffmpeg; `rom` permits silent isolated channels that an excerpt does not use.

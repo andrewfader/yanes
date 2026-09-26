@@ -30,6 +30,13 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 echo "[1/3] SameBoy ROM capture: $rom"
 "$oracle" "$rom" "$work" "$seconds"
+for name in ch1_pulse ch2_pulse ch3_wave ch4_noise; do
+  cmp -s "$work/gb_registers.log" "$work/gb_${name}_registers.log" || {
+    echo "oracle capture diverged for $name: isolated audio must use the mix register stream" >&2
+    echo "rebuild the oracle with tools/build_gb_oracle.sh" >&2
+    exit 1
+  }
+done
 echo "[2/3] Independent YANES APU-register replay"
 "$replay" "$work/gb_registers.log" "$work" "$seconds"
 echo "[3/3] Per-channel hardware-oracle gate"
