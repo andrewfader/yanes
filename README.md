@@ -308,11 +308,61 @@ command-line-tools environment on macOS. Use `--config Release` for a multi-conf
 generator. Cross-platform CI and release-promotion details are in
 [`docs/CROSS_PLATFORM_RELEASES.md`](docs/CROSS_PLATFORM_RELEASES.md).
 
+When REAPER is installed, CMake registers `reaper_clap_integration`. The test creates an isolated
+REAPER profile, instantiates YANES, writes a MIDI drum passage and waveform automation, saves and
+recalls the project, renders it offline, and validates the WAV:
+
+```sh
+ctest --test-dir build --output-on-failure -R reaper_clap_integration
+```
+
 CMake downloads the small official CLAP headers. For an offline build, pass
 `-DCLAP_ROOT=/path/to/clap`. It also fetches the pinned `ymfm` source used by the hardware FM
 models, so the first online configuration requires Git and network access.
 
 ## Install
+
+### Local build and install
+
+After building from source, copy the compiled `YANES.clap` plug-in to your platform's standard CLAP directory:
+
+| Platform | Built file location | Copy destination |
+| --- | --- | --- |
+| Linux | `build/YANES.clap` | `~/.clap/` (or `/usr/lib/clap/`) |
+| Windows | `build\Release\YANES.clap` | `C:\Program Files\Common Files\CLAP\` |
+| macOS | `build/YANES.clap` (bundle) | `~/Library/Audio/Plug-Ins/CLAP/` |
+
+**Linux**:
+```sh
+mkdir -p ~/.clap
+cp build/YANES.clap ~/.clap/
+```
+*(Or system-wide: `sudo cp build/YANES.clap /usr/lib/clap/`)*
+
+**macOS**:
+```sh
+mkdir -p ~/Library/Audio/Plug-Ins/CLAP
+cp -R build/YANES.clap ~/Library/Audio/Plug-Ins/CLAP/
+```
+*(Note: on macOS, `YANES.clap` is a bundle directory, so copy recursively with `-R`. When using multi-configuration generators like Xcode, the bundle is located in `build/Release/YANES.clap`.)*
+
+**Windows** (PowerShell):
+```powershell
+New-Item -ItemType Directory -Force -Path "$env:CommonProgramFiles\CLAP"
+Copy-Item build\Release\YANES.clap "$env:CommonProgramFiles\CLAP\"
+```
+*(Or from Command Prompt: `if not exist "%COMMONPROGRAMFILES%\CLAP" mkdir "%COMMONPROGRAMFILES%\CLAP"` followed by `copy build\Release\YANES.clap "%COMMONPROGRAMFILES%\CLAP\"`)*
+
+#### Companion CLI tools (optional)
+
+The build also creates command-line utilities (`yanes-dpcm`, `yanes-register-render`, `yanes-audio-compare`, etc.). You can install them into your local PATH using CMake:
+
+```sh
+cmake --install build --prefix ~/.local
+```
+*(Or system-wide: `sudo cmake --install build --prefix /usr/local`)*
+
+### Prebuilt binary
 
 Download a prebuilt package from the
 [Releases page](https://github.com/andrewfader/yanes/releases/latest):
@@ -323,7 +373,7 @@ Download a prebuilt package from the
 | Windows x64 | `YANES-<version>-windows-x64.zip` | `C:\Program Files\Common Files\CLAP\` |
 | macOS (Apple Silicon and Intel) | `YANES-<version>-macos-universal.zip` | `~/Library/Audio/Plug-Ins/CLAP/` |
 
-Then rescan plug-ins in your DAW. On Linux, for example:
+On Linux, for example:
 
 ```sh
 tar xzf YANES-*-linux-x64.tar.gz
@@ -332,20 +382,22 @@ cp YANES-*-linux-x64/YANES.clap ~/.clap/
 ```
 
 The Linux build needs only the X11 and Xft libraries that every desktop distribution ships. The
-Windows and macOS builds are unsigned; if macOS refuses to load the plug-in, run
-`xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/CLAP/YANES.clap`. For another
-architecture or a source change, build locally as described above and copy `build/YANES.clap`.
+Windows and macOS release packages are unsigned; if macOS refuses to load a downloaded plug-in, clear its quarantine flag:
+
+```sh
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/CLAP/YANES.clap
+```
 
 Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds and tests every platform and
 publishes the packages with SHA-256 checksums.
 
-When REAPER is installed, CMake registers `reaper_clap_integration`. The test creates an isolated
-REAPER profile, instantiates YANES, writes a MIDI drum passage and waveform automation, saves and
-recalls the project, renders it offline, and validates the WAV:
+### DAW setup
 
-```sh
-ctest --test-dir build --output-on-failure -R reaper_clap_integration
-```
+After installing, rescan plug-ins in your DAW:
+- **Bitwig Studio**: Open **Settings > Locations > Plug-in Locations** and click **Rescan Plug-ins** (or restart Bitwig).
+- **REAPER**: Open **Preferences > Plug-ins > VST/CLAP** and click **Re-scan**.
+
+Then insert **YANES** onto a track from your host's instrument browser.
 
 ## Scope and provenance
 
