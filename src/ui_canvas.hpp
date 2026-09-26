@@ -47,12 +47,13 @@ class Canvas {
   std::string fit(const char* text, int max_width, TextSize size) {
     std::string rendered = text ? text : "";
     if (max_width > 0 && measure_text(rendered, size) > max_width) {
-      while (rendered.size() > 1) {
-        rendered.pop_back();
-        // Never cut a UTF-8 sequence in half: the labels carry bullets and em dashes.
-        while (!rendered.empty() && (static_cast<unsigned char>(rendered.back()) & 0xc0U) == 0x80U)
-          rendered.pop_back();
-        if (measure_text(rendered + "...", size) <= max_width) { rendered += "..."; break; }
+      if (measure_text("...", size) > max_width) return {};
+      while (!rendered.empty()) {
+        // Walk backward over continuation bytes, then remove the leading byte too.
+        size_t last = rendered.size() - 1;
+        while (last > 0 && (static_cast<unsigned char>(rendered[last]) & 0xc0U) == 0x80U) --last;
+        rendered.resize(last);
+        if (measure_text(rendered + "...", size) <= max_width) return rendered + "...";
       }
     }
     return rendered;

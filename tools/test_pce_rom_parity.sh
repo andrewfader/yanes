@@ -29,4 +29,4 @@ if command -v ffmpeg >/dev/null 2>&1; then
     exit 1
   fi
 fi
-"$compare" "$work/reference.wav" "$work/yanes_pce_mix.wav" rom "$minimum"
+"$compare" "$work/reference.wav" "$work/yanes_pce_mix.wav" rom-mix "$minimum"

@@ -361,7 +361,7 @@ std::vector<nes::NoteEvent> get_rom_music_score(const std::string& rom_name, dou
 
 int main(int argc, char** argv) {
   if (argc < 4) {
-    std::cerr << "Usage: yanes-nes-rom-emu <rom.nes> <yanes_plugin.clap> <output_dir> "
+    std::cerr << "Usage: yanes-nes-rom-emu <--synthetic|rom.nes> <yanes_plugin.clap> <output_dir> "
                  "[duration] [yanes_waveform] [yanes_duty] [yanes_transpose]\n"
                  "  Optional YANES-only overrides are for negative-control gates;\n"
                  "  the independent APU reference always uses the score as written.\n";
@@ -376,33 +376,19 @@ int main(int argc, char** argv) {
   const double yanes_duty = (argc >= 7) ? std::atof(argv[6]) : -1.0;
   const double yanes_transpose = (argc >= 8) ? std::atof(argv[7]) : 0.0;
 
-  std::ifstream rom_file(rom_path, std::ios::binary);
-  if (!rom_file) {
-    std::cerr << "Error: could not open NES ROM: " << rom_path << "\n";
-    return 1;
+  if (!std::isfinite(duration) || duration <= 0 || duration > 3600) {
+    std::cerr << "duration must be between zero and 3600 seconds\n"; return 1;
   }
-
-  std::vector<uint8_t> rom_data((std::istreambuf_iterator<char>(rom_file)),
-                                std::istreambuf_iterator<char>());
-  rom_file.close();
-
-  if (rom_data.size() < 16 || std::memcmp(rom_data.data(), "NES\x1a", 4) != 0) {
-    std::cerr << "Error: invalid iNES ROM header\n";
-    return 1;
+  if (rom_path != "--synthetic") {
+    std::ifstream rom_file(rom_path, std::ios::binary);
+    char header[16]{};
+    if (!rom_file.read(header, sizeof(header)) || std::memcmp(header, "NES\x1a", 4) != 0) {
+      std::cerr << "invalid or unreadable iNES header\n"; return 1;
+    }
+    std::cout << "Legacy filename-selected score; no ROM execution or audio extraction.\n";
   }
-
-  const int prg_banks = rom_data[4];
-  const int mapper = (rom_data[6] >> 4) | (rom_data[7] & 0xF0);
-
-  std::cout << "========================================================\n";
-  std::cout << "  YANES Independent 2A03 Hardware Gate                 \n";
-  std::cout << "========================================================\n";
-  std::cout << "Loaded ROM: " << rom_path << "\n";
-  std::cout << "  Mapper: " << mapper << ", PRG ROM: " << (prg_banks * 16) << " KB\n";
-  std::cout << "  (Score is theme-derived from the ROM identity; APU render is\n";
-  std::cout << "   an independent cycle-stepped 2A03 model — not YANES DSP.)\n";
-
-  // Extract score for the game
+  std::cout << "YANES synthetic-score comparison against a separate 2A03 model\n";
+  // The default score is generated locally and needs no ROM or external emulator.
   const auto notes = get_rom_music_score(rom_path, duration);
   std::cout << "Prepared " << notes.size() << " note events for the hardware gate.\n";
 

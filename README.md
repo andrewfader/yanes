@@ -208,8 +208,8 @@ extracted instrument data.
 The embedded editor opens at 1600 x 1050 and can be freely resized down to 800 x 525; text,
 controls, and hit-testing scale with the window. The **SIZE** button in the header steps through
 50%, 60%, 75%, 90%, 100%, and 125% for hosts without a resize handle (click steps smaller and
-wraps, the wheel goes either way, right-click restores 100%), and the project remembers the size. Six pages group controls by what you are
-adjusting — Voice, Sequence, Synth, FM, Hardware, and FX + TV — in collapsible cards, with the
+wraps, the wheel goes either way, right-click restores 100%), and the project remembers the size. Seven pages group controls by what you are
+adjusting — Voice, Sequence, Synth, FM, Hardware, FX + TV, and Custom — in collapsible cards, with the
 preset selector always in the header. Controls that do nothing for the current sound source stay
 in place but are dimmed, so the layout never jumps when the source changes.
 
@@ -228,6 +228,25 @@ collapse changes animate briefly and the editor repaints only while something ch
 Linux it draws into a back buffer, so it never shows a half-painted frame. Linux uses X11/Xft
 (including under XWayland), Windows uses GDI, and macOS uses a flipped Cocoa view.
 `yanes-ui-preview OUTPUT_DIR [WIDTH HEIGHT]` renders every page to PNG offscreen for layout review.
+On Linux, `build/frontend_tests --display-review /tmp/yanes-native-review` checks the production
+editor at four sizes with repeated window lifecycles and saves PPM screenshots. It requires an
+X display; the ordinary CTest frontend checks remain headless. See the
+[native UI and leak results](docs/REVIEW_2026-09-26.md#follow-up-native-ui-and-leak-checks).
+
+The catalogue contains **59 sound sources and 81 factory presets** (plus Manual). Every source
+has a factory starting preset, including the console stacks and noise voices. New recipes include
+Custom wave lead, Game Boy custom bass, Custom wave organ, and Game Boy duty macro. Choose
+**Custom wavetable** directly in the sound-source menu, or use the Custom wave switch to override
+another source. The drawing is always active when Custom wavetable itself is selected.
+
+The **Custom** page lets you draw a repeating 32-sample, 4-bit waveform, matching Game Boy
+wave-RAM resolution. Enable **Custom wave** to replace any selected source's oscillator
+(including every part of a stack) with the drawing. Pitch, envelopes, layers, mixer and effects
+still apply; source-specific synthesis controls are dimmed. Drag to paint, right-drag for a
+straight line, and right-click a sample to reset it. Fast strokes fill intervening samples.
+The fixed-length ruler labels the samples. Every sample is automatable and saved with the project;
+older projects load with Custom wave off. Selecting a factory preset resets the drawing and switch.
+This is a creative oscillator override, not a claim that every original chip supported wave RAM.
 
 The **duty sequence** steps a pulse voice's duty through up to eight steps on every note, like a
 tracker duty macro: looping or one-shot, at a free rate or locked to host tempo with the sync
@@ -265,7 +284,7 @@ project, all sixteen bank slots are included in CLAP state, so reopening that pr
 depend on the environment variable or original files. DPCM Base Key maps consecutive MIDI keys to
 slots; each file is limited to 1 MiB. Empty slots retain the generated, copyright-free kick/snare
 fallback. State versions 8 and 9 migrate their former single sample into slot one, while versions
-10 through 14 retain all sixteen slots and receive defaults for newer mixer, loop, DAC, trim,
+10 through 15 retain all sixteen slots and receive defaults for newer mixer, loop, DAC, trim,
 and later controls.
 Each slot can loop independently through the DPCM Loop Mask, and DPCM Initial Level exposes the
 2A03 DAC starting value used before the first delta bit. DPCM Trim Start and Trim End provide
@@ -319,6 +338,23 @@ ctest --test-dir build --output-on-failure -R reaper_clap_integration
 CMake downloads the small official CLAP headers. For an offline build, pass
 `-DCLAP_ROOT=/path/to/clap`. It also fetches the pinned `ymfm` source used by the hardware FM
 models, so the first online configuration requires Git and network access.
+
+### Review and CPU measurements
+
+The September 2026 review and its validation limits are recorded in
+[`docs/REVIEW_2026-09-26.md`](docs/REVIEW_2026-09-26.md). Hardware-FM pitch corrections make
+YM2612/OPNA play an octave higher and OPM a semitone lower than the buggy earlier implementation,
+so existing patches using those sources now follow the intended MIDI pitch. Parameter IDs and
+saved-state migration remain compatible.
+
+`build/yanes-benchmark build/YANES.clap` prints per-source CPU measurements at 48 kHz, 128-frame
+blocks, and one or sixteen active MIDI voices. It excludes activation, note setup and warm-up;
+it is an informational throughput measurement, not a DAW dropout guarantee.
+
+The `nes_preset_gate` test uses a generated score and a separate local APU model. It does not run
+a ROM or extract game music. Actual ROM capture/replay remains in the optional `*_rom_parity`
+gates described above. Full ROM mixes use `rom-mix` comparison, which rejects silence without
+requiring ffmpeg; `rom` permits silent isolated channels that an excerpt does not use.
 
 ## Install
 

@@ -459,7 +459,7 @@ class Editor {
       } else if (spec.widget == Widget::Lane) {
         const LaneGeometry g = lane_geometry(placed.rect);
         const int step_w = g.step_width(spec.steps);
-        if (g.bars.contains(x, y) || g.ruler.contains(x, y)) {
+        if (g.bars.contains(x, y) || (spec.length >= 0 && g.ruler.contains(x, y))) {
           hit.sub = std::clamp((x - g.bars.x) / std::max(1, step_w), 0, spec.steps - 1);
           hit.ruler = g.ruler.contains(x, y);
           hit.param = hit.ruler ? spec.length : spec.param + hit.sub;
@@ -513,13 +513,15 @@ class Editor {
     const int step_w = g.step_width(lane.steps);
     const int step = std::clamp((x - g.bars.x) / std::max(1, step_w), 0, lane.steps - 1);
     const double value = lane_value_at(lane, drag_.rect, y);
-    if (!drag_.line) { touch(lane.param + step, value); return; }
+    // Fill skipped samples when pointer events span several columns.
+    // Right-drag retains its original anchor; freehand advances the anchor each time.
     // Straight line from the anchor step to here, like a tracker macro editor's right-drag.
     const int from = std::min(drag_.anchor_step, step), to = std::max(drag_.anchor_step, step);
     for (int s = from; s <= to; ++s) {
       const double t = step == drag_.anchor_step ? 1.0 : static_cast<double>(s - drag_.anchor_step) / (step - drag_.anchor_step);
       touch(lane.param + s, std::round(drag_.anchor_value + (value - drag_.anchor_value) * t));
     }
+    if (!drag_.line) { drag_.anchor_step = step; drag_.anchor_value = value; }
   }
 
   void press(int button, int x, int y, unsigned modifiers, double now) {
@@ -657,8 +659,8 @@ class Editor {
 
   void open_menu(int param, const Rect& anchor) {
     const int count = option_count(param);
-    const int columns = (count + menu_rows - 1) / menu_rows;
-    const int rows = std::min(count, menu_rows);
+    const int rows = menu_row_count(count);
+    const int columns = (count + rows - 1) / rows;
     Rect r{anchor.x, anchor.bottom() + 4, columns * menu_column_width + 16, rows * menu_item_height + 16};
     r.x = std::clamp(r.x, margin, width - margin - r.w);
     if (r.bottom() > content_bottom) r.y = std::max(header_rect.bottom(), anchor.y - r.h - 4);
@@ -668,8 +670,13 @@ class Editor {
   }
   void close_menu() { menu_ = Menu{}; }
 
+  static int menu_row_count(int count) {
+    constexpr int max_columns = (width - 2 * margin - 16) / menu_column_width;
+    return std::min(count, std::max(menu_rows, (count + max_columns - 1) / max_columns));
+  }
   Rect menu_item_rect(int index) const {
-    const int column = index / menu_rows, row = index % menu_rows;
+    const int rows = menu_row_count(option_count(menu_.param));
+    const int column = index / rows, row = index % rows;
     return Rect{menu_.rect.x + 8 + column * menu_column_width, menu_.rect.y + 8 + row * menu_item_height,
                 menu_column_width - 6, menu_item_height - 2};
   }
@@ -723,7 +730,7 @@ class Editor {
       p.round_rect(r, 8, active ? panel_hi : (hover ? 0x152232 : panel));
       char label[48]{};
       std::snprintf(label, sizeof(label), "%02d  %s", i + 1, pages_[static_cast<size_t>(i)].tab);
-      p.text(r.x + 18, r.y + 31, label, active ? text : (hover ? soft : muted), r.w - 30);
+      p.text(r.x + 18, r.y + 31, label, active ? text : (hover ? soft : muted), r.w - 30, TextSize::Small);
     }
     // One indicator that slides between tabs and takes the colour of the page it lands on.
     const Rect from = tab_rect(static_cast<int>(std::floor(tab_position_)));
@@ -877,8 +884,8 @@ class Editor {
       }
     } else {
       char top[16]{}, bottom[16]{};
-      std::snprintf(top, sizeof(top), "%+.0f", info.max);
-      std::snprintf(bottom, sizeof(bottom), "%+.0f", info.min);
+      std::snprintf(top, sizeof(top), bipolar ? "%+.0f" : "%.0f", info.max);
+      std::snprintf(bottom, sizeof(bottom), bipolar ? "%+.0f" : "%.0f", info.min);
       p.text_right(g.bars.x - 8, g.bars.y + 16, top, muted, g.gutter - 10, TextSize::Small);
       p.text_right(g.bars.x - 8, g.bars.bottom() - 4, bottom, muted, g.gutter - 10, TextSize::Small);
     }
@@ -903,7 +910,7 @@ class Editor {
       char label[32]{};
       if (levels) host_.format(spec.param + i, value, label, sizeof(label));
       else if (value == 0.0) std::snprintf(label, sizeof(label), "0");
-      else std::snprintf(label, sizeof(label), "%+.0f", value);
+      else std::snprintf(label, sizeof(label), bipolar ? "%+.0f" : "%.0f", value);
       const int label_y = levels ? std::max(top + 22, g.bars.y + 20) : (value >= 0 ? top - 6 : bottom + 20);
       p.text_centered(x0 + w / 2, std::clamp(label_y, g.bars.y + 18, g.bars.bottom() - 4), label,
                       playing ? (levels ? bg : text) : muted, w - 4, TextSize::Small);

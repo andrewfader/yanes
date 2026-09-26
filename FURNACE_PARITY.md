@@ -24,9 +24,9 @@ It checks that **the plugin's own defaults sound like the chip**. A fixture is
 allowed to do exactly two things: select a voice with the `Waveform` parameter,
 and play the note the reference module plays. Everything that shapes the sound —
 duty, wavetable, noise period and mode, FM ratio and index, release — comes from
-the plugin's per-voice defaults (`kVoiceDefaults` in `src/yanes.cpp`), which hold
-the register state each chip powers up in. That is the same state Furnace's
-default instrument plays, so a passing row means a user who picks that voice and
+the plugin's per-voice defaults (`kVoiceDefaults` in `src/yanes.cpp`), which encode
+the fixture instruments’ starting settings. These are test and musical defaults, not a guarantee
+about silicon power-on state. They match what the corresponding Furnace reference instrument plays, so a passing row means a user who picks that voice and
 presses a key hears the chip.
 
 This matters because the alternative is worthless: if the harness is allowed to
@@ -119,8 +119,8 @@ detail rather than on anything subtle:
 - **The VRC6 saw accumulator.** Seven held levels per cycle, 8-bit accumulator,
   top five bits to the DAC — so a high rate overflows part-way through and folds
   the ramp instead of producing a clean saw.
-- **Wavetable contents.** A wavetable chip holds a plain ramp after a reset, which
-  is what the reference modules play, so that ramp is the top of the shape range
+- **Wavetable contents.** The reference modules use plain ramps, which
+  the default voices therefore select, so that ramp is the top of the shape range
   for the FDS, N163, SCC and Game Boy wave voices *and* is what those voices
   select by default. The PC Engine voice already reached a ramp at the top of its
   range.
@@ -130,8 +130,8 @@ detail rather than on anything subtle:
 
 ## Voice defaults
 
-`kVoiceDefaults` in `src/yanes.cpp` gives each chip voice the register state its
-hardware powers up in. It is applied when the `Waveform` parameter changes and
+`kVoiceDefaults` in `src/yanes.cpp` gives each chip voice its
+reference instrument’s starting settings. It is applied when the `Waveform` parameter changes and
 once at construction — the default voice needs it too, since selecting the voice
 you are already on is not a change. Presets run afterwards and override whatever
 they set explicitly, so a patch that wants a different duty or wavetable still
@@ -139,7 +139,7 @@ gets one; every preset that cares already sets its own shape.
 
 The settings it carries: 12.5% duty on the NES and Game Boy pulses; period 15 and
 short mode on the NES noise; white mode on the SMS and Genesis PSG noise; the
-pure-tone shape on the VRC6 pulse, POKEY and TIA; the reset ramp on the FDS, N163,
+pure-tone shape on the VRC6 pulse, POKEY and TIA; the reference ramp on the FDS, N163,
 SCC, PC Engine and Game Boy wave; the full accumulator rate on the VRC6 saw; the
 OPLL modulator ratio and index on the VRC7; and release — 0 for every chip that
 silences the moment the gate clears, 172 ms and 92 ms for the two SIDs, which run
@@ -154,3 +154,18 @@ An earlier 21/21 “pass” used harmonic-magnitude cosine similarity measured
 relative to each render's *own* detected fundamental. That metric cannot see an
 octave error at all, and it is dominated by the fundamental, so two different
 bright tones still clear 0.80. It is not the acceptance gate.
+
+## September 2026 audit additions
+
+The 63 Furnace cases still cover 21 specific default voices, not every shape, FM routing,
+source, or preset. Their pitch term folds octaves, so a passing row does not independently
+prove absolute pitch. The new `hardware_fm_tests` checks absolute 440 Hz and 3520 Hz output
+for all seven hardware-FM core configurations, and rejects an unwanted sub-octave. It also
+checks that OPM AM/PM controls affect audio. These checks caught the former YM2612/OPNA
+octave error and OPM semitone error that the earlier suites did not exercise.
+
+Register-render smoke tests now use chip-specific OPL fixtures and require non-silent audio.
+The comparator rejects silent tonal/noise fixtures and silent `rom-mix` excerpts; silent `rom`
+isolated channels are still allowed. The generated-score NES gate has a wrong-oscillator
+negative control and no longer requires a private ROM directory. It compares two local
+models, so it is not a substitute for the optional emulator-based ROM oracle.

@@ -35,7 +35,12 @@ enum ParamId : uint32_t {
   kDutyStep1, kDutyStep2, kDutyStep3, kDutyStep4, kDutyStep5, kDutyStep6,
   kDutyStep7, kDutyStep8, kVibratoDelay, kCentsSeqMode, kCentsSeqLength, kCentsSeqRate,
   kCentsStep1, kCentsStep2, kCentsStep3, kCentsStep4, kCentsStep5, kCentsStep6,
-  kCentsStep7, kCentsStep8, kParamCount
+  kCentsStep7, kCentsStep8, kCustomWave,
+  kWaveSample1, kWaveSample2, kWaveSample3, kWaveSample4, kWaveSample5, kWaveSample6, kWaveSample7, kWaveSample8,
+  kWaveSample9, kWaveSample10, kWaveSample11, kWaveSample12, kWaveSample13, kWaveSample14, kWaveSample15, kWaveSample16,
+  kWaveSample17, kWaveSample18, kWaveSample19, kWaveSample20, kWaveSample21, kWaveSample22, kWaveSample23, kWaveSample24,
+  kWaveSample25, kWaveSample26, kWaveSample27, kWaveSample28, kWaveSample29, kWaveSample30, kWaveSample31, kWaveSample32,
+  kParamCount
 };
 
 struct ParamSpec {
@@ -48,7 +53,7 @@ struct ParamSpec {
 };
 
 constexpr std::array<ParamSpec, kParamCount> kSpecs{{
-    {"Waveform", "Oscillator", 0, 57, 0, true},
+    {"Waveform", "Oscillator", 0, 58, 0, true},
     {"Pulse duty", "Oscillator", 0, 3, 1, true},
     {"Noise period", "Oscillator/Noise", 0, 15, 8, true},
     {"Noise mode", "Oscillator/Noise", 0, 1, 0, true},
@@ -126,7 +131,7 @@ constexpr std::array<ParamSpec, kParamCount> kSpecs{{
     {"DPCM trim end", "NES/DPCM bank", 0.05, 1, 1, false},
     {"Channel mute mask", "Hardware/Stack mixer", 0, 65535, 0, true},
     {"Channel solo mask", "Hardware/Stack mixer", 0, 65535, 0, true},
-    {"Preset", "Presets", 0, 54, 0, true},
+    {"Preset", "Presets", 0, 81, 0, true},
     {"Pitch bend range", "Performance", 0, 48, 2, true},
     {"Duty sequence", "Sequences/Duty", 0, 2, 0, true},
     {"Duty length", "Sequences/Duty", 1, 8, 4, true},
@@ -151,6 +156,40 @@ constexpr std::array<ParamSpec, kParamCount> kSpecs{{
     {"Cents step 6", "Sequences/Cents", -100, 100, 0, true},
     {"Cents step 7", "Sequences/Cents", -100, 100, 0, true},
     {"Cents step 8", "Sequences/Cents", -100, 100, 0, true},
+    {"Custom wave", "Custom waveform", 0, 1, 0, true},
+    {"Wave sample 1", "Custom waveform", 0, 15, 0, true},
+    {"Wave sample 2", "Custom waveform", 0, 15, 0, true},
+    {"Wave sample 3", "Custom waveform", 0, 15, 1, true},
+    {"Wave sample 4", "Custom waveform", 0, 15, 1, true},
+    {"Wave sample 5", "Custom waveform", 0, 15, 2, true},
+    {"Wave sample 6", "Custom waveform", 0, 15, 2, true},
+    {"Wave sample 7", "Custom waveform", 0, 15, 3, true},
+    {"Wave sample 8", "Custom waveform", 0, 15, 3, true},
+    {"Wave sample 9", "Custom waveform", 0, 15, 4, true},
+    {"Wave sample 10", "Custom waveform", 0, 15, 4, true},
+    {"Wave sample 11", "Custom waveform", 0, 15, 5, true},
+    {"Wave sample 12", "Custom waveform", 0, 15, 5, true},
+    {"Wave sample 13", "Custom waveform", 0, 15, 6, true},
+    {"Wave sample 14", "Custom waveform", 0, 15, 6, true},
+    {"Wave sample 15", "Custom waveform", 0, 15, 7, true},
+    {"Wave sample 16", "Custom waveform", 0, 15, 7, true},
+    {"Wave sample 17", "Custom waveform", 0, 15, 8, true},
+    {"Wave sample 18", "Custom waveform", 0, 15, 8, true},
+    {"Wave sample 19", "Custom waveform", 0, 15, 9, true},
+    {"Wave sample 20", "Custom waveform", 0, 15, 9, true},
+    {"Wave sample 21", "Custom waveform", 0, 15, 10, true},
+    {"Wave sample 22", "Custom waveform", 0, 15, 10, true},
+    {"Wave sample 23", "Custom waveform", 0, 15, 11, true},
+    {"Wave sample 24", "Custom waveform", 0, 15, 11, true},
+    {"Wave sample 25", "Custom waveform", 0, 15, 12, true},
+    {"Wave sample 26", "Custom waveform", 0, 15, 12, true},
+    {"Wave sample 27", "Custom waveform", 0, 15, 13, true},
+    {"Wave sample 28", "Custom waveform", 0, 15, 13, true},
+    {"Wave sample 29", "Custom waveform", 0, 15, 14, true},
+    {"Wave sample 30", "Custom waveform", 0, 15, 14, true},
+    {"Wave sample 31", "Custom waveform", 0, 15, 15, true},
+    {"Wave sample 32", "Custom waveform", 0, 15, 15, true},
+
 }};
 
 constexpr const char* kWaveNames[] = {
@@ -169,7 +208,7 @@ constexpr const char* kWaveNames[] = {
     "Atari TIA polynomial tone", "Atari TIA two-channel stack", "Morphing wavetable",
     "Phase distortion", "Harmonic additive", "Six-operator FM", "Digital partial pair",
     "Porta FM keyboard", "Vintage analog poly", "Matrix brass poly", "Early digital ensemble",
-    "Electromechanical tine", "Ladder mono synth", "Retro chip drum kit"};
+    "Electromechanical tine", "Ladder mono synth", "Retro chip drum kit", "Custom wavetable"};
 constexpr const char* kArpNames[] = {"Off", "Major", "Minor", "Octaves", "NES chord", "User steps"};
 constexpr const char* kLayerNames[] = {"Off", "Octave", "Fifth", "Sub octave", "Triangle", "Noise"};
 constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord lead",
@@ -187,7 +226,37 @@ constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord l
     "Japanese analog poly", "American matrix brass", "Early sampler choir",
     "Tine suitcase piano", "Classic ladder bass", "Retro chip drum kit",
     "Game Boy bubble bloop", "Game Boy coin chirp", "Game Boy 7-bit zap",
-    "LSDJ wave pluck", "Game Boy fast chord", "Game Boy tracker delay"};
+    "LSDJ wave pluck", "Game Boy fast chord", "Game Boy tracker delay",
+    "Custom wave lead",
+    "Game Boy custom bass",
+    "Custom wave organ",
+    "Game Boy duty macro",
+    "NES triangle bass",
+    "NES noise percussion",
+    "VRC6 saw lead",
+    "VRC7 hollow keys",
+    "SMS noise percussion",
+    "Genesis PSG lead",
+    "Genesis noise percussion",
+    "NES channel stack",
+    "Game Boy channel stack",
+    "SMS channel stack",
+    "Genesis channel stack",
+    "AY arcade lead",
+    "AY noise percussion",
+    "POKEY pure lead",
+    "OPNA FM keys",
+    "Atari channel stack",
+    "PC Engine channel stack",
+    "Sound Blaster channel stack",
+    "PC Engine noise percussion",
+    "SCC channel stack",
+    "SAA1099 channel stack",
+    "TIA pulse bass",
+    "TIA channel stack"};
+static_assert(std::size(kWaveNames) == static_cast<size_t>(kSpecs[kWaveform].max) + 1);
+static_assert(std::size(kPresetNames) == static_cast<size_t>(kSpecs[kPreset].max) + 1);
+
 constexpr const char* kDutyNames[] = {"12.5%", "25%", "50%", "75%"};
 constexpr const char* kDutySeqNames[] = {"Off", "Loop", "One shot"};
 // Steps per beat for each sync division, and how they read.
@@ -196,9 +265,9 @@ constexpr double kDuties[] = {0.125, 0.25, 0.5, 0.75};
 
 inline bool format_value(uint32_t id, double value, char* text, uint32_t capacity) {
   if (id >= kParamCount || !text || capacity == 0) return false;
-  if (id == kWaveform) std::snprintf(text, capacity, "%s", kWaveNames[std::clamp(static_cast<int>(std::round(value)), 0, 57)]);
+  if (id == kWaveform) std::snprintf(text, capacity, "%s", kWaveNames[std::clamp(static_cast<int>(std::round(value)), 0, static_cast<int>(std::size(kWaveNames)) - 1)]);
   else if (id == kDuty || (id >= kDutyStep1 && id <= kDutyStep8)) std::snprintf(text, capacity, "%s", kDutyNames[std::clamp(static_cast<int>(std::round(value)), 0, 3)]);
-  else if (id == kNoiseMode || id == kVelocity || id == kHardwareEnvelope || id == kTempoSync || id == kStrictHardware) std::snprintf(text, capacity, "%s", value >= 0.5 ? "On" : "Off");
+  else if (id == kNoiseMode || id == kVelocity || id == kHardwareEnvelope || id == kTempoSync || id == kStrictHardware || id == kCustomWave) std::snprintf(text, capacity, "%s", value >= 0.5 ? "On" : "Off");
   else if (id == kClockMode) std::snprintf(text, capacity, "%s", value >= 0.5 ? "PAL / 50 Hz" : "NTSC / 60 Hz");
   else if (id == kArpMode) std::snprintf(text, capacity, "%s", kArpNames[std::clamp(static_cast<int>(std::round(value)), 0, 5)]);
   else if (id == kLayerMode) std::snprintf(text, capacity, "%s", kLayerNames[std::clamp(static_cast<int>(std::round(value)), 0, 5)]);

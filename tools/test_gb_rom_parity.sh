@@ -62,7 +62,9 @@ fi
 
 failed=0
 for name in mix ch1_pulse ch2_pulse ch3_wave ch4_noise; do
-  result=$("$compare" "$score_dir/gb_$name.wav" "$score_dir/yanes_$name.wav" rom "$minimum" 2>&1 || true)
+  mode=rom
+  if [ "$name" = mix ]; then mode=rom-mix; fi
+  result=$("$compare" "$score_dir/gb_$name.wav" "$score_dir/yanes_$name.wav" "$mode" "$minimum" 2>&1 || true)
   echo "  $name: $result"
   # Every row is an acceptance gate. A channel the excerpt never uses is silent
   # on both sides and passes on that basis, so an isolated row can only fail

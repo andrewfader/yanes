@@ -71,4 +71,4 @@ if command -v ffmpeg >/dev/null 2>&1; then
     exit 1
   fi
 fi
-"$compare" "$reference" "$candidate" rom "$minimum"
+"$compare" "$reference" "$candidate" rom-mix "$minimum"

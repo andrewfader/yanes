@@ -48,7 +48,7 @@ inline double to_db(double linear) {
 bool is_drum_preset(int id, const std::string& name) {
   return id == 3 || id == 38 || id == 48 ||
          name.find("drum") != std::string::npos || name.find("kit") != std::string::npos ||
-         name.find("DPCM") != std::string::npos;
+         name.find("DPCM") != std::string::npos || name.find("percussion") != std::string::npos;
 }
 
 NoteMeasurement measure_note(Runner& runner, int key, double on_duration_sec, double off_duration_sec) {
@@ -142,6 +142,15 @@ PresetMeasurement measure_preset(const clap_plugin_t* plugin, int preset_id, con
     pm.max_peak = std::max(pm.max_peak, nm.peak);
     sum_rms += nm.note_on_rms;
   }
+  if (preset_id == 16) {
+    // The bass must remain audible below the general preset suite's C3-C5 range.
+    for (const int key : {36, 43}) {
+      runner.settle(4);
+      const auto bass = measure_note(runner, key, 0.6, 0.3);
+      assert(bass.rms_db > -24.0 && "SID bass must retain level in the low register");
+      assert(bass.peak_db < -3.0 && "SID bass must retain headroom");
+    }
+  }
   pm.avg_rms = sum_rms / static_cast<double>(test_keys.size());
   pm.peak_db = to_db(pm.max_peak);
   pm.rms_db = to_db(pm.avg_rms);
@@ -232,6 +241,7 @@ int main(int argc, char** argv) {
   const clap_param_info_t preset_info = param_info(plugin, preset_id);
   const int num_presets = static_cast<int>(preset_info.max_value);
 
+  std::vector<bool> covered(static_cast<size_t>(param_info(plugin, find_param(plugin, "Waveform")).max_value) + 1, false);
   std::vector<PresetMeasurement> measurements;
   measurements.reserve(static_cast<size_t>(num_presets));
 
@@ -249,6 +259,7 @@ int main(int argc, char** argv) {
 
     PresetMeasurement pm = measure_preset(plugin, i, name);
     measurements.push_back(pm);
+    covered[static_cast<size_t>(param(plugin, find_param(plugin, "Waveform")))] = true;
 
     const double headroom = -pm.peak_db;
     std::printf("%-4d | %-28s | %10.4f | %9.2f dB | %10.4f | %9.2f dB | %6.2f dB\n",
@@ -284,6 +295,8 @@ int main(int argc, char** argv) {
               min_peak_db, max_peak_db);
   std::printf("  Presets near clipping (>= -0.01 dBFS): %d\n", clipping_count);
   std::printf("=========================================================================================\n");
+
+  for (bool source : covered) assert(source && "Every source needs a factory starting preset");
 
   // Run automated test assertions
   test_preset_loudness_bounds(measurements);

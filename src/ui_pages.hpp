@@ -55,6 +55,9 @@ inline std::vector<PageSpec> yanes_pages() {
         {"Chorus", 0, {knob(kChorusMix), knob(kChorusRate), knob(kChorusDepth)}},
         {"Console + TV", 1,
          {knob(kRetroAmount), knob(kBitDepth), knob(kOutputRate), knob(kRfNoise), knob(kHum), knob(kSpeaker)}}}},
+      {"CUSTOM", "Draw one repeating cycle • enable Custom wave to replace the source oscillator", theme::cyan, 1, 0,
+       {{"Custom waveform · 32 samples / 4-bit levels", 0,
+         {toggle(kCustomWave), lane(kWaveSample1, 32, -1, "Wave levels · 0 to 15")}}}},
   };
 }
 

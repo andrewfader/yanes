@@ -43,6 +43,9 @@ int main(int argc, char** argv) {
   constexpr double target_rate = 16744.0; // fastest NTSC 2A03 DPCM rate
   const size_t frames = data_size / (2U * channels);
   const size_t out_bits = static_cast<size_t>(frames * target_rate / rate);
+  if (!out_bits || out_bits > 8U * 1024U * 1024U) {
+    std::cerr << "sample must encode to between one bit and 1 MiB of DPCM\n"; return 1;
+  }
   std::vector<uint8_t> encoded((out_bits + 7U) / 8U, 0);
   int level = 64;
   for (size_t i = 0; i < out_bits; ++i) {

@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
   const auto* tail = static_cast<const clap_plugin_tail_t*>(plugin->get_extension(plugin, CLAP_EXT_TAIL));
   assert(audio && audio->count(plugin, false) == 1 && audio->count(plugin, true) == 0);
   assert(notes && notes->count(plugin, true) == 1);
-  assert(params && params->count(plugin) == 103);
+  assert(params && params->count(plugin) == 136);
   assert(latency && latency->get(plugin) == 0);
   assert(tail);
 #ifdef __linux__
@@ -182,7 +182,7 @@ int main(int argc, char** argv) {
   std::array<float, 512> left{}, right{};
   std::array<float*, 2> channels{left.data(), right.data()};
   clap_audio_buffer_t output{channels.data(), nullptr, 2, 0, 0};
-  for (int waveform = 0; waveform <= 57; ++waveform) {
+  for (int waveform = 0; waveform <= 58; ++waveform) {
     clap_event_param_value_t param{};
     param.header = {sizeof(param), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, 0};
     param.param_id = 0;

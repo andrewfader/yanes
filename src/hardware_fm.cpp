@@ -61,7 +61,9 @@ struct HardwareFmVoice::Impl : ymfm::ymfm_interface {
   double accumulator{};
   float last{};
   int last_pitch_a{-1}, last_pitch_b{-1};
+  double last_frequency{-1};
   bool programmed{};
+  bool keyed{};
 
   template<class Chip> static void write(Chip& chip, uint16_t reg, uint8_t value) {
     chip.write((reg >> 8U) * 2U, static_cast<uint8_t>(reg));
@@ -88,9 +90,9 @@ struct HardwareFmVoice::Impl : ymfm::ymfm_interface {
   static void fnum(double frequency, int& block, int& fn) {
     double value = 0;
     block = 0;
-    for (; block < 7; ++block) {
+    for (; block <= 7; ++block) {
       value = frequency * 72.0 * 1048576.0 / (opl_clock * std::pow(2.0, block));
-      if (value < 1024.0) break;
+      if (value < 1024.0 || block == 7) break;
     }
     fn = std::clamp(static_cast<int>(std::round(value)), 0, 1023);
   }
@@ -119,7 +121,8 @@ struct HardwareFmVoice::Impl : ymfm::ymfm_interface {
     accumulator = 0;
     last = 0;
     last_pitch_a = last_pitch_b = -1;
-    programmed = false;
+    last_frequency = -1;
+    programmed = keyed = false;
   }
 
   void flush(HardwareFmVoice::Kind k) {
@@ -139,6 +142,10 @@ HardwareFmVoice::HardwareFmVoice() : impl_(std::make_unique<Impl>()) {}
 HardwareFmVoice::~HardwareFmVoice() = default;
 HardwareFmVoice::HardwareFmVoice(HardwareFmVoice&&) noexcept = default;
 HardwareFmVoice& HardwareFmVoice::operator=(HardwareFmVoice&&) noexcept = default;
+void HardwareFmVoice::prepare() {
+  for (const auto kind : {Kind::Ym2612, Kind::Opn, Kind::Opna, Kind::Opl2, Kind::Opl3, Kind::Opm})
+    impl_->ensure(kind);
+}
 void HardwareFmVoice::reset() { impl_->reset_chips(); }
 
 void HardwareFmVoice::key_on(Kind kind, double frequency, const FmControls& c) {
@@ -146,13 +153,15 @@ void HardwareFmVoice::key_on(Kind kind, double frequency, const FmControls& c) {
   reset();
   impl_->ensure(kind);
   impl_->kind = kind;
-  impl_->programmed = true;
+  impl_->programmed = impl_->keyed = true;
   impl_->flush(kind);
   const int alg = std::clamp(c.algorithm, 0, 7), fb = std::clamp(c.feedback, 0, 7);
   const int carrier_level = carrier_attenuation(c.brightness);
   if (kind == Kind::Opl2 || kind == Kind::Opl3 || kind == Kind::Opl3FourOp) {
     const bool four = kind == Kind::Opl3FourOp;
     auto setup = [&](auto& chip) {
+      Impl::write(chip, 0x01, 0x20); // Enable the OPL2 waveform-select registers.
+      Impl::write(chip, 0xbd, static_cast<uint8_t>((c.am_depth >= 64 ? 0x80 : 0) | (c.pm_depth >= 64 ? 0x40 : 0)));
       Impl::write_operators(chip, four ? opl_slots_four : opl_slots_two, four ? 4 : 2, c, alg,
                           carrier_level, four);
       if (four) {
@@ -193,10 +202,11 @@ void HardwareFmVoice::key_on(Kind kind, double frequency, const FmControls& c) {
     Impl::write(*impl_->opm, 0x19, static_cast<uint8_t>(std::clamp(c.am_depth,0,127)));
     Impl::write(*impl_->opm, 0x19, static_cast<uint8_t>(0x80 | std::clamp(c.pm_depth,0,127)));
     Impl::write(*impl_->opm, 0x20, static_cast<uint8_t>(0xc0 | (fb << 3) | alg));
-    const int midi = std::clamp(static_cast<int>(std::round(69.0 + 12.0 * std::log2(frequency / 440.0))), 0, 127);
+    // OPM key-code zero denotes C-sharp; MIDI pitch classes start at C.
+    const int midi = std::clamp(static_cast<int>(std::round(68.0 + 12.0 * std::log2(frequency / 440.0))), 0, 127);
     constexpr uint8_t notes[] = {0,1,2,4,5,6,8,9,10,12,13,14};
     Impl::write(*impl_->opm, 0x28, static_cast<uint8_t>((std::clamp(midi / 12 - 1, 0, 7) << 4) | notes[midi % 12]));
-    Impl::write(*impl_->opm, 0x30, 0); Impl::write(*impl_->opm, 0x38, 0x00); Impl::write(*impl_->opm, 0x08, 0x78);
+    Impl::write(*impl_->opm, 0x30, 0); Impl::write(*impl_->opm, 0x38, static_cast<uint8_t>((std::clamp(c.pm_depth / 16, 0, 7) << 4) | std::clamp(c.am_depth / 32, 0, 3))); Impl::write(*impl_->opm, 0x08, 0x78);
     return;
   }
   constexpr uint8_t slots[] = {0x00, 0x04, 0x08, 0x0c};
@@ -217,12 +227,14 @@ void HardwareFmVoice::key_on(Kind kind, double frequency, const FmControls& c) {
   if (kind != Kind::Opn) opn_write(0x22, static_cast<uint8_t>((c.am_depth || c.pm_depth ? 8 : 0) | std::clamp(c.lfo_rate,0,7)));
   opn_write(0xb0, static_cast<uint8_t>((fb << 3) | alg));
   if (kind != Kind::Opn) opn_write(0xb4, static_cast<uint8_t>(0xc0 | (std::min(3,c.am_depth/32) << 4) | std::min(7,c.pm_depth/16)));
+  // OPN uses a 21-bit phase denominator; YM2203 clocks FM every 72 clocks,
+  // while OPNA/YM2612 use 144. Mixing those factors transposed the latter down an octave.
   int block = 0;
   double fnum = 0;
-  for (; block < 7; ++block) {
+  for (; block <= 7; ++block) {
     const double active_clock = kind == Kind::Opn ? Impl::opn_clock : (kind == Kind::Opna ? Impl::opna_clock : Impl::opn2_clock);
-    fnum = frequency * 144.0 * 1048576.0 / (active_clock * std::pow(2.0, block));
-    if (fnum < 2048.0) break;
+    fnum = frequency * (kind == Kind::Opn ? 72.0 : 144.0) * 2097152.0 / (active_clock * std::pow(2.0, block));
+    if (fnum < 2048.0 || block == 7) break;
   }
   const int fn = std::clamp(static_cast<int>(std::round(fnum)), 0, 2047);
   opn_write(0xa4, static_cast<uint8_t>((block << 3) | (fn >> 8)));
@@ -230,14 +242,17 @@ void HardwareFmVoice::key_on(Kind kind, double frequency, const FmControls& c) {
   opn_write(0x28, 0xf0);
 }
 void HardwareFmVoice::key_off() {
-  if (!impl_->programmed) return;
+  if (!impl_->programmed || !impl_->keyed) return;
+  impl_->keyed = false;
+  impl_->last_frequency = -1;
+  const auto opl_pitch = static_cast<uint8_t>(std::max(0, impl_->last_pitch_b) & ~0x20);
   if (impl_->kind == Kind::Ym2612 && impl_->opn) Impl::write(*impl_->opn, 0x28, 0);
   else if (impl_->kind == Kind::Opn && impl_->opn1) Impl::write(*impl_->opn1, 0x28, 0);
   else if (impl_->kind == Kind::Opna && impl_->opna) Impl::write(*impl_->opna, 0x28, 0);
-  else if (impl_->kind == Kind::Opl2 && impl_->opl) Impl::write(*impl_->opl, 0xb0, 0);
+  else if (impl_->kind == Kind::Opl2 && impl_->opl) Impl::write(*impl_->opl, 0xb0, opl_pitch);
   else if ((impl_->kind == Kind::Opl3 || impl_->kind == Kind::Opl3FourOp) && impl_->opl3) {
-    Impl::write(*impl_->opl3, 0xb0, 0);
-    if (impl_->kind == Kind::Opl3FourOp) Impl::write(*impl_->opl3, 0xb3, 0);
+    Impl::write(*impl_->opl3, 0xb0, opl_pitch);
+    if (impl_->kind == Kind::Opl3FourOp) Impl::write(*impl_->opl3, 0xb3, opl_pitch);
   } else if (impl_->opm) Impl::write(*impl_->opm, 0x08, 0);
 }
 void HardwareFmVoice::update_controls(const FmControls& c) {
@@ -247,6 +262,8 @@ void HardwareFmVoice::update_controls(const FmControls& c) {
   if (impl_->kind==Kind::Opl2||impl_->kind==Kind::Opl3||impl_->kind==Kind::Opl3FourOp) {
     const bool four = impl_->kind == Kind::Opl3FourOp;
     auto apply=[&](auto& chip){
+      Impl::write(chip, 0x01, 0x20); // Enable the OPL2 waveform-select registers.
+      Impl::write(chip, 0xbd, static_cast<uint8_t>((c.am_depth >= 64 ? 0x80 : 0) | (c.pm_depth >= 64 ? 0x40 : 0)));
       Impl::write_operators(chip, four ? opl_slots_four : opl_slots_two, four ? 4 : 2, c, alg, carrier, four);
       if (four) {
         Impl::write(chip,0xc0,static_cast<uint8_t>(0x30|(fb<<1)|((alg>>1)&1)));
@@ -262,6 +279,7 @@ void HardwareFmVoice::update_controls(const FmControls& c) {
     Impl::write(*impl_->opm,static_cast<uint16_t>(0xa0+s),static_cast<uint8_t>((c.am_depth?0x80:0)|std::clamp(c.decay,0,31)));
     Impl::write(*impl_->opm,static_cast<uint16_t>(0xc0+s),static_cast<uint8_t>(std::clamp(c.sustain_rate,0,31)));
     Impl::write(*impl_->opm,static_cast<uint16_t>(0xe0+s),static_cast<uint8_t>((std::clamp(c.sustain_level,0,15)<<4)|std::clamp(c.release,0,15)));}
+    Impl::write(*impl_->opm,0x38,static_cast<uint8_t>((std::clamp(c.pm_depth / 16, 0, 7) << 4) | std::clamp(c.am_depth / 32, 0, 3)));
     Impl::write(*impl_->opm,0x18,static_cast<uint8_t>(std::clamp(c.lfo_rate,0,7)*32));Impl::write(*impl_->opm,0x19,static_cast<uint8_t>(std::clamp(c.am_depth,0,127)));Impl::write(*impl_->opm,0x19,static_cast<uint8_t>(0x80|std::clamp(c.pm_depth,0,127)));Impl::write(*impl_->opm,0x20,static_cast<uint8_t>(0xc0|(fb<<3)|alg));return;
   }
   auto write=[&](uint16_t r,uint8_t d){if(impl_->kind==Kind::Opn)Impl::write(*impl_->opn1,r,d);else if(impl_->kind==Kind::Opna)Impl::write(*impl_->opna,r,d);else Impl::write(*impl_->opn,r,d);};
@@ -270,8 +288,10 @@ void HardwareFmVoice::update_controls(const FmControls& c) {
 }
 float HardwareFmVoice::render(double host_rate, double frequency) {
   if (!impl_->programmed) return 0.0f;
+  // Steady notes need no new pitch registers or repeated logarithms/divider searches.
+  if (frequency != impl_->last_frequency) {
   if (impl_->kind == Kind::Opm) {
-    const double midi_f = std::clamp(69.0 + 12.0 * std::log2(std::max(1.0, frequency) / 440.0), 0.0, 127.999);
+    const double midi_f = std::clamp(68.0 + 12.0 * std::log2(std::max(1.0, frequency) / 440.0), 0.0, 127.999);
     const int midi = static_cast<int>(std::floor(midi_f));
     constexpr uint8_t notes[] = {0,1,2,4,5,6,8,9,10,12,13,14};
     const int kc = (std::clamp(midi / 12 - 1, 0, 7) << 4) | notes[midi % 12];
@@ -281,7 +301,7 @@ float HardwareFmVoice::render(double host_rate, double frequency) {
   } else if (impl_->kind == Kind::Opl2 || impl_->kind == Kind::Opl3 || impl_->kind == Kind::Opl3FourOp) {
     int block = 0, fn = 0;
     Impl::fnum(frequency, block, fn);
-    const int hi = 0x20 | (block << 2) | (fn >> 8);
+    const int hi = (impl_->keyed ? 0x20 : 0) | (block << 2) | (fn >> 8);
     if (fn != impl_->last_pitch_a || hi != impl_->last_pitch_b) {
       auto write_pitch = [&](auto& chip) {
         Impl::write(chip, 0xa0, static_cast<uint8_t>(fn));
@@ -298,7 +318,7 @@ float HardwareFmVoice::render(double host_rate, double frequency) {
   } else {
     const double clock = impl_->kind == Kind::Opn ? Impl::opn_clock : (impl_->kind == Kind::Opna ? Impl::opna_clock : Impl::opn2_clock);
     int block = 0; double fnum = 0;
-    for (; block < 7; ++block) { fnum = frequency * 144.0 * 1048576.0 / (clock * std::pow(2.0, block)); if (fnum < 2048.0) break; }
+    for (; block <= 7; ++block) { fnum = frequency * (impl_->kind == Kind::Opn ? 72.0 : 144.0) * 2097152.0 / (clock * std::pow(2.0, block)); if (fnum < 2048.0 || block == 7) break; }
     const int fn = std::clamp(static_cast<int>(std::round(fnum)), 0, 2047), hi = (block << 3) | (fn >> 8);
     if (fn != impl_->last_pitch_a || hi != impl_->last_pitch_b) {
       if (impl_->kind == Kind::Opn) { Impl::write(*impl_->opn1, 0xa4, static_cast<uint8_t>(hi)); Impl::write(*impl_->opn1, 0xa0, static_cast<uint8_t>(fn)); }
@@ -306,6 +326,8 @@ float HardwareFmVoice::render(double host_rate, double frequency) {
       else { Impl::write(*impl_->opn, 0xa4, static_cast<uint8_t>(hi)); Impl::write(*impl_->opn, 0xa0, static_cast<uint8_t>(fn)); }
       impl_->last_pitch_a = fn; impl_->last_pitch_b = hi;
     }
+  }
+    impl_->last_frequency = frequency;
   }
   double native_rate = 0;
   if (impl_->kind == Kind::Ym2612) native_rate = impl_->opn->sample_rate(Impl::opn2_clock);

@@ -14,6 +14,15 @@
 
 namespace yanes::ui {
 
+inline void initialize_x11_text(Display* display) {
+  // Xlib runs extension close hooks in reverse registration order. Register Render
+  // before Xft so Xft can free cached glyphs while Render is still alive. Otherwise
+  // Xft's close hook can recreate Render's display cache during XCloseDisplay,
+  // leaving stale extension codes that crash the next editor window.
+  int event_base = 0, error_base = 0;
+  XRenderQueryExtension(display, &event_base, &error_base);
+}
+
 class X11Canvas final : public Canvas {
  public:
   // One font per TextSize, indexed by its value.

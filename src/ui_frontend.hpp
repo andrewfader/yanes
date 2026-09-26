@@ -15,7 +15,7 @@ bool hardware_fm_waveform(int waveform) {
 }
 bool dpcm_waveform(int waveform) { return waveform==9||waveform==18||waveform==32||waveform==33; }
 bool duty_waveform(int waveform) {
-  return waveform==0||waveform==3||waveform==10||waveform==18||waveform==19||waveform==38||waveform==39;
+  return waveform==0||waveform==10||waveform==18||waveform==19||waveform==38||waveform==39;
 }
 
 // Whether a control does anything for the current sound source and settings. Irrelevant controls
@@ -23,10 +23,24 @@ bool duty_waveform(int waveform) {
 bool gui_param_relevant(const Plugin* p, clap_id id) {
   const auto value = [p](clap_id param) { return p->params[param].load(std::memory_order_relaxed); };
   const int waveform = static_cast<int>(value(kWaveform));
+  if (id >= kWaveSample1 && id <= kWaveSample32) return true;
+  if (value(kCustomWave) >= 0.5 || waveform == 58) {
+    if (id == kDuty || id == kDutySeqMode || id == kDutySeqLength || id == kDutySeqRate ||
+        (id >= kDutyStep1 && id <= kDutyStep8) || id == kExpansionShape ||
+        id == kNoisePeriod || id == kNoiseMode || id == kFmRatio || id == kFmIndex ||
+        (id >= kFmAttack && id <= kFmPmDepth) || (id >= kDpcmBaseKey && id <= kDpcmTrimEnd) ||
+        id == kDpcmRate || id == kGenesisAlgorithm || id == kGenesisFeedback ||
+        (id >= kChipCutoff && id <= kFmBrightness)) return false;
+  }
   if (id >= kSequence1 && id <= kSequence8) return static_cast<int>(value(kArpMode)) == 5;
   if (id >= kDutyStep1 && id <= kDutyStep8) return duty_waveform(waveform) && value(kDutySeqMode) >= 0.5;
   if (id >= kCentsStep1 && id <= kCentsStep8) return value(kCentsSeqMode) >= 0.5;
-  if (id >= kFmAttack && id <= kFmPmDepth) return hardware_fm_waveform(waveform);
+  if (id >= kFmAttack && id <= kFmPmDepth) {
+    const bool opl = waveform == 27 || waveform == 28 || waveform == 36;
+    if (opl && (id == kFmDetune || id == kFmSustainRate || id == kFmLfoRate)) return false;
+    if (waveform == 31 && (id == kFmLfoRate || id == kFmAmDepth || id == kFmPmDepth)) return false;
+    return hardware_fm_waveform(waveform);
+  }
   if (id >= kDpcmBaseKey && id <= kDpcmTrimEnd) return dpcm_waveform(waveform);
   switch(id){
     case kDuty:case kDutySeqMode:return duty_waveform(waveform);
@@ -41,18 +55,20 @@ bool gui_param_relevant(const Plugin* p, clap_id id) {
     case kLayerMix:return static_cast<int>(value(kLayerMode)) != 0;
     case kNoisePeriod:return waveform==2||waveform==18;
     case kNoiseMode:return waveform==2||waveform==12||waveform==14||waveform==16||waveform==18||waveform==19||
-                           waveform==20||waveform==21||waveform==23||waveform==24||waveform==25||waveform==34||waveform==42;
-    case kExpansionShape:return waveform==3||waveform==4||waveform==5||waveform==6||waveform==24||waveform==25||
+                           waveform==20||waveform==21||waveform==24||waveform==25||waveform==34||waveform==42||waveform==43;
+    case kExpansionShape:return waveform==3||waveform==4||waveform==5||waveform==6||waveform==11||waveform==19||waveform==24||waveform==25||
                                 waveform==26||waveform==34||waveform==35||waveform==38||waveform==39||waveform==40||
-                                waveform==41||waveform==44||waveform==45||waveform==57;
-    case kFmRatio:case kFmIndex:return waveform==7||waveform==49||waveform==51||waveform==55;
+                                waveform==41||waveform==44||waveform==45||waveform==52||waveform==53||waveform==57;
+    case kFmRatio:return waveform==7||waveform==51;
+    case kFmIndex:return waveform==7||waveform==49||waveform==51||waveform==55;
     case kDpcmRate:return dpcm_waveform(waveform);
-    case kGenesisAlgorithm:case kGenesisFeedback:return waveform==49||hardware_fm_waveform(waveform);
+    case kGenesisAlgorithm:return waveform==49||hardware_fm_waveform(waveform);
+    case kGenesisFeedback:return hardware_fm_waveform(waveform);
     case kChipCutoff:case kChipResonance:return waveform==38||waveform==39||waveform==52||waveform==53||waveform==56;
     case kWavetablePosition:return waveform==46||waveform==47||waveform==48||waveform==50||waveform==54;
     case kWavetableWarp:return waveform==46||waveform==47;
     case kAdditiveTilt:return waveform==48;
-    case kFmBrightness:return waveform==7||waveform==49||waveform==51||waveform==55||hardware_fm_waveform(waveform);
+    case kFmBrightness:return waveform==49||waveform==51||waveform==55||hardware_fm_waveform(waveform);
     default:return true;
   }
 }
@@ -78,6 +94,7 @@ const char* gui_help(clap_id id) {
     case kRetroAmount:return "Blends in the console/television degradation section.";
     case kBitDepth:return "Reduces amplitude resolution for stepped digital grit.";
     case kOutputRate:return "Reduces effective sample rate for brighter or rougher aliasing.";
+    case kCustomWave:return "Replaces the source oscillator with your drawn 32-sample, 4-bit cycle. Pitch, envelope, layers and effects still apply.";
     case kChipCutoff:return "Sets the cutoff of chip-specific filtering, especially SID modes.";
     case kChipResonance:return "Emphasizes frequencies around the chip filter cutoff.";
     case kWavetablePosition:return "Morphs across sine, triangle, saw, and pulse regions.";
@@ -282,7 +299,7 @@ class PluginEditorHost final : public yanes::ui::EditorHost {
         const int x = r.x + 40 + i * 120, y = r.y + 40;
         if (i < ops - 1 && (algorithm & (1 << std::min(i, 3))) == 0) g.line(x + 50, y + 25, x + 120, y + 25, pink, 3);
         g.circle(x, y, 50, pink);
-        char op[3]{};
+        char op[16]{};
         std::snprintf(op, sizeof(op), "%d", i + 1);
         g.text_centered(x + 25, y + 33, op, bg, 30, TextSize::Normal);
       }

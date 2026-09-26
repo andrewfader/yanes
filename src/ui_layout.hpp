@@ -52,7 +52,7 @@ constexpr Rect preset_rect{480, 12, 450, 44};
 constexpr Rect size_rect{942, 12, 156, 44};
 constexpr Rect meter_rect{1110, 16, 458, 34};
 constexpr int tab_y = 76, tab_height = 46;
-constexpr int tab_count = 6;
+constexpr int tab_count = 7;
 constexpr int tab_width = (width - 2 * margin) / tab_count;
 constexpr int strip_y = 134;
 constexpr int content_bottom = 988;

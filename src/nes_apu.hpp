@@ -29,6 +29,7 @@ struct NesApu {
     triangle_ = {};
     noise_ = {};
     noise_.shift = 1;
+    channel_gain_.fill(1.0);
     sample_hold_ = 0.0;
     mix_acc_ = 0.0;
     mix_count_ = 0.0;
@@ -78,6 +79,24 @@ struct NesApu {
     if (channel == 0 || channel == 1)
       pulse_[static_cast<size_t>(channel)].duty =
           static_cast<uint8_t>(std::clamp(duty, 0, 3));
+  }
+
+  // Live pitch and channel gain updates preserve divider/sequence phase.
+  void set_frequency(int channel, double hz) {
+    if (!(hz > 0.0) || !std::isfinite(hz)) return;
+    if (channel == 0 || channel == 1)
+      pulse_[static_cast<size_t>(channel)].timer = static_cast<uint16_t>(
+          std::clamp(std::round(cpu_clock_ / (16.0 * hz) - 1.0), 8.0, 2047.0));
+    else if (channel == 2)
+      triangle_.timer = static_cast<uint16_t>(
+          std::clamp(std::round(cpu_clock_ / (32.0 * hz) - 1.0), 2.0, 2047.0));
+  }
+  void set_channel_gain(int channel, double gain) {
+    if (channel >= 0 && channel < 4) channel_gain_[static_cast<size_t>(channel)] = std::clamp(gain, 0.0, 4.0);
+  }
+  void set_noise(int period, bool short_mode) {
+    noise_.period = kNoisePeriods[static_cast<size_t>(std::clamp(period, 0, 15))];
+    noise_.short_mode = short_mode;
   }
 
   // mute_mask / solo_mask use bits 0..3 for pulse1, pulse2, triangle, noise.
@@ -240,16 +259,17 @@ struct NesApu {
     if (noise_.active && audible(3, mute_mask, solo_mask) && (noise_.shift & 1U) == 0)
       ns = noise_.volume;
 
-    const double p_sum = p1 + p2;
+    const double p_sum = p1 * channel_gain_[0] + p2 * channel_gain_[1];
     const double pulse_out =
         p_sum > 0.0 ? 95.88 / ((8128.0 / p_sum) + 100.0) : 0.0;
     const double tnd_sum =
-        tr / 8227.0 + ns / 12241.0 + std::max(0.0, dpcm_dac) / 22638.0;
+        tr * channel_gain_[2] / 8227.0 + ns * channel_gain_[3] / 12241.0 + std::max(0.0, dpcm_dac) / 22638.0;
     const double tnd_out =
         tnd_sum > 0.0 ? 159.79 / ((1.0 / tnd_sum) + 100.0) : 0.0;
     return pulse_out + tnd_out;
   }
 
+  std::array<double, 4> channel_gain_{1.0, 1.0, 1.0, 1.0};
   std::array<Pulse, 2> pulse_{};
   Triangle triangle_{};
   Noise noise_{};

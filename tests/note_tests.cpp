@@ -1062,12 +1062,214 @@ void test_sample_accurate_event_timing(const Library& library) {
   plugin->destroy(plugin);
 }
 
+void test_fm_release_does_not_retrigger(const Library& library) {
+  for (const int source : {17, 27, 28, 29, 30, 31, 36}) {
+    const auto* plugin = library.create();
+    {
+      Runner runner(plugin, kRate, kBlock);
+      runner.set(find_param(plugin, "Waveform"), source);
+      runner.set(find_param(plugin, "Release"), 2000);
+      runner.set(find_param(plugin, "FM algorithm"), 7);
+      runner.set(find_param(plugin, "FM decay"), 0);
+      runner.set(find_param(plugin, "FM sustain rate"), 0);
+      runner.set(find_param(plugin, "FM sustain level"), 0);
+      runner.set(find_param(plugin, "FM release"), 15);
+      Events on; on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1));
+      runner.run(&on); runner.settle(20);
+      const double held = runner.run().rms;
+      Events off; off.push(note_event(CLAP_EVENT_NOTE_OFF, 0, 60, 1, 0));
+      runner.run(&off);
+      // Pitch updates after note-off must not key an OPL voice on again either.
+      runner.set(find_param(plugin, "Fine tune"), 30);
+      runner.settle(60);
+      const auto tail = runner.run();
+      double mean = 0;
+      for (const float x : runner.left()) mean += x / kBlock;
+      double ac = 0;
+      for (const float x : runner.left()) ac += (x - mean) * (x - mean) / kBlock;
+      // YM2612's idle DAC carries a DC offset; measure the remaining oscillation.
+      if (!(held > 0.01 && std::sqrt(ac) < held * 0.1)) {
+        std::fprintf(stderr, "FM source %d retriggered: held=%g tail=%g\n", source, held, tail.rms);
+        assert(false);
+      }
+    }
+    plugin->destroy(plugin);
+  }
+}
+
+void test_fm_automation_block_independence(const Library& library) {
+  for (const int source : {17, 27, 30}) {
+    auto render = [&](uint32_t frames) {
+      const auto* plugin = library.create();
+      std::vector<float> result;
+      {
+        Runner runner(plugin, kRate, frames);
+        runner.set(find_param(plugin, "Waveform"), source);
+        Events first; first.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1));
+        auto change = param_event(find_param(plugin, "FM brightness"), 0.0);
+        if (frames == 512) { change.header.time = 256; first.push(change); }
+        runner.run(&first);
+        result.insert(result.end(), runner.left().begin(), runner.left().end());
+        if (frames == 256) {
+          Events second; second.push(change); runner.run(&second);
+          result.insert(result.end(), runner.left().begin(), runner.left().end());
+        }
+      }
+      plugin->destroy(plugin);
+      return result;
+    };
+    const auto whole = render(512), split = render(256);
+    assert(whole == split && "FM automation must apply at its sample offset, independently of host block size");
+  }
+}
+
+void test_event_validation(const Library& library) {
+  const auto* plugin = library.create();
+  {
+    Runner runner(plugin, kRate, kBlock);
+    Events malformed;
+    clap_event_header_t short_note{sizeof(clap_event_header_t), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_ON, 0};
+    malformed.push(short_note);
+    auto bad = note_event(CLAP_EVENT_NOTE_ON, 16, 60, 1, 1);
+    malformed.push(bad);
+    bad = note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, std::numeric_limits<double>::quiet_NaN());
+    malformed.push(bad);
+    expect_silent(runner.run(&malformed), "invalid note events");
+    Events on; on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1)); runner.run(&on);
+    Events wrong_port;
+    auto off = note_event(CLAP_EVENT_NOTE_OFF, 0, 60, 1, 0); off.port_index = 1;
+    wrong_port.push(off);
+    expect_audible(runner.run(&wrong_port), "note off for another port");
+    Events poison;
+    poison.push(expression_event(CLAP_NOTE_EXPRESSION_TUNING, 0, 60, 1, std::numeric_limits<double>::infinity()));
+    poison.push(expression_event(CLAP_NOTE_EXPRESSION_VOLUME, 0, 60, 1, std::numeric_limits<double>::quiet_NaN()));
+    expect_audible(runner.run(&poison), "invalid expressions ignored");
+  }
+  plugin->destroy(plugin);
+}
+
+void test_nes_stack_layer(const Library& library) {
+  const auto* plugin = library.create();
+  {
+    Runner runner(plugin, kRate, kBlock);
+    runner.set(find_param(plugin, "Waveform"), 18);
+    Events on; on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1));
+    runner.run(&on);
+    const auto original = runner.left();
+    plugin->reset(plugin);
+    runner.set(find_param(plugin, "Layer"), 2);
+    runner.set(find_param(plugin, "Layer mix"), 1);
+    expect_audible(runner.run(&on), "NES stack layer at full mix");
+    assert(original != runner.left() && "NES stack must mix the layer it renders");
+  }
+  plugin->destroy(plugin);
+}
+
+void test_source_extremes(const Library& library) {
+  const auto* plugin = library.create();
+  for (const double rate : {8000.0, 44100.0, 96000.0}) {
+    Runner runner(plugin, rate, 128);
+    const auto wave = find_param(plugin, "Waveform");
+    for (int source = 0; source <= static_cast<int>(param_info(plugin, wave).max_value); ++source) {
+      plugin->reset(plugin);
+      runner.set(wave, source);
+      runner.set(find_param(plugin, "Chip cutoff"), 16000);
+      runner.set(find_param(plugin, "Chip resonance"), 1);
+      for (int shape = 0; shape < 8; ++shape) {
+        plugin->reset(plugin);
+        runner.set(find_param(plugin, "Shape"), shape);
+        Events on;
+        on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 36, 1, 1));
+        on.push(note_event(CLAP_EVENT_NOTE_ON, 1, 96, 2, 1));
+        assert(runner.run(&on).finite);
+        assert(runner.settle(4).finite);
+      }
+    }
+  }
+  plugin->destroy(plugin);
+}
+
+void test_reactivation_is_silent(const Library& library) {
+  const auto* plugin = library.create();
+  {
+    Runner runner(plugin, kRate, kBlock);
+    Events on; on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1));
+    expect_audible(runner.run(&on), "before deactivation");
+  }
+  {
+    Runner runner(plugin, 96000, kBlock);
+    expect_silent(runner.run(), "reactivation at a new sample rate");
+  }
+  plugin->destroy(plugin);
+}
+
+void test_nes_stack_live_volume(const Library& library) {
+  const auto* plugin = library.create();
+  {
+    Runner runner(plugin, kRate, kBlock);
+    runner.set(find_param(plugin, "Waveform"), 18);
+    Events on; on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1));
+    runner.run(&on); runner.settle(5);
+    expect_audible(runner.run(), "NES stack before CC7");
+    Events mute; mute.push(midi_event(0xb0, 7, 0)); runner.run(&mute); runner.settle(40);
+    assert(runner.run().rms < 1.0e-6);
+    Events restore; restore.push(midi_event(0xb0, 7, 127));
+    expect_audible(runner.run(&restore), "NES stack CC7 restore");
+  }
+  plugin->destroy(plugin);
+}
+
+// The custom oscillator must work even for native-FM, drum and stack sources.
+void test_custom_wave(const Library& library) {
+  for (int source = 0; source <= 58; ++source) {
+    const auto* plugin = library.create();
+    {
+      Runner runner(plugin, kRate, kBlock);
+      runner.set(find_param(plugin, "Waveform"), source);
+      runner.set(find_param(plugin, "Custom wave"), 1);
+      runner.set(find_param(plugin, "Release"), 30);
+      const auto first = find_param(plugin, "Wave sample 1");
+      for (int i = 0; i < 32; ++i) runner.set(first + i, i < 16 ? 0 : 15);
+      Events on;
+      on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
+      expect_audible(runner.run(&on), "custom wave note on");
+      runner.settle(80);
+      expect_audible(runner.run(), "custom wave sustain (including drums)");
+      // A flat table contains only DC and must settle to silence through the DC blocker.
+      for (int i = 0; i < 32; ++i) runner.set(first + i, 8);
+      runner.settle(160);
+      const auto flat = runner.run();
+      assert(flat.finite && flat.peak < 1.0e-5f);
+      for (int i = 0; i < 32; ++i) runner.set(first + i, i < 16 ? 15 : 0);
+      expect_audible(runner.settle(8), "live custom wave edit");
+      if (source == 0 || source == 11 || source == 17 || source == 18) {
+        runner.set(find_param(plugin, "Custom wave"), 0);
+        expect_audible(runner.run(), "return to original oscillator");
+      }
+      Events off;
+      off.push(note_event(CLAP_EVENT_NOTE_OFF, 0, 60, 1, 0.0));
+      runner.run(&off);
+      runner.settle(kReleaseBlocks);
+      expect_silent(runner.run(), "custom wave release");
+    }
+    plugin->destroy(plugin);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   assert(argc == 2);
   const Library library(argv[1]);
 
+  test_fm_release_does_not_retrigger(library);
+  test_fm_automation_block_independence(library);
+  test_event_validation(library);
+  test_source_extremes(library);
+  test_nes_stack_layer(library);
+  test_reactivation_is_silent(library);
+  test_nes_stack_live_volume(library);
+  test_custom_wave(library);
   test_note_on_off(library);
   test_release_is_gradual(library);
   test_note_choke_is_immediate(library);

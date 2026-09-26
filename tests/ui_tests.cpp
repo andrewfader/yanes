@@ -170,11 +170,12 @@ void test_scaling() {
 void test_every_parameter_is_placed_once() {
   std::vector<int> seen(static_cast<size_t>(kParams), 0);
   const auto pages = yanes_pages();
+  assert(pages.size() == tab_count);
   for (const PageSpec& page : pages)
     for (const SectionSpec& section : page.sections)
       for (const ControlSpec& control : section.controls) {
         if (control.widget == Widget::Lane) {
-          assert(control.steps > 0 && control.length >= 0);
+          assert(control.steps > 0);
           for (int i = 0; i < control.steps; ++i) ++seen[static_cast<size_t>(control.param + i)];
         } else {
           ++seen[static_cast<size_t>(control.param)];
@@ -202,8 +203,10 @@ void test_widgets_match_parameters() {
           case Widget::Menu: assert(s.stepped && s.max - s.min >= 2.0); break;
           case Widget::Lane: {
             assert(s.stepped);
-            const auto& length = P::kSpecs[static_cast<size_t>(c.length)];
-            assert(length.min == 1.0 && length.max == c.steps);
+            if (c.length >= 0) {
+              const auto& length = P::kSpecs[static_cast<size_t>(c.length)];
+              assert(length.min == 1.0 && length.max == c.steps);
+            }
             for (int i = 1; i < c.steps; ++i) {
               const auto& step = P::kSpecs[static_cast<size_t>(c.param + i)];
               assert(step.min == s.min && step.max == s.max);
@@ -467,6 +470,13 @@ void test_menus() {
   rig.editor.set_page(4); rig.settle();
   rig.click(1, preset_rect.x + 50, preset_rect.y + 20);
   assert(rig.editor.menu_param() == P::kPreset);
+  rig.settle();
+  RecordingCanvas preset_menu;
+  rig.editor.draw(preset_menu); // The expanded catalogue must remain within the canvas.
+  bool last_preset_shown = false;
+  for (const auto& text : preset_menu.strings)
+    last_preset_shown |= text == P::kPresetNames[std::size(P::kPresetNames) - 1];
+  assert(last_preset_shown);
   rig.click(1, 2, 2);
   assert(!rig.editor.menu_open());
   const double preset = rig.host.values[P::kPreset];
@@ -520,6 +530,27 @@ void test_lane_painting() {
   rig.up(1, x_of(7), g.ruler.y + 40);
   assert(rig.host.values[P::kSequenceLength] == 8 && rig.host.idle());
   for (int step = 0; step < 8; ++step) assert(rig.host.values[static_cast<size_t>(P::kSequence1 + step)] >= -24);
+}
+
+void test_custom_wave_lane() {
+  Rig rig;
+  rig.go_to(P::kWaveSample1);
+  const auto lane = rig.find(P::kWaveSample1);
+  const auto g = lane_geometry(lane.rect);
+  const int w = g.step_width(32);
+  const auto x = [&](int i) { return g.bars.x + i * w + w / 2; };
+  // One fast pointer move must fill all 32 samples with a continuous ramp.
+  rig.down(1, x(0), g.bars.bottom() - 1);
+  rig.move(x(31), g.bars.y + 1);
+  rig.up(1, x(31), g.bars.y + 1);
+  for (int i = 0; i < 32; ++i)
+    assert(rig.host.values[P::kWaveSample1 + i] == std::round(15.0 * i / 31.0));
+  assert(rig.host.idle() && rig.host.begins == 32 && rig.host.ends == 32);
+  rig.host.reset_counts();
+  rig.click(1, x(15), g.ruler.y + 5);
+  assert(rig.host.begins == 0);  // fixed-length ruler must never edit parameter -1
+  rig.click(3, x(15), g.bars.y + 10);
+  assert(rig.host.values[P::kWaveSample16] == P::kSpecs[P::kWaveSample16].def);
 }
 
 void test_duty_lane_levels() {
@@ -624,6 +655,13 @@ void test_drawing() {
 }
 
 // Cell labels are drawn about cell_target_width wide; short names exist to fit there.
+void test_utf8_ellipsis() {
+  RecordingCanvas canvas;
+  const int limit = canvas.text_width("é...", TextSize::Small);
+  assert(canvas.fit("éééé", limit, TextSize::Small) == "é...");
+  assert(canvas.fit("Long label", 1, TextSize::Small).empty());
+}
+
 void test_short_names_fit() {
   for (int id = 0; id < kParams; ++id)
     if (const char* name = yanes_short_name(id)) assert(std::strlen(name) <= 14);
@@ -672,11 +710,13 @@ int main() {
   test_toggle_and_segments();
   test_menus();
   test_lane_painting();
+  test_custom_wave_lane();
   test_duty_lane_levels();
   test_lost_release_and_leave();
   test_strip_clicks_reach_host();
   test_size_button();
   test_drawing();
+  test_utf8_ellipsis();
   test_short_names_fit();
   std::printf("ui_tests: all checks passed\n");
 }

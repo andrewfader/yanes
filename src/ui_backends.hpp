@@ -11,9 +11,15 @@ void gui_paint(Plugin* p);
 #include <unistd.h>
 
 void gui_close_picker(Plugin* p) {
-  if (!p->gui_picker) return;
-  pclose(p->gui_picker);
-  p->gui_picker = nullptr;
+  if (p->gui_picker < 0) return;
+  close(p->gui_picker);
+  p->gui_picker = -1;
+  if (p->gui_picker_pid > 0) {
+    // Closing the editor must not wait for the user to dismiss a child dialog.
+    kill(p->gui_picker_pid, SIGKILL);
+    while (waitpid(p->gui_picker_pid, nullptr, 0) < 0 && errno == EINTR) {}
+    p->gui_picker_pid = -1;
+  }
   p->gui_picker_slot = -1;
   p->gui_picker_output.clear();
 }
@@ -22,13 +28,30 @@ void gui_close_picker(Plugin* p) {
 // pipe here instead would block the host's main thread for as long as the dialog stayed
 // open, and blocking it is what leaves a host waiting on an editor that never answers.
 bool gui_choose_sample(Plugin* p, int slot) {
-  if (p->gui_picker) return false;
-  FILE* picker = popen("zenity --file-selection --title='Load YANES WAV or DPCM sample' --file-filter='Audio | *.wav *.WAV *.ydmc'", "r");
-  if (!picker) return false;
-  const int fd = fileno(picker);
-  if (fd < 0) { pclose(picker); return false; }
-  fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-  p->gui_picker = picker;
+  if (p->gui_picker >= 0) return false;
+  int pipefd[2];
+  if (pipe(pipefd) != 0) return false;
+  fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
+  fcntl(pipefd[1], F_SETFD, FD_CLOEXEC);
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
+  posix_spawn_file_actions_addclose(&actions, pipefd[0]);
+  if (pipefd[1] != STDOUT_FILENO) posix_spawn_file_actions_addclose(&actions, pipefd[1]);
+  char command[] = "zenity", selection[] = "--file-selection";
+  char title[] = "--title=Load YANES WAV or DPCM sample";
+  char filter[] = "--file-filter=Audio | *.wav *.WAV *.ydmc";
+  char* arguments[]{command, selection, title, filter, nullptr};
+  pid_t pid = -1;
+  const int error = posix_spawnp(&pid, command, &actions, nullptr, arguments, ::environ);
+  posix_spawn_file_actions_destroy(&actions);
+  close(pipefd[1]);
+  if (error != 0) { close(pipefd[0]); return false; }
+  p->gui_picker = pipefd[0]; p->gui_picker_pid = pid;
+  const int flags = fcntl(p->gui_picker, F_GETFL, 0);
+  if (flags < 0 || fcntl(p->gui_picker, F_SETFL, flags | O_NONBLOCK) < 0) {
+    gui_close_picker(p); return false;
+  }
   p->gui_picker_slot = slot;
   p->gui_picker_output.clear();
   return false;
@@ -37,10 +60,10 @@ bool gui_choose_sample(Plugin* p, int slot) {
 void gui_paint(Plugin* p);
 
 void gui_poll_picker(Plugin* p) {
-  if (!p->gui_picker) return;
+  if (p->gui_picker < 0) return;
   char chunk[512];
   for (;;) {
-    const ssize_t got = read(fileno(p->gui_picker), chunk, sizeof(chunk));
+    const ssize_t got = read(p->gui_picker, chunk, sizeof(chunk));
     if (got > 0) { p->gui_picker_output.append(chunk, static_cast<size_t>(got)); continue; }
     // Nothing to read yet means the user is still choosing; anything else means the
     // dialog has closed and whatever it wrote is complete.
@@ -190,6 +213,7 @@ bool gui_create(const clap_plugin_t* plugin, const char* api, bool floating) {
   if (!gui_supported(plugin, api, floating) || p->display) return false;
   p->display = XOpenDisplay(nullptr);
   if (!p->display) return false;
+  yanes::ui::initialize_x11_text(p->display);
   p->window = XCreateSimpleWindow(p->display, DefaultRootWindow(p->display), 0, 0, p->gui_width, p->gui_height, 0, 0, 0x0b1119);
   // No server-side background: the back buffer covers every pixel, and letting X clear the
   // window first on every expose or resize is a visible flash.

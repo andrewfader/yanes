@@ -391,7 +391,7 @@ struct Report {
 };
 
 static Report compare(std::vector<double> a, std::vector<double> b,
-                      uint32_t rate, bool noise, double minimum, bool rom = false) {
+                      uint32_t rate, bool noise, double minimum, bool rom = false, bool allow_silent = false) {
   Report r{};
   dc_block(a);
   dc_block(b);
@@ -404,7 +404,7 @@ static Report compare(std::vector<double> a, std::vector<double> b,
   // two genuinely silent sides are a valid isolated-channel pass.
   if (rms(a) < 1e-4 && rms(b) < 1e-4) {
     r.env = r.spectral = 1.0;
-    r.ok = true;
+    r.ok = allow_silent;
     return r;
   }
   constexpr size_t hop = 256;
@@ -560,6 +560,10 @@ static int self_test() {
   };
   const auto noise_reference = noise_burst(rate, 1.2, 0x9e37, 0);
   int failed = 0;
+  const std::vector<double> silence(rate, 0.0);
+  if (compare(silence, silence, rate, false, 0.8).ok) ++failed;
+  if (compare(silence, silence, rate, true, 0.8, true).ok) ++failed;
+  if (!compare(silence, silence, rate, true, 0.8, true, true).ok) ++failed;
   for (const auto &c : cases) {
     const Report r =
         compare(c.noise ? noise_reference : ref, c.cand, rate, c.noise, 0.8);
@@ -579,17 +583,18 @@ int main(int argc, char **argv) {
     return self_test();
   if (argc != 5) {
     std::cerr << "usage: yanes-parity-compare reference.wav candidate.wav "
-                 "tonal|noise|rom minimum-similarity\n"
+                 "tonal|noise|rom|rom-mix minimum-similarity\n"
               << "       yanes-parity-compare --self-test\n";
     return 2;
   }
-  const bool rom = std::strcmp(argv[3], "rom") == 0;
+  const bool isolated_rom = std::strcmp(argv[3], "rom") == 0;
+  const bool rom = isolated_rom || std::strcmp(argv[3], "rom-mix") == 0;
   const bool noise = rom || std::strcmp(argv[3], "noise") == 0;
   if (!noise && std::strcmp(argv[3], "tonal"))
     return 2;
   char *threshold_end = nullptr;
   const double minimum = std::strtod(argv[4], &threshold_end);
-  if (!threshold_end || *threshold_end || minimum < 0 || minimum > 1)
+  if (threshold_end == argv[4] || *threshold_end || !std::isfinite(minimum) || minimum < 0 || minimum > 1)
     return 2;
   Wav a = load(argv[1]), raw = load(argv[2]);
   if (!a.rate || !raw.rate || a.mono.empty() || raw.mono.empty())
@@ -599,7 +604,7 @@ int main(int argc, char **argv) {
                                          static_cast<double>(a.rate) / raw.rate));
   a.mono.resize(frames);
   auto b = resample(raw, a.rate, frames);
-  const Report r = compare(std::move(a.mono), std::move(b), a.rate, noise, minimum, rom);
+  const Report r = compare(std::move(a.mono), std::move(b), a.rate, noise, minimum, rom, isolated_rom);
   print_report(r, noise);
   return r.ok ? 0 : 1;
 }

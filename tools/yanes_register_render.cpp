@@ -23,8 +23,17 @@ template<class Chip> int render(const char* script_path, const char* wav_path, u
     std::istringstream row(line);
     Write w; std::string reg, value;
     if (!(row >> w.sample >> reg >> value)) { std::cerr << "bad script line: " << line << '\n'; return 1; }
-    w.reg = static_cast<uint32_t>(std::stoul(reg, nullptr, 16));
-    w.value = static_cast<uint8_t>(std::stoul(value, nullptr, 16));
+    try {
+      size_t reg_end = 0, value_end = 0;
+      const auto r = std::stoul(reg, &reg_end, 16), v = std::stoul(value, &value_end, 16);
+      if (reg_end != reg.size() || value_end != value.size() || r > 0x1ff || v > 0xff ||
+          (!writes.empty() && w.sample < writes.back().sample)) {
+        std::cerr << "register script contains an invalid value or decreasing timestamp\n"; return 1;
+      }
+      w.reg = static_cast<uint32_t>(r); w.value = static_cast<uint8_t>(v);
+    } catch (const std::exception&) {
+      std::cerr << "invalid hexadecimal register/value\n"; return 1;
+    }
     writes.push_back(w); duration = std::max(duration, w.sample + 1);
   }
   if (!text.eof() || writes.empty()) { std::cerr << "empty or unreadable register script\n"; return 1; }

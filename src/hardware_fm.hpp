@@ -14,6 +14,7 @@ public:
   ~HardwareFmVoice();
   HardwareFmVoice(HardwareFmVoice&&) noexcept;
   HardwareFmVoice& operator=(HardwareFmVoice&&) noexcept;
+  void prepare(); // Allocate chip cores before entering the audio callback.
   void reset();
   void key_on(Kind kind, double frequency, const FmControls& controls);
   void key_off();

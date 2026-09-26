@@ -332,7 +332,7 @@ inline float tine_piano(double phase, double index, double brightness, double ag
 struct NoiseLfsr {
   uint16_t bits{1};
 
-  void reset(uint16_t seed = 1) { bits = seed == 0 ? 1 : static_cast<uint16_t>(seed & 0x7fff); }
+  void reset(uint16_t seed = 1) { bits = static_cast<uint16_t>(seed & 0x7fff); if (bits == 0) bits = 1; }
   float clock(bool short_mode) {
     const unsigned tap = short_mode ? 6U : 1U;
     const uint16_t feedback = static_cast<uint16_t>((bits & 1U) ^ ((bits >> tap) & 1U));

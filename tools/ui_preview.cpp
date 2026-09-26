@@ -109,6 +109,7 @@ int main(int argc, char** argv) {
   s.h = argc >= 4 ? std::atoi(argv[3]) : height;
   s.display = XOpenDisplay(nullptr);
   if (!s.display) { std::fprintf(stderr, "no X display\n"); return 1; }
+  initialize_x11_text(s.display);
   const int screen = DefaultScreen(s.display);
   s.pixmap = XCreatePixmap(s.display, DefaultRootWindow(s.display), static_cast<unsigned>(s.w), static_cast<unsigned>(s.h),
                            static_cast<unsigned>(DefaultDepth(s.display, screen)));
