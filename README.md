@@ -351,8 +351,12 @@ saved-state migration remain compatible.
 blocks, and one or sixteen active MIDI voices. It excludes activation, note setup and warm-up;
 it is an informational throughput measurement, not a DAW dropout guarantee.
 
-The `nes_preset_gate` test uses a generated score and a separate local APU model. It does not run
-a ROM or extract game music. Actual ROM capture/replay remains in the optional `*_rom_parity`
+The `nes_preset_gate` test scans `NES_ROM_DIR` (default `/mnt/crucial/roms/nes`) and selects a
+filename-derived score for comparison against a separate local APU model. It restores the
+`tonal 0.95` envelope/spectrum/pitch and onset/offset gate, prints audio comparison diagnostics,
+and saves `rom_song.rpp`, `rom_extracted.wav`, and `yanes_extracted.wav` under
+`build/reaper_projects/`. It does not run a ROM or extract game music.
+Actual ROM capture/replay remains in the optional `*_rom_parity`
 gates described above. Full ROM mixes use `rom-mix` comparison, which rejects silence without
 requiring ffmpeg; `rom` permits silent isolated channels that an excerpt does not use.
 

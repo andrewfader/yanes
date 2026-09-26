@@ -335,9 +335,9 @@ if(YANES_FURNACE_EXECUTABLE)
     endforeach()
   endforeach()
 endif()
-# Generated-score regression needs neither Furnace nor private ROM files.
+# Preset gate selects a score using NES_ROM_DIR (or the script's default ROM directory).
 if(UNIX)
   add_test(NAME nes_preset_gate COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nes_preset_gate.sh)
   set_tests_properties(nes_preset_gate PROPERTIES TIMEOUT 120 ENVIRONMENT
-    "YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_NES_ROM_EMU=$<TARGET_FILE:yanes-nes-rom-emu>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
+    "YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_NES_ROM_EMU=$<TARGET_FILE:yanes-nes-rom-emu>;YANES_AUDIO_COMPARE=$<TARGET_FILE:yanes-audio-compare>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
 endif()
