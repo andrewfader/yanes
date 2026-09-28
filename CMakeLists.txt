@@ -312,11 +312,11 @@ add_test(NAME envelope_furnace_oracle_fds COMMAND envelope_furnace_oracle
 # SameBoy-rendered WAV (gb-gate2/gb_ch*.wav) is the reference. This is the always-on
 # cross-engine envelope oracle.
 add_test(NAME envelope_furnace_oracle_gb_pulse COMMAND envelope_furnace_oracle
-  ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_yanes_ch1_pulse.wav ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/gb_ch1_pulse.wav)
+  ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_yanes_ch1_pulse.wav ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_gb_ch1_pulse.wav)
 add_test(NAME envelope_furnace_oracle_gb_wave COMMAND envelope_furnace_oracle
-  ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_yanes_ch3_wave.wav ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/gb_ch3_wave.wav)
+  ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_yanes_ch3_wave.wav ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_gb_ch3_wave.wav)
 add_test(NAME envelope_furnace_oracle_gb_noise COMMAND envelope_furnace_oracle
-  ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_yanes_ch4_noise.wav ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/gb_ch4_noise.wav)
+  ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_yanes_ch4_noise.wav ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_gb_ch4_noise.wav)
 set_tests_properties(envelope_furnace_oracle_nes_pulse
                     envelope_furnace_oracle_gameboy_pulse
                     envelope_furnace_oracle_fds
@@ -327,10 +327,16 @@ set_tests_properties(envelope_furnace_oracle_nes_pulse
 # missing on disk, which is a defensive backstop for a build dir that has had
 # generated artifacts manually deleted. Under normal operation the FIXTURES_REQUIRED
 # setup above ensures the WAVs exist before the test runs, so 77 should only
-# fire as a diagnostic.
+# fire as a diagnostic. This applies to *every* envelope_furnace_oracle_* test
+# (Furnace oracle pairs AND SameBoy gb-gate2 pairs) — the gb-* WAVs are only
+# generated when an external SameBoy oracle run is performed, so those tests
+# also need the skip path on a checkout that hasn't run that step.
 set_tests_properties(envelope_furnace_oracle_nes_pulse
                     envelope_furnace_oracle_gameboy_pulse
-                    envelope_furnace_oracle_fds PROPERTIES SKIP_RETURN_CODE 77)
+                    envelope_furnace_oracle_fds
+                    envelope_furnace_oracle_gb_pulse
+                    envelope_furnace_oracle_gb_wave
+                    envelope_furnace_oracle_gb_noise PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(compatibility_tests tests/compatibility_tests.cpp)
 target_compile_features(compatibility_tests PRIVATE cxx_std_20)
@@ -415,6 +421,20 @@ set(YANES_FURNACE_EXECUTABLE "${CMAKE_CURRENT_BINARY_DIR}/furnace"
     CACHE FILEPATH "Furnace executable for the 21-chip audio parity suite")
 if(NOT YANES_FURNACE_EXECUTABLE)
   find_program(YANES_FURNACE_EXECUTABLE furnace)
+endif()
+# Validate that the configured Furnace binary actually exists on disk. The cache
+# default above points at "${CMAKE_CURRENT_BINARY_DIR}/furnace" which is not
+# produced by anything in this build (Furnace is built externally; see CI for the
+# official workflow). Without this check, `if(YANES_FURNACE_EXECUTABLE)` is truthy
+# on the default path string even though the file is missing, and the build then
+# fails with `./furnace: No such file or directory` from the envelope oracle custom
+# commands instead of the tests simply being skipped.
+if(YANES_FURNACE_EXECUTABLE AND NOT EXISTS "${YANES_FURNACE_EXECUTABLE}")
+  message(STATUS
+    "YANES_FURNACE_EXECUTABLE='${YANES_FURNACE_EXECUTABLE}' not found on disk; "
+    "disabling Furnace oracle tests. Pass -DYANES_FURNACE_EXECUTABLE=/path/to/furnace "
+    "to enable them.")
+  set(YANES_FURNACE_EXECUTABLE "" CACHE FILEPATH "" FORCE)
 endif()
 if(YANES_FURNACE_EXECUTABLE)
   foreach(fixture ay-tone fds gameboy-noise gameboy-pulse gameboy-wave n163

@@ -142,8 +142,8 @@ int run(const std::vector<std::string>& args) {
   bool strict_timing = false;
   for (size_t i = 1; i < args.size(); ++i) {
     if (args[i] == "--strict-timing") strict_timing = true;
-    else if (furnace_path.empty()) furnace_path = args[i];
     else if (yanes_path.empty()) yanes_path = args[i];
+    else if (furnace_path.empty()) furnace_path = args[i];
   }
   if (yanes_path.empty()) {
     std::fprintf(stderr, "Usage: %s <yanes.wav> [<furnace.wav>]\n", args[0].c_str());

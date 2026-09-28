@@ -1,16 +1,20 @@
 # Furnace audio parity
 
-Fixtures are single-note Furnace modules regenerated with git Furnace **dev250**
-(`9f00b85`). Packaged Furnace 0.6.8.3 cannot load the INF2 (format 250) header.
-Point CMake at a new enough binary:
+Fixtures are single-note Furnace modules generated from a Furnace source tree at
+the commit currently checked into CI (see `.github/workflows/ci.yml`, which builds
+Furnace HEAD on each Linux run). Packaged Furnace 0.6.8.3 cannot load the INF2
+(format 250) header that the fixtures encode, so the CI build uses a git
+checkout. To use a local Furnace instead, point CMake at the binary:
 
 ```
 cmake -S . -B build -DYANES_FURNACE_EXECUTABLE=/path/to/furnace
 ```
 
-Regenerate modules from a Furnace source tree with
-`FURNACE_SRC=... tools/regen_furnace_fixtures.sh` after building
-`yanes-furnace-fixture-gen` against that tree (see `tools/furnace_fixture_gen.cpp`).
+Regenerate modules whenever upstream Furnace chip models change — the rendered
+audio has to match the engine the CI binary was built from. The CI workflow
+rebuilds Furnace from master on every run, so `tools/regen_furnace_fixtures.sh`
+should be invoked against the same HEAD. Build `yanes-furnace-fixture-gen`
+against the matching checkout first (see `tools/furnace_fixture_gen.cpp`).
 
 Every fixture uses Furnace note 108. Furnace applies its own per-chip octave
 convention on top of the note, and note 108 is the one that lands on the key each
