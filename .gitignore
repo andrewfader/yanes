@@ -35,3 +35,10 @@ Testing/
 *.ydmc
 *.wav
 !tests/**/*.wav
+
+# Hermes session crash artifacts (recovered-state.db and friends) accidentally
+# dropped at repo root by a crashed session. Safe to delete on sight.
+recovered-state.db
+recovered-state.db.fts_rebuild.lock
+recovered-state.db.quarantine.lock
+recovered-state.db.recovery.json
