@@ -18,13 +18,12 @@
 #include "clap_harness.hpp"
 #include "../src/params.hpp"
 
-#include <unistd.h>
-
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <complex>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -169,7 +168,9 @@ void expect(bool ok, const std::string& what) {
   if (!ok) g_current->failures.push_back(what);
 }
 
+#if defined(__GNUC__)
 std::string fmt(const char* f, ...) __attribute__((format(printf, 1, 2)));
+#endif
 std::string fmt(const char* f, ...) {
   char buffer[512];
   va_list args;
@@ -678,10 +679,6 @@ std::vector<double> harmonic_db(const std::vector<float>& x, double f0, int coun
   std::vector<double> out;
   for (double a : h) out.push_back(measure::db(a / std::max(h[0], 1e-12)));
   return out;
-}
-
-double centroid(const std::vector<float>& x, double from = 0.2, double length = 0.5) {
-  return measure::spectral_centroid(Span(x, static_cast<size_t>(from * kRate), static_cast<size_t>(length * kRate)), kRate);
 }
 
 // Correlation of two log power spectra: 1 means the same timbre.
@@ -1230,18 +1227,32 @@ constexpr double kDmcPeriods[] = {428, 380, 340, 320, 286, 254, 226, 214, 190, 1
 struct Banks {
   std::filesystem::path dir;
   explicit Banks(const std::vector<std::vector<uint8_t>>& slots) {
-    dir = std::filesystem::temp_directory_path() / ("yanes-advertised-" + std::to_string(::getpid()));
+    static int serial = 0;
+    dir = std::filesystem::temp_directory_path() /
+          ("yanes-advertised-" + std::to_string(reinterpret_cast<uintptr_t>(this)) + "-" + std::to_string(++serial));
     std::filesystem::create_directories(dir);
     std::string list;
     for (size_t i = 0; i < slots.size(); ++i) {
       const auto path = dir / ("slot" + std::to_string(i) + ".dmc");
       std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(slots[i].data()), static_cast<std::streamsize>(slots[i].size()));
+#ifdef _WIN32
+      if (!list.empty()) list += ';';
+#else
       if (!list.empty()) list += ':';
+#endif
       list += path.string();
     }
-    ::setenv("YANES_DPCM_BANK", list.c_str(), 1);
+    set_bank_list(list.c_str());
   }
-  ~Banks() { ::unsetenv("YANES_DPCM_BANK"); std::filesystem::remove_all(dir); }
+  ~Banks() { set_bank_list(""); std::filesystem::remove_all(dir); }
+  static void set_bank_list(const char* list) {
+#ifdef _WIN32
+    _putenv_s("YANES_DPCM_BANK", list);
+#else
+    if (*list) ::setenv("YANES_DPCM_BANK", list, 1);
+    else ::unsetenv("YANES_DPCM_BANK");
+#endif
+  }
 };
 
 // A triangle-ish tone: `half` bits up, `half` down, repeated to `bytes`.
