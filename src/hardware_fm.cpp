@@ -16,12 +16,15 @@ namespace yanes {
 // over-modulated the one it kept. YM2151 lays its four slots out as M1, M2, C1, C2, where
 // the same algorithm's carriers are again indices 2 and 3, so the mask suits both families.
 constexpr uint8_t kFourOpCarriers[8] = {0x08, 0x08, 0x08, 0x08, 0x0c, 0x0e, 0x0e, 0x0f};
-constexpr uint8_t operator_level(int algorithm, int op, int carrier_level) {
+// Carriers sit at a fixed total level; modulators at their base level plus the
+// brightness offset (see modulator_offset). OPN/OPM total level is 7 bits, OPL 6.
+constexpr int kCarrierLevel = 1;
+constexpr uint8_t operator_level(int algorithm, int op, int modulator_offset) {
   const bool carrier = ((kFourOpCarriers[algorithm & 7] >> op) & 1U) != 0;
-  return static_cast<uint8_t>(carrier ? carrier_level : 20 + op * 7);
+  return static_cast<uint8_t>(carrier ? kCarrierLevel : std::clamp(20 + op * 7 + modulator_offset, 0, 127));
 }
-constexpr uint8_t opl_level(int algorithm, int op, int carrier_level) {
-  return static_cast<uint8_t>(op == 1 || (algorithm & 1) ? carrier_level : 18);
+constexpr uint8_t opl_level(int algorithm, int op, int modulator_offset) {
+  return static_cast<uint8_t>(op == 1 || (algorithm & 1) ? kCarrierLevel : std::clamp(18 + modulator_offset, 0, 63));
 }
 // Per-chip value that one voice's loudest output maps to, so every chip arrives at the
 // mixer on the same scale. The YM2612 entry read 6600, which its own DAC cannot reach: the
@@ -31,15 +34,12 @@ constexpr uint8_t opl_level(int algorithm, int op, int carrier_level) {
 // reaches 1.0 and beyond, leaving Genesis FM permanently short of the rest of the plug-in.
 constexpr double kChipFullScale[] = {5881.0, 11000.0, 5530.0, 2670.0, 5320.0, 10850.0, 4800.0};
 
-// Brightness only ever reaches these chips as carrier total level, which is pure output
-// attenuation: the modulator levels below are fixed, so nothing about the tone changes with
-// it. A linear (1 - brightness) * 32 therefore parked the default 0.65 at eleven steps of
-// attenuation, holding every hardware FM voice 8 dB under the plug-in's other chips for no
-// audible return. Cubing puts the default within one step of fully open while keeping the
-// full 24 dB of range underneath it, so turning brightness down still attenuates as before.
-constexpr int carrier_attenuation(double brightness) {
-  const double closed = 1.0 - std::clamp(brightness, 0.0, 1.0);
-  return static_cast<int>(closed * closed * closed * 32.0 + 0.5);
+// Brightness is how hard the modulators drive the carriers: it offsets every
+// modulator's total level (0.75 dB per step) from its base, 0 at the 0.65 default,
+// 14 steps (10.5 dB) more modulation at 1, 26 steps less at 0. It used to set the
+// carriers' level instead, which only made the voice quieter or louder.
+constexpr int modulator_offset(double brightness) {
+  return static_cast<int>(std::lround((0.65 - std::clamp(brightness, 0.0, 1.0)) * 40.0));
 }
 constexpr uint8_t opl_operator_flags(const FmControls& c, int op) {
   return static_cast<uint8_t>((c.am_depth ? 0x80 : 0) | (c.pm_depth ? 0x40 : 0) | 0x20 |
@@ -71,14 +71,14 @@ struct HardwareFmVoice::Impl : ymfm::ymfm_interface {
   }
   template<class Chip>
   static void write_operators(Chip& chip, const uint8_t* slots, int count, const FmControls& c,
-                              int alg, int carrier_level, bool four_op) {
+                              int alg, int modulator_offset, bool four_op) {
     for (int op = 0; op < count; ++op) {
       const uint8_t s = slots[op];
       write(chip, static_cast<uint16_t>(0x20 + s), opl_operator_flags(c, op));
+      const bool four_op_carrier = op == count - 1 || ((alg & 1) && op >= 2) || ((alg & 2) && op == 0);
       const uint8_t level = four_op
-          ? static_cast<uint8_t>(op == count - 1 || ((alg & 1) && op >= 2) || ((alg & 2) && op == 0)
-                                     ? carrier_level : 18 + op * 6)
-          : opl_level(alg, op, carrier_level);
+          ? static_cast<uint8_t>(four_op_carrier ? kCarrierLevel : std::clamp(18 + op * 6 + modulator_offset, 0, 63))
+          : opl_level(alg, op, modulator_offset);
       write(chip, static_cast<uint16_t>(0x40 + s), level);
       write(chip, static_cast<uint16_t>(0x60 + s),
             static_cast<uint8_t>((std::clamp(c.attack, 0, 15) << 4) | std::clamp(c.decay, 0, 15)));
@@ -156,14 +156,14 @@ void HardwareFmVoice::key_on(Kind kind, double frequency, const FmControls& c) {
   impl_->programmed = impl_->keyed = true;
   impl_->flush(kind);
   const int alg = std::clamp(c.algorithm, 0, 7), fb = std::clamp(c.feedback, 0, 7);
-  const int carrier_level = carrier_attenuation(c.brightness);
+  const int modulator_level = modulator_offset(c.brightness);
   if (kind == Kind::Opl2 || kind == Kind::Opl3 || kind == Kind::Opl3FourOp) {
     const bool four = kind == Kind::Opl3FourOp;
     auto setup = [&](auto& chip) {
       Impl::write(chip, 0x01, 0x20); // Enable the OPL2 waveform-select registers.
       Impl::write(chip, 0xbd, static_cast<uint8_t>((c.am_depth >= 64 ? 0x80 : 0) | (c.pm_depth >= 64 ? 0x40 : 0)));
       Impl::write_operators(chip, four ? opl_slots_four : opl_slots_two, four ? 4 : 2, c, alg,
-                          carrier_level, four);
+                          modulator_level, four);
       if (four) {
         Impl::write(chip, 0x105, 1);
         Impl::write(chip, 0x104, 1);
@@ -192,7 +192,7 @@ void HardwareFmVoice::key_on(Kind kind, double frequency, const FmControls& c) {
     for (int op = 0; op < 4; ++op) {
       const uint8_t s = slots[op];
       Impl::write(*impl_->opm, static_cast<uint16_t>(0x40 + s), static_cast<uint8_t>((std::clamp(c.detune,0,7) << 4) | (1 + op)));
-      Impl::write(*impl_->opm, static_cast<uint16_t>(0x60 + s), operator_level(alg, op, carrier_level));
+      Impl::write(*impl_->opm, static_cast<uint16_t>(0x60 + s), operator_level(alg, op, modulator_level));
       Impl::write(*impl_->opm, static_cast<uint16_t>(0x80 + s), static_cast<uint8_t>((std::clamp(c.key_scale,0,3) << 6) | std::clamp(c.attack,0,31)));
       Impl::write(*impl_->opm, static_cast<uint16_t>(0xa0 + s), static_cast<uint8_t>((c.am_depth ? 0x80 : 0) | std::clamp(c.decay,0,31)));
       Impl::write(*impl_->opm, static_cast<uint16_t>(0xc0 + s), static_cast<uint8_t>(std::clamp(c.sustain_rate,0,31)));
@@ -218,7 +218,7 @@ void HardwareFmVoice::key_on(Kind kind, double frequency, const FmControls& c) {
   for (int op = 0; op < 4; ++op) {
     const uint8_t s = slots[op];
     opn_write(static_cast<uint16_t>(0x30 + s), static_cast<uint8_t>((std::clamp(c.detune,0,7) << 4) | (1 + op)));
-    opn_write(static_cast<uint16_t>(0x40 + s), operator_level(alg, op, carrier_level));
+    opn_write(static_cast<uint16_t>(0x40 + s), operator_level(alg, op, modulator_level));
     opn_write(static_cast<uint16_t>(0x50 + s), static_cast<uint8_t>((std::clamp(c.key_scale,0,3) << 6) | std::clamp(c.attack,0,31)));
     opn_write(static_cast<uint16_t>(0x60 + s), static_cast<uint8_t>((c.am_depth ? 0x80 : 0) | std::clamp(c.decay,0,31)));
     opn_write(static_cast<uint16_t>(0x70 + s), static_cast<uint8_t>(std::clamp(c.sustain_rate,0,31)));
@@ -258,13 +258,13 @@ void HardwareFmVoice::key_off() {
 void HardwareFmVoice::update_controls(const FmControls& c) {
   if (!impl_->programmed) return;
   const int alg=std::clamp(c.algorithm,0,7),fb=std::clamp(c.feedback,0,7);
-  const int carrier=carrier_attenuation(c.brightness);
+  const int modulator=modulator_offset(c.brightness);
   if (impl_->kind==Kind::Opl2||impl_->kind==Kind::Opl3||impl_->kind==Kind::Opl3FourOp) {
     const bool four = impl_->kind == Kind::Opl3FourOp;
     auto apply=[&](auto& chip){
       Impl::write(chip, 0x01, 0x20); // Enable the OPL2 waveform-select registers.
       Impl::write(chip, 0xbd, static_cast<uint8_t>((c.am_depth >= 64 ? 0x80 : 0) | (c.pm_depth >= 64 ? 0x40 : 0)));
-      Impl::write_operators(chip, four ? opl_slots_four : opl_slots_two, four ? 4 : 2, c, alg, carrier, four);
+      Impl::write_operators(chip, four ? opl_slots_four : opl_slots_two, four ? 4 : 2, c, alg, modulator, four);
       if (four) {
         Impl::write(chip,0xc0,static_cast<uint8_t>(0x30|(fb<<1)|((alg>>1)&1)));
         Impl::write(chip,0xc3,static_cast<uint8_t>(0x30|(alg&1)));
@@ -274,7 +274,7 @@ void HardwareFmVoice::update_controls(const FmControls& c) {
   }
   if (impl_->kind==Kind::Opm) {constexpr uint8_t slots[]={0,8,16,24};for(int op=0;op<4;++op){const uint8_t s=slots[op];
     Impl::write(*impl_->opm,static_cast<uint16_t>(0x40+s),static_cast<uint8_t>((std::clamp(c.detune,0,7)<<4)|(op+1)));
-    Impl::write(*impl_->opm,static_cast<uint16_t>(0x60+s),operator_level(alg,op,carrier));
+    Impl::write(*impl_->opm,static_cast<uint16_t>(0x60+s),operator_level(alg,op,modulator));
     Impl::write(*impl_->opm,static_cast<uint16_t>(0x80+s),static_cast<uint8_t>((std::clamp(c.key_scale,0,3)<<6)|std::clamp(c.attack,0,31)));
     Impl::write(*impl_->opm,static_cast<uint16_t>(0xa0+s),static_cast<uint8_t>((c.am_depth?0x80:0)|std::clamp(c.decay,0,31)));
     Impl::write(*impl_->opm,static_cast<uint16_t>(0xc0+s),static_cast<uint8_t>(std::clamp(c.sustain_rate,0,31)));
@@ -283,7 +283,7 @@ void HardwareFmVoice::update_controls(const FmControls& c) {
     Impl::write(*impl_->opm,0x18,static_cast<uint8_t>(std::clamp(c.lfo_rate,0,7)*32));Impl::write(*impl_->opm,0x19,static_cast<uint8_t>(std::clamp(c.am_depth,0,127)));Impl::write(*impl_->opm,0x19,static_cast<uint8_t>(0x80|std::clamp(c.pm_depth,0,127)));Impl::write(*impl_->opm,0x20,static_cast<uint8_t>(0xc0|(fb<<3)|alg));return;
   }
   auto write=[&](uint16_t r,uint8_t d){if(impl_->kind==Kind::Opn)Impl::write(*impl_->opn1,r,d);else if(impl_->kind==Kind::Opna)Impl::write(*impl_->opna,r,d);else Impl::write(*impl_->opn,r,d);};
-  constexpr uint8_t slots[]={0,4,8,12};for(int op=0;op<4;++op){const uint8_t s=slots[op];write(static_cast<uint16_t>(0x30+s),static_cast<uint8_t>((std::clamp(c.detune,0,7)<<4)|(op+1)));write(static_cast<uint16_t>(0x40+s),operator_level(alg,op,carrier));write(static_cast<uint16_t>(0x50+s),static_cast<uint8_t>((std::clamp(c.key_scale,0,3)<<6)|std::clamp(c.attack,0,31)));write(static_cast<uint16_t>(0x60+s),static_cast<uint8_t>((c.am_depth?0x80:0)|std::clamp(c.decay,0,31)));write(static_cast<uint16_t>(0x70+s),static_cast<uint8_t>(std::clamp(c.sustain_rate,0,31)));write(static_cast<uint16_t>(0x80+s),static_cast<uint8_t>((std::clamp(c.sustain_level,0,15)<<4)|std::clamp(c.release,0,15)));}
+  constexpr uint8_t slots[]={0,4,8,12};for(int op=0;op<4;++op){const uint8_t s=slots[op];write(static_cast<uint16_t>(0x30+s),static_cast<uint8_t>((std::clamp(c.detune,0,7)<<4)|(op+1)));write(static_cast<uint16_t>(0x40+s),operator_level(alg,op,modulator));write(static_cast<uint16_t>(0x50+s),static_cast<uint8_t>((std::clamp(c.key_scale,0,3)<<6)|std::clamp(c.attack,0,31)));write(static_cast<uint16_t>(0x60+s),static_cast<uint8_t>((c.am_depth?0x80:0)|std::clamp(c.decay,0,31)));write(static_cast<uint16_t>(0x70+s),static_cast<uint8_t>(std::clamp(c.sustain_rate,0,31)));write(static_cast<uint16_t>(0x80+s),static_cast<uint8_t>((std::clamp(c.sustain_level,0,15)<<4)|std::clamp(c.release,0,15)));}
   write(0xb0,static_cast<uint8_t>((fb<<3)|alg));if(impl_->kind!=Kind::Opn){write(0x22,static_cast<uint8_t>((c.am_depth||c.pm_depth?8:0)|std::clamp(c.lfo_rate,0,7)));write(0xb4,static_cast<uint8_t>(0xc0|(std::min(3,c.am_depth/32)<<4)|std::min(7,c.pm_depth/16)));}
 }
 float HardwareFmVoice::render(double host_rate, double frequency) {

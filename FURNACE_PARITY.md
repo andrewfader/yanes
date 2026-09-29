@@ -188,6 +188,13 @@ VRC7 and the SIDs release exponentially (the Release knob is the time to fall
 sustain rate (default 5, ~4.4 dB/s; 0 holds). The other chips' Release knob is a
 synth convenience and fades linearly.
 
+The channel stacks take their chips' solo defaults for the settings their channels
+share (12.5% pulses, white PSG noise, pure POKEY and TIA tones, the reset ramp on the
+PC Engine and SCC), so a stack's channel sounds like the solo voice of the same chip.
+The six-operator, Porta FM and tine voices decay while held at the FM sustain rate,
+like the VRC7, and a hardware FM chip (YM2612, OPN/OPNA, OPL, OPM) releases through
+its own operator envelopes (FM release) rather than the voice Release.
+
 A 0 ms release is the authentic tail for the gate-cut chips and it does click on
 note-off, the way the hardware does.
 

@@ -119,7 +119,10 @@ struct Voice {
   double note{};
   double target_note{};
   double env{};
-  double held_decay{1.0};  // VRC7 carrier decay while the key is held (FM sustain rate).
+  double held_decay{1.0};  // FM carrier decay while the key is held (FM sustain rate).
+  uint32_t chip_quiet{};   // Released hardware-FM voice: samples its chip has been silent.
+  uint32_t chip_tail{};    // Released hardware-FM voice: samples since the key-off.
+  double chip_rest{};      // Its chip's resting DAC level (the YM2612 keeps an offset).
   double velocity{};
   double noise_phase{};
   float noise_value{};
@@ -180,6 +183,8 @@ struct Plugin {
                                        1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0};
   std::vector<float> delay_buffer{};
   size_t delay_write{};
+  std::array<float, 256> width_line{};  // Stereo width: the right channel's short delay.
+  size_t width_write{};
   double chorus_phase{};
   std::atomic<double> tempo{120.0};
   std::array<AtomicSharedPtr<const std::vector<uint8_t>>, 16> dpcm_banks{};
@@ -314,6 +319,15 @@ constexpr VoiceDefaults kVoiceDefaults[] = {
     {22, -1, -1, -1, -1, -1, -1, 0, 0, -1},   // AY-3-8910 tone
     {24, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // POKEY: pure tone
     {26, -1, 7, -1, -1, -1, -1, 0, 0, -1},    // PC Engine: reset ramp
+    // Stacks take their chips' solo defaults for the settings their channels share.
+    {18, 0, -1, 15, 1, -1, -1, 0, 0, -1},     // NES stack: 12.5% pulses, period 15 short-mode noise
+    {19, 0, -1, -1, -1, -1, -1, 0, 0, -1},    // Game Boy stack: 12.5% pulses (no envelope: the wave channel has none)
+    {20, -1, -1, -1, 1, -1, -1, 0, 0, -1},    // SMS stack: white noise
+    {21, -1, -1, -1, 1, -1, -1, 0, 0, -1},    // Genesis stack: white PSG noise
+    {34, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // Atari stack: pure tones on the tone channels
+    {35, -1, 7, -1, -1, -1, -1, 0, 0, -1},    // PC Engine stack: reset ramp
+    {41, -1, 7, -1, -1, -1, -1, 0, 0, -1},    // SCC stack: reset ramp
+    {45, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // TIA stack: pure tones
     {38, -1, 0, -1, -1, -1, -1, 380, 0, -1},   // SID 6581: default saw, D=8/S=0 envelope decays past the gate
     {39, -1, 0, -1, -1, -1, -1, 315, 0, -1},   // SID 8580: ditto
     {40, -1, 7, -1, -1, -1, -1, 0, 0, -1},    // Konami SCC: reset ramp
@@ -413,25 +427,25 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 3: put(kWaveform, 9); put(kDpcmRate, 12); put(kReleaseMs, 40); put(kGainDb, -1.0); break;
     case 4: put(kWaveform, 11); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 5); put(kGainDb, -4.0); break;
     case 5: put(kWaveform, 13); put(kTranspose, -12); put(kAttackMs, 0); break;
-    case 6: put(kWaveform, 17); put(kGenesisAlgorithm, 4); put(kGenesisFeedback, 4); put(kFmBrightness, 0.85); put(kReleaseMs, 650); put(kGainDb, -8.0); break;
-    case 7: put(kRetroAmount, 0.75); put(kSpeaker, 0.8); put(kOutputRate, 18000); put(kBitDepth, 11); put(kGainDb, -12.5); break;
+    case 6: put(kWaveform, 17); put(kGenesisAlgorithm, 4); put(kGenesisFeedback, 4); put(kFmBrightness, 0.85); put(kGainDb, -7.0); put(kFmSustainRate, 10); break;
+    case 7: put(kRetroAmount, 0.75); put(kSpeaker, 0.8); put(kOutputRate, 18000); put(kGainDb, -12.5); break;
     case 8: put(kRetroAmount, 1); put(kSpeaker, 1); put(kOutputRate, 11000); put(kBitDepth, 8); put(kRfNoise, 0.35); put(kHum, 0.25); put(kGainDb, -15.0); break;
     case 9: put(kWaveform, 26); put(kExpansionShape, 2); put(kReleaseMs, 300); put(kGainDb, -2.5); break;
-    case 10: put(kWaveform, 27); put(kFmRatio, 2); put(kFmIndex, 3.8); put(kGenesisFeedback, 2); put(kFmBrightness, 0.95); put(kGainDb, -4.0); break;
-    case 11: put(kWaveform, 28); put(kGenesisAlgorithm, 4); put(kGenesisFeedback, 5); put(kFmBrightness, 0.95); put(kGainDb, -3.5); break;
+    case 10: put(kWaveform, 27); put(kGenesisFeedback, 2); put(kFmBrightness, 0.95); put(kGainDb, -4.0); break;
+    case 11: put(kWaveform, 28); put(kGenesisFeedback, 5); put(kFmBrightness, 0.95); put(kGainDb, -3.5); break;
     case 12: put(kWaveform, 31); put(kGenesisAlgorithm, 2); put(kFmBrightness, 0.95); put(kRetroAmount, 0.15); put(kGainDb, -1.0); break;
-    case 13: put(kWaveform, 32); put(kGenesisAlgorithm, 5); put(kReleaseMs, 450); put(kGainDb, -7.0); break;
+    case 13: put(kWaveform, 32); put(kGenesisAlgorithm, 5); put(kReleaseMs, 450); put(kGainDb, -6.0); put(kFmSustainRate, 9); break;
     case 14: put(kWaveform, 33); put(kGenesisAlgorithm, 1); put(kGenesisFeedback, 6); put(kFmBrightness, 0.95); put(kGainDb, -1.0); break;
-    case 15: put(kWaveform, 25); put(kNoiseMode, 1); put(kSweepDepth, 18); put(kSweepTime, 90); break;
+    case 15: put(kWaveform, 25); put(kNoiseMode, 0); put(kSweepDepth, 18); put(kSweepTime, 90); break;
     case 16: put(kWaveform, 38); put(kReleaseMs, 258); put(kDuty, 1); put(kExpansionShape, 2); put(kChipCutoff, 2400); put(kChipResonance, 0.45); put(kTranspose, -12); put(kGainDb, -9.0); break;
     case 17: put(kWaveform, 39); put(kReleaseMs, 138); put(kExpansionShape, 3); put(kDuty, 2); put(kChipCutoff, 5200); put(kChipResonance, 0.48); put(kGainDb, 2.0); break;
     case 18: put(kWaveform, 40); put(kExpansionShape, 5); put(kReleaseMs, 120); put(kGainDb, -6.0); break;
-    case 19: put(kWaveform, 42); put(kArpMode, 1); put(kArpRate, 14); put(kStereoWidth, 1); break;
+    case 19: put(kWaveform, 42); put(kArpMode, 1); put(kArpRate, 14); put(kStereoWidth, 1); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 3); break;
     case 20: put(kWaveform, 46); put(kWavetablePosition, 0.35); put(kWavetableWarp, 0.62); put(kAttackMs, 80); put(kReleaseMs, 900); put(kGainDb, -7.0); break;
-    case 21: put(kWaveform, 47); put(kWavetablePosition, 0.7); put(kWavetableWarp, 0.28); put(kChipCutoff, 4800); put(kGainDb, -8.0); break;
+    case 21: put(kWaveform, 47); put(kWavetablePosition, 0.7); put(kWavetableWarp, 0.28); put(kGainDb, -8.0); break;
     case 22: put(kWaveform, 48); put(kAdditiveTilt, 0.52); put(kWavetablePosition, 0.25); put(kGainDb, -7.0); break;
-    case 23: put(kWaveform, 49); put(kGenesisAlgorithm, 28); put(kFmIndex, 3.4); put(kFmBrightness, 0.58); put(kReleaseMs, 700); put(kGainDb, -5.0); break;
-    case 24: put(kWaveform, 50); put(kWavetablePosition, 0.42); put(kChipCutoff, 3400); put(kAttackMs, 35); put(kReleaseMs, 1200); put(kGainDb, -2.5); break;
+    case 23: put(kWaveform, 49); put(kGenesisAlgorithm, 28); put(kFmIndex, 3.4); put(kFmBrightness, 0.58); put(kReleaseMs, 700); put(kGainDb, -4.0); put(kFmSustainRate, 8); break;
+    case 24: put(kWaveform, 50); put(kWavetablePosition, 0.42); put(kAttackMs, 35); put(kReleaseMs, 1200); put(kGainDb, -2.5); break;
     case 25: put(kWaveform, 8); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 14); put(kTranspose, -24); put(kDrive, 0.25); break;
     case 26: put(kWaveform, 0); put(kArpMode, 4); put(kArpRate, 30); put(kDuty, 1); put(kReleaseMs, 25); break;
     case 27: put(kWaveform, 0); put(kDuty, 0); put(kLayerMode, 4); put(kLayerMix, 0.28); put(kVibratoDepth, 0.12); break;
@@ -442,26 +456,26 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 32: put(kWaveform, 5); put(kExpansionShape, 4); put(kAttackMs, 8); put(kReleaseMs, 420); put(kChorusMix, 0.18); put(kGainDb, -6.5); break;
     case 33: put(kWaveform, 6); put(kExpansionShape, 5); put(kLayerMode, 2); put(kLayerMix, 0.16); put(kChorusMix, 0.34); put(kGainDb, -3.0); break;
     case 34: put(kWaveform, 17); put(kGenesisAlgorithm, 4); put(kGenesisFeedback, 6); put(kFmDetune, 2); put(kFmAttack, 31); put(kFmDecay, 14); put(kFmSustainLevel, 5); put(kTranspose, -12); put(kDrive, 0.38); put(kGainDb, -11.5); break;
-    case 35: put(kWaveform, 30); put(kGenesisAlgorithm, 7); put(kGenesisFeedback, 3); put(kFmAttack, 28); put(kFmDecay, 12); put(kFmRelease, 8); put(kFmBrightness, 0.78); put(kGainDb, -8.0); break;
-    case 36: put(kWaveform, 25); put(kExpansionShape, 7); put(kNoiseMode, 1); put(kSweepDepth, 22); put(kSweepTime, 65); put(kReleaseMs, 80); break;
-    case 37: put(kWaveform, 38); put(kReleaseMs, 258); put(kExpansionShape, 5); put(kDuty, 1); put(kChipCutoff, 1800); put(kChipResonance, 0.66); put(kDrive, 0.24); put(kGainDb, -11.5); break;
+    case 35: put(kWaveform, 30); put(kGenesisAlgorithm, 7); put(kGenesisFeedback, 3); put(kFmDecay, 12); put(kFmRelease, 8); put(kGainDb, -6.5); put(kFmSustainRate, 10); break;
+    case 36: put(kWaveform, 25); put(kExpansionShape, 7); put(kNoiseMode, 0); put(kSweepDepth, 22); put(kSweepTime, 65); put(kReleaseMs, 80); break;
+    case 37: put(kWaveform, 38); put(kReleaseMs, 258); put(kExpansionShape, 5); put(kChipCutoff, 1800); put(kChipResonance, 0.66); put(kDrive, 0.24); put(kGainDb, -11.5); break;
     case 38: put(kWaveform, 9); put(kDpcmBaseKey, 36); put(kDpcmRate, 15); put(kReleaseMs, 18); put(kGainDb, -1.0); break;
     case 39: put(kWaveform, 0); put(kArpMode, 5); put(kSequenceLength, 6); put(kSequence1, 0); put(kSequence2, 7); put(kSequence3, 12); put(kSequence4, 4); put(kSequence5, 16); put(kSequence6, 11); put(kTempoSync, 1); break;
     case 40: put(kWaveform, 28); put(kRetroAmount, 0.58); put(kSpeaker, 0.75); put(kDrive, 0.22); put(kChorusMix, 0.16); put(kRfNoise, 0.06); put(kOutputRate, 22000); put(kGainDb, -11.0); break;
-    case 41: put(kWaveform,51);put(kFmRatio,3);put(kFmIndex,2.7);put(kFmBrightness,0.58);put(kAttackMs,3);put(kReleaseMs,620);put(kChorusMix,0.14);put(kOutputRate,32000);put(kGainDb,-7.0);break;
-    case 42: put(kWaveform,51);put(kFmRatio,2);put(kFmIndex,4.6);put(kFmBrightness,0.76);put(kAttackMs,1);put(kReleaseMs,180);put(kHardwareEnvelope,1);put(kEnvelopeRate,6);put(kGainDb,-4.5);break;
-    case 43: put(kWaveform,52);put(kExpansionShape,3);put(kChipCutoff,4200);put(kChipResonance,0.28);put(kAttackMs,22);put(kReleaseMs,740);put(kChorusMix,0.38);put(kChorusRate,0.31);put(kGainDb,1.5);break;
+    case 41: put(kWaveform,51);put(kFmRatio,3);put(kFmIndex,2.7);put(kFmBrightness,0.58);put(kReleaseMs,620);put(kChorusMix,0.14);put(kGainDb, -6.0);put(kFmSustainRate,8);break;
+    case 42: put(kWaveform,51);put(kFmRatio,2);put(kFmIndex,4.6);put(kFmBrightness,0.76);put(kAttackMs,1);put(kReleaseMs,180);put(kGainDb,-6.0);put(kFmSustainRate,0);break;
+    case 43: put(kWaveform,52);put(kExpansionShape,3);put(kChipCutoff,4200);put(kAttackMs,22);put(kReleaseMs,740);put(kChorusMix,0.38);put(kChorusRate,0.31);put(kGainDb,1.5);break;
     case 44: put(kWaveform,53);put(kExpansionShape,6);put(kChipCutoff,2800);put(kChipResonance,0.52);put(kAttackMs,8);put(kReleaseMs,460);put(kLayerMode,2);put(kLayerMix,0.12);put(kGainDb,-2.5);break;
     case 45: put(kWaveform,54);put(kWavetablePosition,0.62);put(kAttackMs,95);put(kReleaseMs,1500);put(kChorusMix,0.44);put(kChorusRate,0.24);put(kRetroAmount,0.12);put(kGainDb,-2.5);break;
-    case 46: put(kWaveform,55);put(kFmIndex,3.2);put(kFmBrightness,0.66);put(kAttackMs,2);put(kReleaseMs,920);put(kChorusMix,0.18);put(kDrive,0.08);break;
+    case 46: put(kWaveform,55);put(kFmIndex,3.2);put(kAttackMs,2);put(kReleaseMs,920);put(kChorusMix,0.18);put(kDrive,0.08);put(kFmSustainRate,8);put(kGainDb, -8.0); break;
     case 47: put(kWaveform,56);put(kChipCutoff,820);put(kChipResonance,0.64);put(kTranspose,-12);put(kAttackMs,1);put(kReleaseMs,180);put(kDrive,0.32);put(kGainDb,-15.5);break;
-    case 48: put(kWaveform,57);put(kAttackMs,0);put(kReleaseMs,24);put(kExpansionShape,4);put(kVelocity,1);put(kTranspose,0);put(kFineTune,0);put(kArpMode,0);put(kLayerMode,0);put(kHardwareEnvelope,0);put(kDrive,0.12);put(kRetroAmount,0.08);put(kGainDb,-5.0);break;
+    case 48: put(kWaveform,57);put(kAttackMs,0);put(kExpansionShape,4);put(kVelocity,1);put(kTranspose,0);put(kFineTune,0);put(kArpMode,0);put(kLayerMode,0);put(kHardwareEnvelope,0);put(kDrive,0.12);put(kRetroAmount,0.08);put(kGainDb,-5.0);break;
     case 49: put(kWaveform, 10); put(kDuty, 1); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 8); put(kSweepDepth, -16); put(kSweepTime, 45); put(kReleaseMs, 25); put(kGainDb, -6.0); break;
     case 50: put(kWaveform, 10); put(kDuty, 2); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 6); put(kSweepDepth, 19); put(kSweepTime, 55); put(kReleaseMs, 30); put(kGainDb, -6.5); break;
     case 51: put(kWaveform, 12); put(kNoiseMode, 1); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 11); put(kSweepDepth, -20); put(kSweepTime, 50); put(kReleaseMs, 40); put(kGainDb, -4.5); break;
     case 52: put(kWaveform, 11); put(kExpansionShape, 3); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 9); put(kDrive, 0.18); put(kAttackMs, 0); put(kReleaseMs, 20); break;
     case 53: put(kWaveform, 10); put(kDuty, 0); put(kArpMode, 4); put(kArpRate, 38); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 5); put(kReleaseMs, 35); put(kGainDb, -6.5); break;
-    case 54: put(kWaveform, 10); put(kHardwareEnvelope, 0); put(kDuty, 1); put(kEchoMix, 0.38); put(kEchoTime, 90); put(kEchoFeedback, 0.40); put(kAttackMs, 1); put(kReleaseMs, 45); break;
+    case 54: put(kWaveform, 10); put(kHardwareEnvelope, 0); put(kDuty, 1); put(kEchoMix, 0.38); put(kEchoTime, 90); put(kEchoFeedback, 0.40); put(kReleaseMs, 45); break;
     case 55: put(kWaveform, 58); put(kGainDb, -6.0); break;
     case 56: put(kWaveform, 11); put(kCustomWave, 1); put(kTranspose, -12); put(kGainDb, -5.0); draw_wave(0); break;
     case 57: put(kWaveform, 58); draw_wave(1); put(kGainDb, -4.0); put(kReleaseMs, 120); break;
@@ -473,14 +487,14 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 63: put(kWaveform, 14); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 7); put(kGainDb, -4.0); break;
     case 64: put(kWaveform, 15); put(kGainDb, -10.0); put(kReleaseMs, 40); break;
     case 65: put(kWaveform, 16); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 7); put(kGainDb, -4.0); break;
-    case 66: put(kWaveform, 18); put(kStrictHardware, 1); put(kAttackMs, 0); put(kGainDb, 4.5); break;
-    case 67: put(kWaveform, 19); put(kStrictHardware, 1); put(kGainDb, -9.0); break;
+    case 66: put(kWaveform, 18); put(kStrictHardware, 1); put(kDuty, 1); put(kNoisePeriod, 8); put(kNoiseMode, 0); put(kAttackMs, 0); put(kGainDb, 4.5); break;
+    case 67: put(kWaveform, 19); put(kStrictHardware, 1); put(kDuty, 1); put(kGainDb, -9.0); break;
     case 68: put(kWaveform, 20); put(kStrictHardware, 1); put(kNoiseMode, 1); put(kGainDb, -10.0); break;
     case 69: put(kWaveform, 21); put(kStrictHardware, 1); put(kNoiseMode, 1); put(kGainDb, -3.0); break;
     case 70: put(kWaveform, 22); put(kGainDb, -10.0); put(kReleaseMs, 40); break;
     case 71: put(kWaveform, 23); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 7); put(kGainDb, -4.0); break;
     case 72: put(kWaveform, 24); put(kExpansionShape, 0); put(kGainDb, -10.0); put(kReleaseMs, 40); break;
-    case 73: put(kWaveform, 29); put(kGenesisAlgorithm, 4); put(kGainDb, -7.0); put(kReleaseMs, 400); break;
+    case 73: put(kWaveform, 29); put(kGenesisAlgorithm, 4); put(kGainDb, -7.0); break;
     case 74: put(kWaveform, 34); put(kStrictHardware, 1); put(kExpansionShape, 0); put(kGainDb, -10.0); break;
     case 75: put(kWaveform, 35); put(kStrictHardware, 1); put(kExpansionShape, 7); put(kGainDb, -5.0); break;
     case 76: put(kWaveform, 36); put(kStrictHardware, 1); put(kGainDb, 0.0); break;
@@ -810,6 +824,20 @@ bool output_dc_blocker_active(const Plugin* p) {
 // calling until it is done.
 constexpr double kDcFadeSeconds = 0.25;
 
+// Longest a released hardware FM voice may ring before the plug-in ends it; its
+// chip's own FM release normally silences it long before.
+constexpr double kChipReleaseCapSeconds = 10.0;
+
+// Sources whose voices run on a hardware FM chip core (stacks included). Shared
+// with the editor's relevance rules.
+bool hardware_fm_waveform(int waveform) {
+  return waveform == 17 || (waveform >= 27 && waveform <= 33) || waveform == 21 || waveform == 36;
+}
+// FM-family voices whose held level decays at the FM sustain rate.
+bool fm_held_decay_waveform(int waveform) {
+  return waveform == 7 || waveform == 49 || waveform == 51 || waveform == 55;
+}
+
 // VRC7 (OPLL) and the SIDs have their own envelope generators, which run past the
 // gate and decay exponentially. The other chips cut the channel at the gate; for
 // them the Release knob is a synth convenience and fades linearly.
@@ -821,7 +849,9 @@ float render_voice(Plugin* p, Voice& v) {
   v.layer_sample = 0.0f;
   const double attack = effective_param<kAttackMs>(p);
   double release = effective_param<kReleaseMs>(p);
-  if (v.releasing) {
+  // A hardware FM chip releases through its own operator envelopes (FM release);
+  // the voice lives until the chip falls silent, checked after rendering below.
+  if (v.releasing && v.hardware_signature < 0) {
     if (release <= 0.0) {
       stop_hardware(p, v);
       v.active = false;
@@ -838,11 +868,13 @@ float render_voice(Plugin* p, Voice& v) {
     }
   } else {
     v.env = attack <= 0.0 ? 1.0 : std::min(1.0, v.env + 1.0 / (p->sample_rate * attack * 0.001));
-    if (static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 7) {
-      // The OPLL carrier keeps decaying while the key is held, at the FM sustain
-      // rate (OPN D2R). The slope doubles every two rate steps, 0 holds forever,
-      // and the default 5 is the ~4.4 dB/s of the reference OPLL patch. Release
-      // then continues from wherever the held decay has got to.
+    if (fm_held_decay_waveform(static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed))) &&
+        p->params[kCustomWave].load(std::memory_order_relaxed) < 0.5) {
+      // FM carriers keep decaying while the key is held, at the FM sustain rate
+      // (OPN D2R): the VRC7's OPLL, and the six-operator, Porta FM and tine voices
+      // that model keyboard FM. The slope doubles every two rate steps, 0 holds
+      // forever, and the default 5 is the ~4.4 dB/s of the reference OPLL patch.
+      // Release then continues from wherever the held decay has got to.
       const double rate = effective_param<kFmSustainRate>(p);
       if (rate > 0.0) {
         const double db_per_second = 4.4 * std::exp2((rate - 5.0) / 2.0);
@@ -888,8 +920,12 @@ float render_voice(Plugin* p, Voice& v) {
     vibrato += std::sin(6.28318530718 * (elapsed_samples - vibrato_delay) * vibrato_rate / p->sample_rate) *
                effective_param<kVibratoDepth>(p);
   const double bend_range = p->params[kPitchBendRange].load(std::memory_order_relaxed);
-  double frequency = yanes::midi_frequency(v.note + transpose + fine + sequence_pitch +
-                                            v.tuning_expression + p->pitch_bend[midi_channel] * bend_range + vibrato);
+  const double played_note = v.note + transpose + fine + sequence_pitch + v.tuning_expression +
+                             p->pitch_bend[midi_channel] * bend_range + vibrato;
+  double frequency = yanes::midi_frequency(played_note);
+  // The NES and Game Boy noise channels step through a period table, one entry per
+  // semitone: the played note (after transpose, sequences, sweep and bend) picks it.
+  const int noise_semitones = static_cast<int>(std::lround(played_note)) - 60;
   frequency = std::clamp(frequency, 0.01, p->sample_rate * 0.49);
   const int selected_waveform=static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
   int waveform=selected_waveform;
@@ -992,7 +1028,7 @@ float render_voice(Plugin* p, Voice& v) {
     const int base_period = static_cast<int>(p->params[kNoisePeriod].load(std::memory_order_relaxed));
     // One period-table entry per semitone, wrapping every sixteen.
     const int period_index =
-        yanes::nes_noise_index(std::clamp(base_period, 0, 15), v.key - 60);
+        yanes::nes_noise_index(std::clamp(base_period, 0, 15), noise_semitones);
     const double clocks_per_sample =
         (chip_clock / yanes::kNoisePeriods[static_cast<size_t>(period_index)]) / p->sample_rate;
     v.noise_phase += clocks_per_sample;
@@ -1058,18 +1094,27 @@ float render_voice(Plugin* p, Voice& v) {
   } else if (waveform == 10) {
     value = yanes::pulse(v.phase, increment, kDuties[voice_duty(p, v)]);
   } else if (waveform == 11) {
-    // Game Boy CH3: 32 four-bit samples. Shape 7 is the plain ramp the chip
-    // holds after a reset, which is what the hardware reference renders play.
+    // Game Boy CH3: 32 four-bit samples from wave RAM, one table per shape.
+    // Shape 7 is the plain ramp the chip holds after a reset, which is what the
+    // hardware reference renders play.
     const double wp = std::floor(v.phase * 32.0) / 32.0;
-    value = shape == 7
-                ? yanes::quantize_bipolar(2.0 * wp - 1.0, 16)
-                : yanes::quantize_bipolar(std::sin(6.28318530718 * wp) +
-                                              0.2 * std::sin(12.56637061436 * wp),
-                                          16);
+    constexpr double tau = 6.28318530718;
+    double table = 0.0;
+    switch (std::clamp(shape, 0, 7)) {
+      case 0: table = std::sin(tau * wp); break;                                   // sine
+      case 1: table = 1.0 - 4.0 * std::abs(wp - 0.5); break;                       // triangle
+      case 2: table = wp < 0.5 ? 1.0 : -1.0; break;                                // square
+      case 3: table = std::sin(tau * wp) + 0.2 * std::sin(2.0 * tau * wp); break;  // soft sine
+      case 4: table = wp < 0.25 ? 1.0 : -1.0; break;                               // 25% pulse
+      case 5: table = wp < 0.125 ? 1.0 : -1.0; break;                              // 12.5% pulse
+      case 6: table = 0.7 * std::sin(tau * wp) + 0.3 * std::sin(3.0 * tau * wp); break;  // hollow organ
+      default: table = 2.0 * wp - 1.0; break;                                      // reset ramp
+    }
+    value = yanes::quantize_bipolar(table, 16);
   } else if (waveform == 12) {
     const bool width7 = p->params[kNoiseMode].load(std::memory_order_relaxed) >= 0.5;
     // C-4 selects divisor 4 with shift 3, which clocks the register at 4096 Hz.
-    v.noise_phase += yanes::game_boy_noise_hz(4096.0, v.key - 60) / p->sample_rate;
+    v.noise_phase += yanes::game_boy_noise_hz(4096.0, noise_semitones) / p->sample_rate;
     while (v.noise_phase >= 1.0) { v.console_lfsr = yanes::game_boy_lfsr_clock(v.console_lfsr, width7); v.noise_phase -= 1.0; }
     value = (v.console_lfsr & 1U) ? -1.0f : 1.0f;
   } else if (waveform == 13 || waveform == 15) {
@@ -1085,6 +1130,18 @@ float render_voice(Plugin* p, Voice& v) {
     const auto kind=fm_kind(waveform,selected_waveform);const int signature=waveform|(static_cast<int>(kind)<<8);
     if(v.hardware_signature!=signature){p->hardware_fm[voice_index].key_on(kind,frequency,fm_controls(p));if(v.releasing)p->hardware_fm[voice_index].key_off();v.hardware_signature=signature;}
     value = p->hardware_fm[voice_index].render(p->sample_rate, frequency);
+    if (v.releasing) {
+      // Silent means no movement around the DAC's resting level, which the YM2612
+      // leaves slightly off zero once every operator has released.
+      v.chip_rest += 0.002 * (value - v.chip_rest);
+      v.chip_quiet = std::abs(value - v.chip_rest) < 1.0e-5 ? v.chip_quiet + 1 : 0;
+      if (v.chip_quiet > static_cast<uint32_t>(0.04 * p->sample_rate) ||
+          ++v.chip_tail > static_cast<uint32_t>(kChipReleaseCapSeconds * p->sample_rate)) {
+        stop_hardware(p, v);
+        v.active = false;
+        return 0.0f;
+      }
+    }
   } else if (waveform == 22) {
     value = yanes::pulse(v.phase, increment, 0.5);
   } else if (waveform == 23) {
@@ -1309,7 +1366,7 @@ float render_voice(Plugin* p, Voice& v) {
     p->nes_apu.set_frequency(v.channel, frequency);
     p->nes_apu.set_channel_gain(v.channel, level * expressive_level * p->channel_volume[midi_channel]);
     if (v.channel == 3) p->nes_apu.set_noise(
-        yanes::nes_noise_index(static_cast<int>(p->params[kNoisePeriod].load()), v.key - 60),
+        yanes::nes_noise_index(static_cast<int>(p->params[kNoisePeriod].load()), noise_semitones),
         p->params[kNoiseMode].load() >= 0.5);
   }
   const float amplitude = static_cast<float>(level * expressive_level * (velocity_enabled ? v.velocity : 1.0));
@@ -1348,9 +1405,10 @@ struct StereoSample { float left{}, right{}; };
 size_t echo_delay_samples(const Plugin* p) {
   double seconds = effective_param<kEchoTime>(p) * 0.001;
   if (p->params[kTempoSync].load(std::memory_order_relaxed) >= 0.5) {
-    constexpr double beat_lengths[] = {0.0625, 0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0};
+    // One step of the same division the sequences use ("8ths" repeats every
+    // eighth note), up to the buffer's two seconds.
     const int division = static_cast<int>(p->params[kSyncDivision].load(std::memory_order_relaxed));
-    seconds = 60.0 / p->tempo.load(std::memory_order_relaxed) * beat_lengths[std::clamp(division, 0, 7)];
+    seconds = 60.0 / p->tempo.load(std::memory_order_relaxed) / kSyncDivisions[std::clamp(division, 0, 7)];
   }
   const size_t capacity = static_cast<size_t>(std::max(2.0, p->sample_rate * 2.0));
   return std::clamp<size_t>(static_cast<size_t>(seconds * p->sample_rate), 1, capacity - 1);
@@ -1459,6 +1517,8 @@ void plugin_reset(const clap_plugin_t* plugin) {
   for (size_t i = 0; i < p->voices.size(); ++i) { p->voices[i] = Voice{}; p->hardware_fm[i].reset(); }
   p->sustain_pedal.fill(false);
   std::fill(p->delay_buffer.begin(), p->delay_buffer.end(), 0.0f);
+  p->width_line.fill(0.0f);
+  p->width_write = 0;
   p->delay_write = 0;
   p->pitch_bend.fill(0.0);
   p->mod_wheel.fill(0.0);
@@ -1578,8 +1638,13 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
     }
     sample = process_retro(p, sample);
     const StereoSample effected = process_rack(p, sample);
-    const float width = static_cast<float>(effective_param<kStereoWidth>(p));
-    const double raw_l=effected.left*(1.0f+width*0.08f),raw_r=effected.right*(1.0f-width*0.08f);
+    // Stereo width delays the right channel by up to 0.6 ms: the ear hears the two
+    // sides as wider apart, with no change of level or tone on either.
+    const double width_delay = std::min(255.0, std::round(effective_param<kStereoWidth>(p) * 0.0006 * p->sample_rate));
+    p->width_line[p->width_write] = effected.right;
+    const float right_delayed = p->width_line[(p->width_write + p->width_line.size() - static_cast<size_t>(width_delay)) % p->width_line.size()];
+    p->width_write = (p->width_write + 1) % p->width_line.size();
+    const double raw_l = effected.left, raw_r = right_delayed;
     const int output_waveform=static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
     const bool custom_wave = p->params[kCustomWave].load(std::memory_order_relaxed) >= 0.5 ||
       static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 58;
@@ -1805,6 +1870,8 @@ uint32_t tail_get(const clap_plugin_t* plugin) {
   }
   if (chorus > 1.0e-6)
     seconds += 0.026; // 14 ms base delay plus the maximum 12 ms modulation depth.
+  if (hardware_fm_waveform(static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed))))
+    seconds = std::max(seconds, kChipReleaseCapSeconds);  // The chip's own release rings on.
   if (output_dc_blocker_active(p))
     seconds += kDcFadeSeconds;  // The blocker fades its residual after the voices end.
   return static_cast<uint32_t>(std::min<double>(std::ceil(seconds * p->sample_rate), INT32_MAX - 1.0));

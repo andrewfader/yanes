@@ -212,12 +212,18 @@ struct NesApu {
         {0, 1, 1, 1, 1, 0, 0, 0}, {1, 0, 0, 1, 1, 1, 1, 1}};
     (void)duty_table;
 
-    for (auto& p : pulse_) {
-      if (!p.active) continue;
-      if (p.counter > 0) --p.counter;
-      else {
-        p.counter = p.timer;
-        p.seq = static_cast<uint8_t>((p.seq + 1) & 7);
+    // Pulse timers run on the APU clock, every other CPU cycle; the triangle and
+    // noise timers run on the CPU clock. Stepping the pulses every CPU cycle
+    // played them an octave high.
+    apu_cycle_ = !apu_cycle_;
+    if (apu_cycle_) {
+      for (auto& p : pulse_) {
+        if (!p.active) continue;
+        if (p.counter > 0) --p.counter;
+        else {
+          p.counter = p.timer;
+          p.seq = static_cast<uint8_t>((p.seq + 1) & 7);
+        }
       }
     }
     if (triangle_.active) {
@@ -271,6 +277,7 @@ struct NesApu {
 
   std::array<double, 4> channel_gain_{1.0, 1.0, 1.0, 1.0};
   std::array<Pulse, 2> pulse_{};
+  bool apu_cycle_{false};
   Triangle triangle_{};
   Noise noise_{};
   double cpu_clock_{kNtscClock};

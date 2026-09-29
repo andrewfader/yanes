@@ -289,8 +289,27 @@ inline float six_operator_fm(double phase, int algorithm, double index, double b
   const double o3 = std::sin(p * 3.0 + ((algorithm & 2) ? o5 : o4)) * index * 0.5;
   const double o2 = std::sin(p * 2.0 + ((algorithm & 4) ? o4 : o3)) * index * 0.4;
   const double carrier = std::sin(p + ((algorithm & 8) ? o3 + o2 : o2));
-  if (algorithm & 16) return static_cast<float>((carrier + std::sin(p + o4) + std::sin(p * 2.0 + o6)) / 3.0);
-  return static_cast<float>(carrier);
+  // An operator the routing leaves without a destination is heard as a carrier,
+  // as in a DX-style algorithm chart, rather than dropped: that is what makes each
+  // of the 32 routings a different sound.
+  bool heard[7] = {};
+  heard[2] = true;
+  if (algorithm & 8) heard[3] = true;
+  if (algorithm & 16) heard[4] = heard[6] = true;
+  for (int pass = 0; pass < 3; ++pass) {
+    if (heard[2]) heard[(algorithm & 4) ? 4 : 3] = true;
+    if (heard[3]) heard[(algorithm & 2) ? 5 : 4] = true;
+    if (heard[4]) heard[(algorithm & 1) ? 6 : 5] = true;
+    if (heard[5]) heard[6] = true;
+  }
+  double extra = 0.0;
+  int extras = 0;
+  const double mods[7] = {0, 0, 0, (algorithm & 2) ? o5 : o4, (algorithm & 1) ? o6 : o5, o6, 0};
+  for (int op = 3; op <= 5; ++op)
+    if (!heard[op]) { extra += std::sin(p * op + mods[op]); ++extras; }
+  double out = carrier;
+  if (algorithm & 16) out = (carrier + std::sin(p + o4) + std::sin(p * 2.0 + o6)) / 3.0;
+  return static_cast<float>((out + 0.5 * extra) / (1.0 + 0.5 * extras));
 }
 
 // Original, parameterized voices inspired by broad 1980s/90s instrument families.
@@ -324,7 +343,9 @@ inline float digital_ensemble(double phase, double position) {
 inline float tine_piano(double phase, double index, double brightness, double age_seconds) {
   constexpr double tau = 6.2831853071795864769;
   const double p = tau * phase;
-  const double strike = std::exp(-age_seconds * (4.0 + brightness * 5.0));
+  // The bright hammer strike fades at a fixed rate; brightness is how hard it hits
+  // (the default 0.65 is the original voicing).
+  const double strike = std::exp(-age_seconds * 7.25) * std::clamp(brightness, 0.0, 1.0) / 0.65;
   const double mod = std::sin(p * 3.0) * index * (0.16 + strike * 0.28);
   return static_cast<float>(std::sin(p + mod) * 0.82 + std::sin(p * 2.0) * strike * 0.18);
 }

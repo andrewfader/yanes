@@ -808,7 +808,8 @@ void test_tail_covers_delayed_audio(const Library& library) {
       runner.set(find_param(plugin, "Echo feedback"), 0.0);
       runner.set(find_param(plugin, "Echo time"), 100.0);
       runner.set(find_param(plugin, "Tempo sync"), synced ? 1.0 : 0.0);
-      runner.set(find_param(plugin, "Sync division"), 7.0);
+      // "1 per bar": four beats at 60 BPM, capped by the two-second delay buffer.
+      runner.set(find_param(plugin, "Sync division"), 0.0);
       Events on;
       clap_event_transport_t transport{};
       transport.header = {sizeof(transport), 0, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT, 0};
@@ -1256,6 +1257,8 @@ void test_custom_wave(const Library& library) {
       off.push(note_event(CLAP_EVENT_NOTE_OFF, 0, 60, 1, 0.0));
       runner.run(&off);
       runner.settle(kReleaseBlocks);
+      // Back on a hardware FM chip, the chip's own FM release ends the note.
+      if (source == 17) runner.settle(300);
       expect_silent(runner.run(), "custom wave release");
     }
     plugin->destroy(plugin);

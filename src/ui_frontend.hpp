@@ -9,10 +9,6 @@
 #include "ui_layout.hpp"
 #include "ui_pages.hpp"
 
-bool hardware_fm_waveform(int waveform) {
-  return waveform==17||(waveform>=27&&waveform<=30)||waveform==21||waveform==31||
-         waveform==32||waveform==33||waveform==36;
-}
 bool dpcm_waveform(int waveform) { return waveform==9||waveform==18||waveform==32||waveform==33; }
 bool duty_waveform(int waveform) {
   return waveform==0||waveform==10||waveform==18||waveform==19||waveform==38||waveform==39;
@@ -35,6 +31,9 @@ bool gui_param_relevant(const Plugin* p, clap_id id) {
   if (id >= kSequence1 && id <= kSequence8) return static_cast<int>(value(kArpMode)) == 5;
   if (id >= kDutyStep1 && id <= kDutyStep8) return duty_waveform(waveform) && value(kDutySeqMode) >= 0.5;
   if (id >= kCentsStep1 && id <= kCentsStep8) return value(kCentsSeqMode) >= 0.5;
+  if (id == kFmSustainRate && fm_held_decay_waveform(waveform)) return true;
+  // A pure hardware FM source releases through its operators (FM release), not the voice envelope.
+  if (id == kReleaseMs && (waveform == 17 || (waveform >= 27 && waveform <= 30) || waveform == 36)) return false;
   if (id >= kFmAttack && id <= kFmPmDepth) {
     const bool opl = waveform == 27 || waveform == 28 || waveform == 36;
     if (opl && (id == kFmDetune || id == kFmSustainRate || id == kFmLfoRate)) return false;
@@ -86,7 +85,7 @@ const char* gui_help(clap_id id) {
     case kNoisePeriod:return "Selects a hardware noise-clock period instead of a continuously tuned pitch.";
     case kNoiseMode:return "Switches the selected chip's alternate short, narrow, or white-noise behavior.";
     case kAttackMs:return "Sets how quickly a new note reaches full level.";
-    case kReleaseMs:return "Sets how long a note fades after release.";
+    case kReleaseMs:return "Sets how long a note fades after release; chip envelope generators (VRC7, SID) take this long to fall 60 dB. Hardware FM chips use FM release instead.";
     case kExpansionShape:return "Changes the selected chip model's duty, wavetable, or distortion variant.";
     case kFmRatio:return "Sets the modulator frequency relative to the played note.";
     case kFmIndex:return "Controls FM modulation strength and harmonic complexity.";
@@ -99,11 +98,13 @@ const char* gui_help(clap_id id) {
     case kChipResonance:return "Emphasizes frequencies around the chip filter cutoff.";
     case kWavetablePosition:return "Morphs across sine, triangle, saw, and pulse regions.";
     case kWavetableWarp:return "Bends wavetable phase to reshape the harmonic balance.";
-    case kFmBrightness:return "Changes carrier level and the perceived brightness of FM voices.";
+    case kFmBrightness:return "Sets how hard the modulators drive the carriers: higher is brighter, lower is duller.";
     case kLayerMode:return "Adds a tuned or noise-based companion oscillator to every voice.";
     case kLayerMix:return "Balances the added layer against the primary oscillator.";
     case kTempoSync:return "Locks the arpeggio, duty and cents steps, and echo timing to host tempo.";
-    case kSyncDivision:return "Sets how many sequence steps play per beat while tempo sync is on.";
+    case kStereoWidth:return "Spreads the sound between the speakers by delaying the right side up to 0.6 ms.";
+    case kFmSustainRate:return "How fast an FM note keeps fading while held; 0 holds it.";
+    case kSyncDivision:return "Sets how many sequence steps play per beat, and the synced echo's delay (one step), while tempo sync is on.";
     case kStrictHardware:return "Hardware-like stack retriggering, and raw (non-bandlimited) NES pulses into the mixer.";
     case kArpMode:return "Chooses a built-in arpeggio, or User steps to play the pitch lane below.";
     case kArpRate:return "Sets how many arpeggio or pitch steps play per second.";

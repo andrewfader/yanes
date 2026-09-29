@@ -245,16 +245,29 @@ inline double modulation_hz(const std::vector<double>& series, double hop_s, dou
   for (double& v : x) v -= m;
   const size_t min_lag = std::max<size_t>(1, static_cast<size_t>(1.0 / (fmax * hop_s)));
   const size_t max_lag = std::min(x.size() / 2, static_cast<size_t>(1.0 / (fmin * hop_s)) + 1);
-  double best = -2;
-  size_t best_lag = 0;
-  for (size_t lag = min_lag; lag <= max_lag; ++lag) {
+  std::vector<double> r(max_lag + 2, -2.0);
+  for (size_t lag = 1; lag <= max_lag + 1 && lag < x.size(); ++lag) {
     double num = 0, den = 0;
     for (size_t i = 0; i + lag < x.size(); ++i) { num += x[i] * x[i + lag]; den += x[i] * x[i]; }
-    const double r = den > 0 ? num / den : 0;
-    if (r > best) { best = r; best_lag = lag; }
+    r[lag] = den > 0 ? num / den : 0;
   }
-  if (!best_lag || best < 0.3) return 0;
-  return 1.0 / (static_cast<double>(best_lag) * hop_s);
+  // A period peak only counts once the autocorrelation has swung negative (past
+  // the half-period trough); before that, jitter makes local bumps.
+  size_t start = 1;
+  while (start <= max_lag && r[start] >= 0) ++start;
+  start = std::max(start, min_lag);
+  double best = -2;
+  for (size_t lag = start; lag <= max_lag; ++lag) best = std::max(best, r[lag]);
+  if (best < 0.3) return 0;
+  // The first strong peak is the period; its multiples score as high.
+  for (size_t lag = std::max<size_t>(start, 1); lag <= max_lag; ++lag) {
+    if (r[lag] >= 0.85 * best && r[lag] >= r[lag - 1] && r[lag] >= r[lag + 1]) {
+      const double a = r[lag - 1], b = r[lag], c = r[lag + 1], denom = a - 2 * b + c;
+      const double shift = std::abs(denom) > 1e-12 ? std::clamp(0.5 * (a - c) / denom, -0.5, 0.5) : 0.0;
+      return 1.0 / ((static_cast<double>(lag) + shift) * hop_s);
+    }
+  }
+  return 0;
 }
 
 }  // namespace measure

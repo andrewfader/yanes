@@ -71,6 +71,17 @@ error. It resamples differing source rates and also reports 1024-frame energy-en
 which is stable across different chip-core phase and resampling implementations. An optional
 minimum envelope-correlation threshold is suitable for CI.
 
+`advertised_tests` holds one proof per parameter (all 136) and one per preset (all 81) that it
+does what it advertises, measured from rendered audio in the advertised unit: Attack and
+Release in milliseconds, gains in dB, Transpose/Fine tune/bend/vibrato/sweep in semitones and
+cents, rates in Hz or steps per second, pulse duty in percent, FM index against the Bessel
+sideband ratio, table position against the sine/triangle/saw/square harmonic series, echo
+delay and feedback, DPCM playback against the 2A03 DMC period table, and so on. Each preset must
+select the chip its name says, have the character its name says (a bass sounds an octave or more
+down, a bell decays, a pad sustains, an echo repeats, a zap sweeps, a stack plays every channel),
+and every setting its recipe makes must be audible in its sound. The tables are indexed by ID,
+so the suite fails if a parameter or preset has no proof.
+
 The 21-chip audio suite (`tools/compare_furnace_audio.sh`, fixtures under `tests/furnace/`) uses
 `yanes-parity-compare`: onset alignment, log-band spectrum, octave-folded YIN pitch, and envelope
 shape. A fixture only selects a voice and plays a note — duty, wavetable, noise settings, FM ratio
