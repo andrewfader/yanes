@@ -119,6 +119,7 @@ struct Voice {
   double note{};
   double target_note{};
   double env{};
+  double held_decay{1.0};  // VRC7 carrier decay while the key is held (FM sustain rate).
   double velocity{};
   double noise_phase{};
   float noise_value{};
@@ -285,35 +286,39 @@ double db_gain(double db) { return std::exp(db * std::log(10.0) / 20.0); }
 struct VoiceDefaults {
   int waveform;
   double duty, shape, noise_period, noise_mode, fm_ratio, fm_index, release_ms;
+  double hardware_envelope, envelope_rate;
 };
-// Every one of these chips silences its channel the moment the gate clears, so a
-// release of 0 is the authentic tail, not an omission — the exceptions are the
-// SIDs, which run their own envelope generator past the gate.
+// Chips without an envelope generator silence the channel the moment the gate
+// clears, so a release of 0 is the authentic tail, not an omission. VRC7 and the
+// SIDs run their envelope generators past the gate (released exponentially, see
+// chip_eg_release). The Game Boy's default instrument steps its volume down on
+// the hardware envelope. Every voice sets the hardware envelope explicitly, so
+// switching away from a Game Boy voice does not carry its decay along.
 constexpr VoiceDefaults kVoiceDefaults[] = {
-    //  wave  duty shape period mode ratio index release
-    {0, 0, -1, -1, -1, -1, -1, 0},     // NES pulse: 12.5% duty
-    {1, -1, -1, -1, -1, -1, -1, 0},    // NES triangle
-    {2, -1, -1, 15, 1, -1, -1, 0},     // NES noise: longest period, short mode
-    {3, -1, 0, -1, -1, -1, -1, 0},     // VRC6 pulse: narrowest duty
-    {4, -1, 7, -1, -1, -1, -1, 0},     // VRC6 saw: full accumulator rate
-    {5, -1, 7, -1, -1, -1, -1, 0},     // FDS: the ramp the wavetable holds at reset
-    {6, -1, 7, -1, -1, -1, -1, 0},     // Namco 163: ditto
-    {7, -1, -1, -1, -1, 1, 4, 0},      // VRC7: OPLL patch, modulator at the carrier
-    {10, 0, -1, -1, -1, -1, -1, 0},    // Game Boy pulse: 12.5% duty
-    {11, -1, 7, -1, -1, -1, -1, 0},    // Game Boy wave: reset ramp
-    {12, -1, -1, -1, -1, -1, -1, 0},   // Game Boy noise
-    {13, -1, -1, -1, -1, -1, -1, 0},   // SMS tone
-    {14, -1, -1, -1, 1, -1, -1, 0},    // SMS noise: white
-    {15, -1, -1, -1, -1, -1, -1, 0},   // Genesis PSG is the same SN76489
-    {16, -1, -1, -1, 1, -1, -1, 0},    // Genesis PSG noise: white
-    {22, -1, -1, -1, -1, -1, -1, 0},   // AY-3-8910 tone
-    {24, -1, 0, -1, -1, -1, -1, 0},    // POKEY: pure tone
-    {26, -1, 7, -1, -1, -1, -1, 0},    // PC Engine: reset ramp
-    {38, -1, -1, -1, -1, -1, -1, 172}, // SID 6581 envelope release
-    {39, -1, -1, -1, -1, -1, -1, 92},  // SID 8580 envelope release
-    {40, -1, 7, -1, -1, -1, -1, 0},    // Konami SCC: reset ramp
-    {42, -1, -1, -1, -1, -1, -1, 0},   // Philips SAA1099 tone
-    {44, -1, 0, -1, -1, -1, -1, 0},    // TIA: pure tone
+    //  wave  duty shape period mode ratio index release hwenv rate
+    {0, 0, -1, -1, -1, -1, -1, 0, 0, -1},     // NES pulse: 12.5% duty
+    {1, -1, -1, -1, -1, -1, -1, 0, 0, -1},    // NES triangle
+    {2, -1, -1, 15, 1, -1, -1, 0, 0, -1},     // NES noise: longest period, short mode
+    {3, -1, 0, -1, -1, -1, -1, 0, 0, -1},     // VRC6 pulse: narrowest duty
+    {4, -1, 7, -1, -1, -1, -1, 0, 0, -1},     // VRC6 saw: full accumulator rate
+    {5, -1, 7, -1, -1, -1, -1, 0, 0, -1},     // FDS: the ramp the wavetable holds at reset
+    {6, -1, 7, -1, -1, -1, -1, 0, 0, -1},     // Namco 163: ditto
+    {7, -1, -1, -1, -1, 1, 4, 600, 0, -1},    // VRC7: OPLL patch, modulator at the carrier, EG release
+    {10, 0, -1, -1, -1, -1, -1, 0, 1, 9},     // Game Boy pulse: 12.5% duty, volume 15 stepping down every ~30 ms
+    {11, -1, 7, -1, -1, -1, -1, 0, 0, -1},    // Game Boy wave: reset ramp
+    {12, -1, -1, -1, -1, -1, -1, 0, 1, 9},    // Game Boy noise: same default envelope
+    {13, -1, -1, -1, -1, -1, -1, 0, 0, -1},   // SMS tone
+    {14, -1, -1, -1, 1, -1, -1, 0, 0, -1},    // SMS noise: white
+    {15, -1, -1, -1, -1, -1, -1, 0, 0, -1},   // Genesis PSG is the same SN76489
+    {16, -1, -1, -1, 1, -1, -1, 0, 0, -1},    // Genesis PSG noise: white
+    {22, -1, -1, -1, -1, -1, -1, 0, 0, -1},   // AY-3-8910 tone
+    {24, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // POKEY: pure tone
+    {26, -1, 7, -1, -1, -1, -1, 0, 0, -1},    // PC Engine: reset ramp
+    {38, -1, 0, -1, -1, -1, -1, 380, 0, -1},   // SID 6581: default saw, D=8/S=0 envelope decays past the gate
+    {39, -1, 0, -1, -1, -1, -1, 315, 0, -1},   // SID 8580: ditto
+    {40, -1, 7, -1, -1, -1, -1, 0, 0, -1},    // Konami SCC: reset ramp
+    {42, -1, -1, -1, -1, -1, -1, 0, 0, -1},   // Philips SAA1099 tone
+    {44, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // TIA: pure tone
 };
 
 void set_param(Plugin* p, clap_id id, double value, bool apply_preset);
@@ -340,7 +345,8 @@ void apply_voice_defaults(Plugin* p, int waveform) {
         {kDuty, voice.duty},           {kExpansionShape, voice.shape},
         {kNoisePeriod, voice.noise_period}, {kNoiseMode, voice.noise_mode},
         {kFmRatio, voice.fm_ratio},    {kFmIndex, voice.fm_index},
-        {kReleaseMs, voice.release_ms}};
+        {kReleaseMs, voice.release_ms}, {kHardwareEnvelope, voice.hardware_envelope},
+        {kEnvelopeRate, voice.envelope_rate}};
     for (const auto& [target, setting] : settings)
       if (setting >= 0.0) set_param(p, target, setting, false);
     // The voice brought several parameters with it, so the host has to re-read
@@ -386,6 +392,11 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     p->params_rescan_pending.store(true, std::memory_order_release);
     if (p->host && p->host->request_callback) p->host->request_callback(p->host);
   }
+  // Presets start from their voice's defaults, so recipes voiced before those
+  // defaults matched the reference instruments pin what they relied on: the SID
+  // and VRC7 release times are 1.5x their old linear values (the exponential tail
+  // still reaches -40 dB when it used to), the SID recipes keep their combined
+  // waveforms, and the Game Boy and VRC7 recipes that sustained keep sustaining.
   auto put = [p](clap_id target, double v) { set_param(p, target, v, false); };
   auto draw_wave = [&](int shape) {
     for (int i = 0; i < 32; ++i) {
@@ -412,8 +423,8 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 13: put(kWaveform, 32); put(kGenesisAlgorithm, 5); put(kReleaseMs, 450); put(kGainDb, -7.0); break;
     case 14: put(kWaveform, 33); put(kGenesisAlgorithm, 1); put(kGenesisFeedback, 6); put(kFmBrightness, 0.95); put(kGainDb, -1.0); break;
     case 15: put(kWaveform, 25); put(kNoiseMode, 1); put(kSweepDepth, 18); put(kSweepTime, 90); break;
-    case 16: put(kWaveform, 38); put(kDuty, 1); put(kExpansionShape, 2); put(kChipCutoff, 2400); put(kChipResonance, 0.45); put(kTranspose, -12); put(kGainDb, -9.0); break;
-    case 17: put(kWaveform, 39); put(kDuty, 2); put(kChipCutoff, 5200); put(kChipResonance, 0.48); put(kGainDb, -6.5); break;
+    case 16: put(kWaveform, 38); put(kReleaseMs, 258); put(kDuty, 1); put(kExpansionShape, 2); put(kChipCutoff, 2400); put(kChipResonance, 0.45); put(kTranspose, -12); put(kGainDb, -9.0); break;
+    case 17: put(kWaveform, 39); put(kReleaseMs, 138); put(kExpansionShape, 3); put(kDuty, 2); put(kChipCutoff, 5200); put(kChipResonance, 0.48); put(kGainDb, 2.0); break;
     case 18: put(kWaveform, 40); put(kExpansionShape, 5); put(kReleaseMs, 120); put(kGainDb, -6.0); break;
     case 19: put(kWaveform, 42); put(kArpMode, 1); put(kArpRate, 14); put(kStereoWidth, 1); break;
     case 20: put(kWaveform, 46); put(kWavetablePosition, 0.35); put(kWavetableWarp, 0.62); put(kAttackMs, 80); put(kReleaseMs, 900); put(kGainDb, -7.0); break;
@@ -433,7 +444,7 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 34: put(kWaveform, 17); put(kGenesisAlgorithm, 4); put(kGenesisFeedback, 6); put(kFmDetune, 2); put(kFmAttack, 31); put(kFmDecay, 14); put(kFmSustainLevel, 5); put(kTranspose, -12); put(kDrive, 0.38); put(kGainDb, -11.5); break;
     case 35: put(kWaveform, 30); put(kGenesisAlgorithm, 7); put(kGenesisFeedback, 3); put(kFmAttack, 28); put(kFmDecay, 12); put(kFmRelease, 8); put(kFmBrightness, 0.78); put(kGainDb, -8.0); break;
     case 36: put(kWaveform, 25); put(kExpansionShape, 7); put(kNoiseMode, 1); put(kSweepDepth, 22); put(kSweepTime, 65); put(kReleaseMs, 80); break;
-    case 37: put(kWaveform, 38); put(kExpansionShape, 5); put(kDuty, 1); put(kChipCutoff, 1800); put(kChipResonance, 0.66); put(kDrive, 0.24); put(kGainDb, -11.5); break;
+    case 37: put(kWaveform, 38); put(kReleaseMs, 258); put(kExpansionShape, 5); put(kDuty, 1); put(kChipCutoff, 1800); put(kChipResonance, 0.66); put(kDrive, 0.24); put(kGainDb, -11.5); break;
     case 38: put(kWaveform, 9); put(kDpcmBaseKey, 36); put(kDpcmRate, 15); put(kReleaseMs, 18); put(kGainDb, -1.0); break;
     case 39: put(kWaveform, 0); put(kArpMode, 5); put(kSequenceLength, 6); put(kSequence1, 0); put(kSequence2, 7); put(kSequence3, 12); put(kSequence4, 4); put(kSequence5, 16); put(kSequence6, 11); put(kTempoSync, 1); break;
     case 40: put(kWaveform, 28); put(kRetroAmount, 0.58); put(kSpeaker, 0.75); put(kDrive, 0.22); put(kChorusMix, 0.16); put(kRfNoise, 0.06); put(kOutputRate, 22000); put(kGainDb, -11.0); break;
@@ -450,15 +461,15 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 51: put(kWaveform, 12); put(kNoiseMode, 1); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 11); put(kSweepDepth, -20); put(kSweepTime, 50); put(kReleaseMs, 40); put(kGainDb, -4.5); break;
     case 52: put(kWaveform, 11); put(kExpansionShape, 3); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 9); put(kDrive, 0.18); put(kAttackMs, 0); put(kReleaseMs, 20); break;
     case 53: put(kWaveform, 10); put(kDuty, 0); put(kArpMode, 4); put(kArpRate, 38); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 5); put(kReleaseMs, 35); put(kGainDb, -6.5); break;
-    case 54: put(kWaveform, 10); put(kDuty, 1); put(kEchoMix, 0.38); put(kEchoTime, 90); put(kEchoFeedback, 0.40); put(kAttackMs, 1); put(kReleaseMs, 45); break;
+    case 54: put(kWaveform, 10); put(kHardwareEnvelope, 0); put(kDuty, 1); put(kEchoMix, 0.38); put(kEchoTime, 90); put(kEchoFeedback, 0.40); put(kAttackMs, 1); put(kReleaseMs, 45); break;
     case 55: put(kWaveform, 58); put(kGainDb, -6.0); break;
     case 56: put(kWaveform, 11); put(kCustomWave, 1); put(kTranspose, -12); put(kGainDb, -5.0); draw_wave(0); break;
     case 57: put(kWaveform, 58); draw_wave(1); put(kGainDb, -4.0); put(kReleaseMs, 120); break;
-    case 58: put(kWaveform, 10); put(kDutySeqMode, 1); put(kDutySeqRate, 22); put(kReleaseMs, 35); break;
+    case 58: put(kWaveform, 10); put(kHardwareEnvelope, 0); put(kDutySeqMode, 1); put(kDutySeqRate, 22); put(kReleaseMs, 35); break;
     case 59: put(kWaveform, 1); put(kTranspose, -12); put(kGainDb, -5.0); put(kReleaseMs, 30); break;
     case 60: put(kWaveform, 2); put(kNoiseMode, 0); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 8); put(kGainDb, -4.0); break;
     case 61: put(kWaveform, 4); put(kExpansionShape, 3); put(kGainDb, -5.0); put(kReleaseMs, 45); break;
-    case 62: put(kWaveform, 7); put(kFmIndex, 1.8); put(kGainDb, -6.0); put(kReleaseMs, 180); break;
+    case 62: put(kWaveform, 7); put(kFmIndex, 1.8); put(kGainDb, -6.0); put(kReleaseMs, 270); put(kFmSustainRate, 0); break;
     case 63: put(kWaveform, 14); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 7); put(kGainDb, -4.0); break;
     case 64: put(kWaveform, 15); put(kGainDb, -10.0); put(kReleaseMs, 40); break;
     case 65: put(kWaveform, 16); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 7); put(kGainDb, -4.0); break;
@@ -786,21 +797,58 @@ double voice_cents(const Plugin* p, const Voice& v) {
   return p->params[static_cast<clap_id>(kCentsStep1 + step)].load(std::memory_order_relaxed) / 100.0;
 }
 
+// The SIDs' waveform DAC bias, a custom table and the retro rack's sample-hold all leave a DC
+// offset on the output, so those paths run through a DC blocker.
+bool output_dc_blocker_active(const Plugin* p) {
+  const int waveform = static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
+  return p->params[kCustomWave].load(std::memory_order_relaxed) >= 0.5 || waveform == 58 ||
+         waveform == 38 || waveform == 39 || effective_param<kRetroAmount>(p) > 0.00001;
+}
+
+// Upper bound on the output DC blocker's post-voice fade (8 Hz from a full-scale
+// residual down to the -100 dBFS snap is ~0.23 s), reported as tail so hosts keep
+// calling until it is done.
+constexpr double kDcFadeSeconds = 0.25;
+
+// VRC7 (OPLL) and the SIDs have their own envelope generators, which run past the
+// gate and decay exponentially. The other chips cut the channel at the gate; for
+// them the Release knob is a synth convenience and fades linearly.
+constexpr bool chip_eg_release(int waveform) { return waveform == 7 || waveform == 38 || waveform == 39; }
+constexpr double kReleaseFloor = 0.001;  // -60 dB
+const double kReleaseFloorLog = std::log(kReleaseFloor);
+
 float render_voice(Plugin* p, Voice& v) {
   v.layer_sample = 0.0f;
   const double attack = effective_param<kAttackMs>(p);
   double release = effective_param<kReleaseMs>(p);
-  if(static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed))==7&&v.key<60&&release<1.0)release=58.0;
   if (v.releasing) {
     if (release <= 0.0) {
       stop_hardware(p, v);
       v.active = false;
       return 0.0f;
     }
-    v.env -= 1.0 / (p->sample_rate * std::max(0.001, release * 0.001));
-    if (v.env <= 0.0) { stop_hardware(p, v); v.active = false; return 0.0f; }
+    if (chip_eg_release(static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)))) {
+      // An envelope generator in silicon releases at a constant rate in dB, so
+      // the knob is the time to fall 60 dB and the voice ends there.
+      v.env *= std::exp(kReleaseFloorLog / (p->sample_rate * release * 0.001));
+      if (v.env <= kReleaseFloor) { stop_hardware(p, v); v.active = false; return 0.0f; }
+    } else {
+      v.env -= 1.0 / (p->sample_rate * std::max(0.001, release * 0.001));
+      if (v.env <= 0.0) { stop_hardware(p, v); v.active = false; return 0.0f; }
+    }
   } else {
     v.env = attack <= 0.0 ? 1.0 : std::min(1.0, v.env + 1.0 / (p->sample_rate * attack * 0.001));
+    if (static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 7) {
+      // The OPLL carrier keeps decaying while the key is held, at the FM sustain
+      // rate (OPN D2R). The slope doubles every two rate steps, 0 holds forever,
+      // and the default 5 is the ~4.4 dB/s of the reference OPLL patch. Release
+      // then continues from wherever the held decay has got to.
+      const double rate = effective_param<kFmSustainRate>(p);
+      if (rate > 0.0) {
+        const double db_per_second = 4.4 * std::exp2((rate - 5.0) / 2.0);
+        v.held_decay *= std::exp(-db_per_second * std::log(10.0) / 20.0 / p->sample_rate);
+      }
+    }
   }
 
   const double glide = effective_param<kPortamentoMs>(p);
@@ -1239,7 +1287,7 @@ float render_voice(Plugin* p, Voice& v) {
   v.phase += increment;
   v.phase -= std::floor(v.phase);
   const bool velocity_enabled = p->params[kVelocity].load(std::memory_order_relaxed) >= 0.5;
-  double level = v.env;
+  double level = v.env * v.held_decay;
   if (p->params[kHardwareEnvelope].load(std::memory_order_relaxed) >= 0.5) {
     const double rate = p->params[kEnvelopeRate].load(std::memory_order_relaxed);
     const double ticks = elapsed_samples * 240.0 / p->sample_rate;
@@ -1460,7 +1508,14 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
   uint32_t event_index = 0;
   float block_peak_l=0.0f,block_peak_r=0.0f;bool block_clipped=false;
   const double custom_dc_r = std::exp(-2.0 * 3.14159265358979323846 * 20.0 / p->sample_rate);
+  // The C64 AC-couples its audio output at about 16 Hz (reSID's external filter).
+  // Without it the combined waveforms' DC offset, scaled by the envelope, comes
+  // out as a sub-bass thump on every note.
+  const double sid_dc_r = std::exp(-2.0 * 3.14159265358979323846 * 16.0 / p->sample_rate);
   const double dc_r=std::exp(-2.0*3.14159265358979323846*0.05/p->sample_rate);
+  // ~20 ms time constant: slow enough that the residual leaves as a fade rather
+  // than a step, and done well inside kDcFadeSeconds.
+  const double dc_fade=std::exp(-2.0*3.14159265358979323846*8.0/p->sample_rate);
   auto take_events = [&](uint32_t frame, bool end_of_block) {
     const auto before = event_index;
     while (event_index < event_count) {
@@ -1481,7 +1536,9 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
     const uint32_t solo_mask=static_cast<uint32_t>(p->params[kStackSoloMask].load());
     double dpcm_dac = 0.0;
     float layer_audio = 0.0f;
+    bool sounding = false;  // Any voice live this frame, even one that ends in it.
     for (auto& v : p->voices) if (v.active) {
+      sounding = true;
       const uint32_t channel_bit=1U<<std::clamp<int>(v.channel,0,15);
       const bool muted=(mute_mask&channel_bit)||(solo_mask&&!(solo_mask&channel_bit));
       if (nes_stack && v.channel >= 0 && v.channel <= 3) {
@@ -1526,14 +1583,23 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
     const int output_waveform=static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
     const bool custom_wave = p->params[kCustomWave].load(std::memory_order_relaxed) >= 0.5 ||
       static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 58;
-    const double dc_coefficient = custom_wave ? custom_dc_r : dc_r;
-    const bool dc_enabled=custom_wave ||
-        (!nes_stack && (output_waveform==38||output_waveform==39)) ||
-        effective_param<kRetroAmount>(p)>0.00001;
+    const bool sid_output = output_waveform == 38 || output_waveform == 39;
+    const double dc_coefficient = custom_wave ? custom_dc_r : (sid_output ? sid_dc_r : dc_r);
+    const bool dc_enabled=output_dc_blocker_active(p);
     double dc_l=raw_l,dc_right=raw_r;
     if(dc_enabled){dc_l=raw_l-p->output_dc_x_l+dc_coefficient*p->output_dc_y_l;dc_right=raw_r-p->output_dc_x_r+dc_coefficient*p->output_dc_y_r;}
     else p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;
-    if(raw_l==0.0&&raw_r==0.0){dc_l=dc_right=0.0;p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;}
+    // Once the voices stop (not merely when one sample lands on zero, which any
+    // waveform does), fade whatever offset the blocker still holds instead of
+    // snapping it to zero: the retro rack's 0.05 Hz corner leaves a residual (the
+    // leaky mean of the note) that would otherwise land as a click when the
+    // release ends.
+    if(!sounding&&raw_l==0.0&&raw_r==0.0){
+      const double fade=(custom_wave||sid_output)?dc_coefficient:dc_fade;
+      dc_l=fade*p->output_dc_y_l;dc_right=fade*p->output_dc_y_r;
+      if(std::abs(dc_l)<1.0e-5)dc_l=0.0;  // -100 dBFS: the rest would be a denormal crawl.
+      if(std::abs(dc_right)<1.0e-5)dc_right=0.0;
+    }
     if(std::abs(dc_l)<1.0e-7)dc_l=0.0;
     if(std::abs(dc_right)<1.0e-7)dc_right=0.0;
     p->output_dc_x_l=raw_l;p->output_dc_y_l=dc_l;p->output_dc_x_r=raw_r;p->output_dc_y_r=dc_right;
@@ -1739,6 +1805,8 @@ uint32_t tail_get(const clap_plugin_t* plugin) {
   }
   if (chorus > 1.0e-6)
     seconds += 0.026; // 14 ms base delay plus the maximum 12 ms modulation depth.
+  if (output_dc_blocker_active(p))
+    seconds += kDcFadeSeconds;  // The blocker fades its residual after the voices end.
   return static_cast<uint32_t>(std::min<double>(std::ceil(seconds * p->sample_rate), INT32_MAX - 1.0));
 }
 const clap_plugin_tail_t kTail{tail_get};

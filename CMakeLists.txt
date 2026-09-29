@@ -129,10 +129,38 @@ target_compile_features(yanes-nes-replay PRIVATE cxx_std_20)
 yanes_warnings(yanes-nes-replay)
 install(TARGETS yanes-nes-replay RUNTIME DESTINATION bin)
 
-# The capture sides are intentionally not built here: they link against patched
-# external SameBoy and Nestopia checkouts. tools/build_gb_oracle.sh and
-# tools/build_nes_oracle.sh own those reproducible builds, while these targets
-# keep the independent YANES replays in normal CI.
+add_executable(yanes-gb-envelope-rom tools/yanes_gb_envelope_rom.cpp)
+target_compile_features(yanes-gb-envelope-rom PRIVATE cxx_std_20)
+yanes_warnings(yanes-gb-envelope-rom)
+
+# SameBoy capture side of the Game Boy lanes. Point YANES_SAMEBOY_SRC at a SameBoy
+# checkout with third_party/sameboy-apu-register-log.patch applied (CI clones and
+# patches one); tools/build_gb_oracle.sh does the same build by hand. The Nestopia
+# capture (tools/build_nes_oracle.sh) stays external.
+set(YANES_SAMEBOY_SRC "" CACHE PATH "Patched SameBoy checkout for the Game Boy oracle lanes")
+if(YANES_SAMEBOY_SRC)
+  if(MSVC)
+    message(FATAL_ERROR "The SameBoy core needs GCC or Clang; unset YANES_SAMEBOY_SRC")
+  endif()
+  if(NOT EXISTS "${YANES_SAMEBOY_SRC}/Core/apu.h")
+    message(FATAL_ERROR "YANES_SAMEBOY_SRC='${YANES_SAMEBOY_SRC}' is not a SameBoy checkout")
+  endif()
+  file(STRINGS "${YANES_SAMEBOY_SRC}/Core/apu.h" sameboy_hook REGEX "GB_apu_register_callback")
+  if(NOT sameboy_hook)
+    message(FATAL_ERROR "Apply third_party/sameboy-apu-register-log.patch to ${YANES_SAMEBOY_SRC}")
+  endif()
+  enable_language(C)
+  file(GLOB sameboy_core_sources "${YANES_SAMEBOY_SRC}/Core/*.c")
+  add_library(yanes_sameboy_core STATIC ${sameboy_core_sources})
+  target_include_directories(yanes_sameboy_core PUBLIC "${YANES_SAMEBOY_SRC}")
+  target_compile_definitions(yanes_sameboy_core PUBLIC GB_INTERNAL _GNU_SOURCE
+    GB_VERSION="yanes-oracle" PRIVATE NDEBUG)
+  set_target_properties(yanes_sameboy_core PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+  target_compile_options(yanes_sameboy_core PRIVATE -w)  # Upstream code, upstream warnings.
+  add_executable(yanes-gb-oracle tools/yanes_gb_oracle.c)
+  set_target_properties(yanes-gb-oracle PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+  target_link_libraries(yanes-gb-oracle PRIVATE yanes_sameboy_core m)
+endif()
 
 add_executable(vgm_tests tests/vgm_tests.cpp)
 target_compile_features(vgm_tests PRIVATE cxx_std_20)
@@ -149,11 +177,15 @@ add_test(NAME parity_compare_fairness COMMAND yanes-parity-compare --self-test)
 set(YANES_GB_ROM "" CACHE FILEPATH "Game Boy ROM for the SameBoy parity gate")
 set(YANES_PCE_ROM "" CACHE FILEPATH "PC Engine ROM for the Beetle PCE parity gate")
 set(YANES_NES_ROM "" CACHE FILEPATH "NES ROM for the Nestopia parity gate")
+set(yanes_gb_oracle_env "")
+if(TARGET yanes-gb-oracle)
+  set(yanes_gb_oracle_env "YANES_GB_ORACLE=$<TARGET_FILE:yanes-gb-oracle>;")
+endif()
 if(YANES_GB_ROM)
   add_test(NAME gb_rom_parity COMMAND
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_gb_rom_parity.sh ${YANES_GB_ROM})
   set_tests_properties(gb_rom_parity PROPERTIES TIMEOUT 300 ENVIRONMENT
-    "YANES_GB_REPLAY=$<TARGET_FILE:yanes-gb-replay>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
+    "${yanes_gb_oracle_env}YANES_GB_REPLAY=$<TARGET_FILE:yanes-gb-replay>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
 endif()
 if(YANES_PCE_ROM)
   add_test(NAME pce_rom_parity COMMAND
@@ -252,6 +284,17 @@ yanes_warnings(bdd_e2e_tests)
 yanes_enable_assertions(bdd_e2e_tests)
 add_test(NAME bdd_e2e_tests COMMAND bdd_e2e_tests $<TARGET_FILE:yanes_clap> ${CMAKE_CURRENT_BINARY_DIR}/bdd_coverage.md)
 
+# One proof per parameter and per preset that it does what it advertises, measured
+# from audio in the advertised unit. Fails if any parameter or preset has no proof.
+add_executable(advertised_tests tests/advertised_tests.cpp)
+target_include_directories(advertised_tests PRIVATE "${clap_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+target_compile_features(advertised_tests PRIVATE cxx_std_20)
+target_link_libraries(advertised_tests PRIVATE ${CMAKE_DL_LIBS})
+yanes_warnings(advertised_tests)
+yanes_enable_assertions(advertised_tests)
+add_test(NAME advertised_tests COMMAND advertised_tests $<TARGET_FILE:yanes_clap>)
+set_tests_properties(advertised_tests PROPERTIES TIMEOUT 600)
+
 add_executable(envelope_tests tests/envelope_tests.cpp)
 target_include_directories(envelope_tests PRIVATE "${clap_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 target_compile_features(envelope_tests PRIVATE cxx_std_20)
@@ -283,60 +326,23 @@ target_compile_features(register_render_determinism PRIVATE cxx_std_20)
 yanes_warnings(register_render_determinism)
 yanes_enable_assertions(register_render_determinism)
 add_test(NAME register_render_determinism
-         COMMAND register_render_determinism $<TARGET_FILE:yanes-register-render>)
+         COMMAND register_render_determinism $<TARGET_FILE:yanes-register-render>
+                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/data ${CMAKE_CURRENT_BINARY_DIR})
 set_tests_properties(register_render_determinism PROPERTIES TIMEOUT 60)
 
-# Furnace envelope-shape oracle. Reads a Furnace-rendered WAV and a YANES-rendered WAV,
-# compares the per-block RMS envelopes, and asserts the onset, region count, and release
-# tail line up with Furnace within tolerance. Skips the comparison gracefully when
-# Furnace is unavailable (a fixture file under tests/furnace/ is missing). The tool
-# tests/yanes_render_wav.cpp or tools/yanes_render_audio.cpp is used upstream to write
-# the YANES WAV via the same CLAP host path used by the rest of the suite.
-add_executable(envelope_furnace_oracle tests/envelope_furnace_oracle.cpp)
-target_compile_features(envelope_furnace_oracle PRIVATE cxx_std_20)
-yanes_warnings(envelope_furnace_oracle)
-yanes_enable_assertions(envelope_furnace_oracle)
-# Per-fixture envelope-shape oracle. The first WAV is YANES, the second is the
-# reference engine (Furnace, SameBoy, or any other). Skips the comparison gracefully
-# when the reference WAV is missing, so the test still runs on machines without an
-# oracle reference installed.
-add_test(NAME envelope_furnace_oracle_nes_pulse COMMAND envelope_furnace_oracle
-  ${CMAKE_CURRENT_BINARY_DIR}/nes-pulse/yanes.wav ${CMAKE_CURRENT_BINARY_DIR}/nes-pulse/furnace.wav)
-add_test(NAME envelope_furnace_oracle_gameboy_pulse COMMAND envelope_furnace_oracle
-  ${CMAKE_CURRENT_BINARY_DIR}/gameboy-pulse/yanes.wav ${CMAKE_CURRENT_BINARY_DIR}/gameboy-pulse/furnace.wav)
-add_test(NAME envelope_furnace_oracle_fds COMMAND envelope_furnace_oracle
-  ${CMAKE_CURRENT_BINARY_DIR}/fds/yanes.wav ${CMAKE_CURRENT_BINARY_DIR}/fds/furnace.wav)
-
-# SameBoy oracle: uses the existing gb-gate2 WAV pair as the comparison signal. The
-# YANES-rendered WAV (gb-gate2/t_yanes_ch*.wav) is the system under test; the
-# SameBoy-rendered WAV (gb-gate2/gb_ch*.wav) is the reference. This is the always-on
-# cross-engine envelope oracle.
-add_test(NAME envelope_furnace_oracle_gb_pulse COMMAND envelope_furnace_oracle
-  ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_yanes_ch1_pulse.wav ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_gb_ch1_pulse.wav)
-add_test(NAME envelope_furnace_oracle_gb_wave COMMAND envelope_furnace_oracle
-  ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_yanes_ch3_wave.wav ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_gb_ch3_wave.wav)
-add_test(NAME envelope_furnace_oracle_gb_noise COMMAND envelope_furnace_oracle
-  ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_yanes_ch4_noise.wav ${CMAKE_CURRENT_BINARY_DIR}/gb-gate2/t_gb_ch4_noise.wav)
-set_tests_properties(envelope_furnace_oracle_nes_pulse
-                    envelope_furnace_oracle_gameboy_pulse
-                    envelope_furnace_oracle_fds
-                    envelope_furnace_oracle_gb_pulse
-                    envelope_furnace_oracle_gb_wave
-                    envelope_furnace_oracle_gb_noise PROPERTIES TIMEOUT 30)
-# The oracle returns exit 77 (CTest's default SKIP_RETURN_CODE) when a WAV is
-# missing on disk, which is a defensive backstop for a build dir that has had
-# generated artifacts manually deleted. Under normal operation the FIXTURES_REQUIRED
-# setup above ensures the WAVs exist before the test runs, so 77 should only
-# fire as a diagnostic. This applies to *every* envelope_furnace_oracle_* test
-# (Furnace oracle pairs AND SameBoy gb-gate2 pairs) — the gb-* WAVs are only
-# generated when an external SameBoy oracle run is performed, so those tests
-# also need the skip path on a checkout that hasn't run that step.
-set_tests_properties(envelope_furnace_oracle_nes_pulse
-                    envelope_furnace_oracle_gameboy_pulse
-                    envelope_furnace_oracle_fds
-                    envelope_furnace_oracle_gb_pulse
-                    envelope_furnace_oracle_gb_wave
-                    envelope_furnace_oracle_gb_noise PROPERTIES SKIP_RETURN_CODE 77)
+# Cross-engine envelope-shape oracle. Every furnace_audio_* test (and the SameBoy
+# lane below) runs it on the renders it already produces; --self-test proves it
+# rejects a missing attack, a doubled release and a note that never ends.
+add_executable(envelope_oracle tests/envelope_oracle.cpp)
+target_compile_features(envelope_oracle PRIVATE cxx_std_20)
+yanes_warnings(envelope_oracle)
+yanes_enable_assertions(envelope_oracle)
+add_test(NAME envelope_oracle_self_test COMMAND envelope_oracle --self-test)
+if(TARGET yanes-gb-oracle)
+  add_test(NAME gb_envelope_oracle COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_gb_envelope_oracle.sh)
+  set_tests_properties(gb_envelope_oracle PROPERTIES TIMEOUT 120 ENVIRONMENT
+    "YANES_GB_ENVELOPE_ROM=$<TARGET_FILE:yanes-gb-envelope-rom>;YANES_GB_ORACLE=$<TARGET_FILE:yanes-gb-oracle>;YANES_GB_REPLAY=$<TARGET_FILE:yanes-gb-replay>;YANES_ENVELOPE_ORACLE=$<TARGET_FILE:envelope_oracle>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
+endif()
 
 add_executable(compatibility_tests tests/compatibility_tests.cpp)
 target_compile_features(compatibility_tests PRIVATE cxx_std_20)
@@ -412,29 +418,16 @@ if(YANES_FURNACE_FIXTURE_DIR)
   endforeach()
 endif()
 
-# Full chip-audio oracle suite. Furnace 0.6.8.3 cannot load these INF2 fixtures;
-# use git furnace >= dev250. Pass -DYANES_FURNACE_EXECUTABLE=... or rely on PATH.
-# Default to the bundled Furnace binary (built alongside the test executables) so
-# a clean in-tree build has Furnace available without any extra setup; users
-# with a different Furnace install can override with the cache variable.
-set(YANES_FURNACE_EXECUTABLE "${CMAKE_CURRENT_BINARY_DIR}/furnace"
-    CACHE FILEPATH "Furnace executable for the 21-chip audio parity suite")
-if(NOT YANES_FURNACE_EXECUTABLE)
-  find_program(YANES_FURNACE_EXECUTABLE furnace)
-endif()
-# Validate that the configured Furnace binary actually exists on disk. The cache
-# default above points at "${CMAKE_CURRENT_BINARY_DIR}/furnace" which is not
-# produced by anything in this build (Furnace is built externally; see CI for the
-# official workflow). Without this check, `if(YANES_FURNACE_EXECUTABLE)` is truthy
-# on the default path string even though the file is missing, and the build then
-# fails with `./furnace: No such file or directory` from the envelope oracle custom
-# commands instead of the tests simply being skipped.
+# Full chip-audio oracle suite: timbre/pitch parity plus the envelope oracle for
+# 21 chips and 42 octave holdouts. Packaged Furnace 0.6.8.3 cannot load these INF2
+# fixtures, so there is no PATH lookup: point this at a git Furnace build (CI
+# builds one; see FURNACE_PARITY.md). A path that is set but missing is a
+# configuration error rather than a silently smaller suite.
+set(YANES_FURNACE_EXECUTABLE "" CACHE FILEPATH "Git Furnace build for the chip-audio parity suite")
 if(YANES_FURNACE_EXECUTABLE AND NOT EXISTS "${YANES_FURNACE_EXECUTABLE}")
-  message(STATUS
-    "YANES_FURNACE_EXECUTABLE='${YANES_FURNACE_EXECUTABLE}' not found on disk; "
-    "disabling Furnace oracle tests. Pass -DYANES_FURNACE_EXECUTABLE=/path/to/furnace "
-    "to enable them.")
-  set(YANES_FURNACE_EXECUTABLE "" CACHE FILEPATH "" FORCE)
+  message(FATAL_ERROR "YANES_FURNACE_EXECUTABLE='${YANES_FURNACE_EXECUTABLE}' does not exist")
+elseif(NOT YANES_FURNACE_EXECUTABLE)
+  message(STATUS "Furnace parity suite disabled: pass -DYANES_FURNACE_EXECUTABLE=/path/to/furnace")
 endif()
 if(YANES_FURNACE_EXECUTABLE)
   foreach(fixture ay-tone fds gameboy-noise gameboy-pulse gameboy-wave n163
@@ -444,8 +437,16 @@ if(YANES_FURNACE_EXECUTABLE)
       ${CMAKE_CURRENT_SOURCE_DIR}/tools/compare_furnace_audio.sh ${fixture}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/furnace/${fixture}.fur 0.8)
     set_tests_properties(furnace_audio_${fixture} PROPERTIES ENVIRONMENT
-      "FURNACE=${YANES_FURNACE_EXECUTABLE};YANES_FIXTURE_RENDER=$<TARGET_FILE:yanes-fixture-render>;YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
+      "FURNACE=${YANES_FURNACE_EXECUTABLE};YANES_FIXTURE_RENDER=$<TARGET_FILE:yanes-fixture-render>;YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>;YANES_ENVELOPE_ORACLE=$<TARGET_FILE:envelope_oracle>")
   endforeach()
+  # The same 21 fixtures rendered through a real host: REAPER instantiates the
+  # CLAP, receives the voice as automation and renders MIDI offline.
+  if(REAPER_EXECUTABLE)
+    add_test(NAME reaper_envelope_oracle COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_reaper_envelope_oracle.sh)
+    set_tests_properties(reaper_envelope_oracle PROPERTIES TIMEOUT 900 RUN_SERIAL TRUE
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} ENVIRONMENT
+      "REAPER=${REAPER_EXECUTABLE};FURNACE=${YANES_FURNACE_EXECUTABLE};YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_ENVELOPE_ORACLE=$<TARGET_FILE:envelope_oracle>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
+  endif()
   foreach(fixture ay-tone fds gameboy-noise gameboy-pulse gameboy-wave n163
       nes-noise nes-pulse nes-triangle pce-wave pokey-tone saa1099 scc sid6581
       sid8580 sms-noise sms-tone tia vrc6-pulse vrc6-saw vrc7)
@@ -454,61 +455,10 @@ if(YANES_FURNACE_EXECUTABLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/tools/compare_furnace_audio.sh ${fixture}-${octave}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/furnace_holdout/${fixture}-${octave}.fur 0.8)
       set_tests_properties(furnace_audio_${fixture}_${octave} PROPERTIES ENVIRONMENT
-        "FURNACE=${YANES_FURNACE_EXECUTABLE};YANES_FIXTURE_RENDER=$<TARGET_FILE:yanes-fixture-render>;YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
+        "FURNACE=${YANES_FURNACE_EXECUTABLE};YANES_FIXTURE_RENDER=$<TARGET_FILE:yanes-fixture-render>;YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>;YANES_ENVELOPE_ORACLE=$<TARGET_FILE:envelope_oracle>")
     endforeach()
   endforeach()
 
-  # The three envelope_furnace_oracle_* tests above (nes_pulse, gameboy_pulse, fds)
-  # depend on WAVs that aren't shipped in-tree: they have to be regenerated from
-  # tests/furnace/<chip>.fur (Furnace reference) and the YANES fixture renderer.
-  # Wire the regeneration in via custom commands keyed off the source .fur so
-  # the tests run on a clean build dir without manual setup. Each pair shares
-  # one custom target so a stale Furnace binary or a removed .fur rebuilds both
-  # WAVs at once. CTest's `FIXTURES_REQUIRED` then gates the test on the target
-  # so the WAVs exist before the test runs.
-  #
-  # Note: CTest only schedules this correctly when the user runs `cmake --build .`
-  # (or `make all`) before `ctest`. Running `ctest` alone without building first
-  # will skip these tests because FIXTURES_REQUIRED is checked at schedule time,
-  # not run time. The SKIP_RETURN_CODE backstop in `envelope_furnace_oracle` is
-  # the secondary defense (returns 77 if a WAV is missing anyway).
-  foreach(furnace_oracle_pair nes-pulse gameboy-pulse fds)
-    string(REPLACE "-" "_" oracle_test_name "${furnace_oracle_pair}")
-    add_custom_command(
-      OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/${furnace_oracle_pair}/furnace.wav
-      COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/${furnace_oracle_pair}
-      COMMAND ${YANES_FURNACE_EXECUTABLE} -console -noreport -nostatus -nocontrols
-              -loglevel error -loops 0
-              -output ${CMAKE_CURRENT_BINARY_DIR}/${furnace_oracle_pair}/furnace.wav
-              ${CMAKE_CURRENT_SOURCE_DIR}/tests/furnace/${furnace_oracle_pair}.fur
-      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/furnace/${furnace_oracle_pair}.fur
-      COMMENT "Furnace-rendering ${furnace_oracle_pair} reference WAV"
-      VERBATIM)
-    add_custom_command(
-      OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/${furnace_oracle_pair}/yanes.wav
-      COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/${furnace_oracle_pair}
-      COMMAND yanes-fixture-render $<TARGET_FILE:yanes_clap>
-              ${furnace_oracle_pair}
-              ${CMAKE_CURRENT_BINARY_DIR}/${furnace_oracle_pair}/yanes.wav
-      DEPENDS yanes-fixture-render yanes_clap
-      COMMENT "YANES-rendering ${furnace_oracle_pair} oracle WAV"
-      VERBATIM)
-    add_custom_target(${furnace_oracle_pair}_oracle_pair
-      DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${furnace_oracle_pair}/furnace.wav
-              ${CMAKE_CURRENT_BINARY_DIR}/${furnace_oracle_pair}/yanes.wav)
-    set_tests_properties(envelope_furnace_oracle_${oracle_test_name}
-      PROPERTIES FIXTURES_REQUIRED ${furnace_oracle_pair}_oracle_pair)
-  endforeach()
-  # Wire the per-fixture custom targets as dependencies of the
-  # `envelope_furnace_oracle` test executable so that `cmake --build .`
-  # (without --target) rebuilds the WAVs automatically. Without this, the
-  # targets only get built when explicitly requested by name, which means a
-  # fresh build dir doesn't have the WAVs and the FIXTURES_REQUIRED gate
-  # silently keeps the tests unscheduled. Adding them to a real build target
-  # makes `cmake --build .` produce a fully self-consistent build dir.
-  foreach(furnace_oracle_pair nes-pulse gameboy-pulse fds)
-    add_dependencies(envelope_furnace_oracle ${furnace_oracle_pair}_oracle_pair)
-  endforeach()
 endif()
 # Preset gate selects a score using NES_ROM_DIR (or the script's default ROM directory).
 if(UNIX)

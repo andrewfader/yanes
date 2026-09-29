@@ -1227,6 +1227,11 @@ void test_custom_wave(const Library& library) {
       Runner runner(plugin, kRate, kBlock);
       runner.set(find_param(plugin, "Waveform"), source);
       runner.set(find_param(plugin, "Custom wave"), 1);
+      // The Game Boy voices bring their decaying hardware envelope along and VRC7
+      // its held carrier decay; this test is about the oscillator, so hold the
+      // note at full level.
+      runner.set(find_param(plugin, "Hardware envelope"), 0);
+      runner.set(find_param(plugin, "FM sustain rate"), 0);
       runner.set(find_param(plugin, "Release"), 30);
       const auto first = find_param(plugin, "Wave sample 1");
       for (int i = 0; i < 32; ++i) runner.set(first + i, i < 16 ? 0 : 15);
@@ -1239,6 +1244,7 @@ void test_custom_wave(const Library& library) {
       for (int i = 0; i < 32; ++i) runner.set(first + i, 8);
       runner.settle(160);
       const auto flat = runner.run();
+      if (!(flat.finite && flat.peak < 1.0e-5f)) std::fprintf(stderr, "flat table source %d peak %g\n", source, static_cast<double>(flat.peak));
       assert(flat.finite && flat.peak < 1.0e-5f);
       for (int i = 0; i < 32; ++i) runner.set(first + i, i < 16 ? 15 : 0);
       expect_audible(runner.settle(8), "live custom wave edit");

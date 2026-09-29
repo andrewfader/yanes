@@ -78,8 +78,13 @@ and release all come from the plugin's own per-voice defaults, so a passing row 
 user gets from that voice matches the chip, not that the engine could be talked into it. Each of the
 21 fixtures is also rendered an octave up and down as an untuned holdout; **all 63 cases pass**.
 `yanes-parity-compare --self-test` runs as its own CTest to keep the gate from drifting into
-something a wrong render could satisfy. Packaged Furnace 0.6.8.3 cannot load these INF2 modules;
-configure `-DYANES_FURNACE_EXECUTABLE=` to a git Furnace **dev250+** binary. See `FURNACE_PARITY.md`.
+something a wrong render could satisfy. Every fixture is also scored by `envelope_oracle`, which
+compares the two amplitude envelopes in dB (attack, decay, release and note end); its
+`--self-test` plants a missing attack, a 3x slow attack, a missing decay and a 1.5x release and
+requires each to fail. Packaged Furnace 0.6.8.3 cannot load these INF2 modules; configure
+`-DYANES_FURNACE_EXECUTABLE=` to a git Furnace binary (CI builds the commit pinned in
+`.github/workflows/ci.yml`). With REAPER installed the same 21 fixtures are also rendered through
+REAPER as a real CLAP host (`reaper_envelope_oracle`). See `FURNACE_PARITY.md`.
 
 `tools/compare_furnace.sh CHIP module.fur [minimum-correlation]` performs the complete external-oracle
 workflow: Furnace per-system WAV and VGM export, register extraction, native ymfm replay,
@@ -89,10 +94,14 @@ into YANES. The bundled Furnace `Equinox Intro` demo produced 61,323 YM2612 writ
 correlation of 0.940756 in the development environment; this observation is deliberately not a
 hardcoded universal threshold because Furnace core selection and module features can differ.
 
-The ROM-driven Game Boy gate uses a patched SameBoy checkout to run an actual `.gb`/`.gbc`
-image once and capture both its reference audio and every APU register write. Build the capture
-side with `SAMEBOY_SRC=/path/to/SameBoy tools/build_gb_oracle.sh`, then run
-`tools/test_gb_rom_parity.sh /path/to/game.gb`. `yanes-gb-replay` independently decodes that
+The Game Boy gates use a patched SameBoy checkout to run a `.gb`/`.gbc` image and capture both
+its reference audio and every APU register write. Configure with
+`-DYANES_SAMEBOY_SRC=/path/to/SameBoy` (CI does) and CMake builds `yanes-gb-oracle` and adds
+`gb_envelope_oracle`: a ROM generated in-tree (`yanes-gb-envelope-rom`, booted with a stub, so
+no commercial or Nintendo boot ROM is involved) plays every channel's envelope, length, sweep
+and volume behaviour, and each channel must match SameBoy in envelope shape, level (1.5 dB)
+and timbre. For a real game, run `tools/test_gb_rom_parity.sh /path/to/game.gb` (or build the
+capture side by hand with `SAMEBOY_SRC=/path/to/SameBoy tools/build_gb_oracle.sh`). `yanes-gb-replay` independently decodes that
 register stream through YANES's pulse, wave-RAM, and LFSR primitives and emits a mix plus four
 isolated channels, so the gate identifies the diverging voice rather than hiding it in a mix.
 The required, small SameBoy instrumentation is in

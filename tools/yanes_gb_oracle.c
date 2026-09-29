@@ -70,9 +70,20 @@ static bool auto_start_held(long frame) {
   return false;
 }
 
+// Passing "stub" as the boot ROM boots without Nintendo's: 252 NOPs slide into
+// `ld a,1; ldh ($50),a`, which unmaps the boot ROM with PC landing on $0100. The
+// APU starts powered off, as it does on hardware, so the ROM must enable it; the
+// synthetic envelope ROM (tools/yanes_gb_envelope_rom.cpp) does.
 static const char *g_boot_path;
 static void load_boot(GB_gameboy_t *gb, GB_boot_rom_t type) {
   (void)type;
+  if (strcmp(g_boot_path, "stub") == 0) {
+    unsigned char stub[256] = {0};
+    stub[0xfc] = 0x3e; stub[0xfd] = 0x01;  // ld a,1
+    stub[0xfe] = 0xe0; stub[0xff] = 0x50;  // ldh ($50),a
+    GB_load_boot_rom_from_buffer(gb, stub, sizeof stub);
+    return;
+  }
   if (GB_load_boot_rom(gb, g_boot_path)) {
     fprintf(stderr, "warning: could not load boot ROM %s\n", g_boot_path);
   }
@@ -157,7 +168,7 @@ static void run_pass(const char *rom, GB_model_t model, double seconds,
 int main(int argc, char **argv) {
   if (argc < 3) {
     fprintf(stderr,
-            "usage: yanes-gb-oracle <rom.gb> <out_dir> [seconds] [boot_rom.bin]\n"
+            "usage: yanes-gb-oracle <rom.gb> <out_dir> [seconds] [boot_rom.bin|stub]\n"
             "  Writes <out_dir>/gb_registers.log plus gb_mix.wav and gb_ch1..4.wav\n");
     return 2;
   }

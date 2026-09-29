@@ -603,7 +603,6 @@ inline bool audio_diff_passes(const AudioDiff& d) {
 // buffer and extract the labelled audio property directly:
 //
 //   measure_pitch_hz       — autocorrelation, returns dominant Hz
-//   measure_duty_ratio     — fraction of samples > 0 in the steady-state body
 //   measure_rms_db         — RMS amplitude in dBFS
 //   measure_release_ms     — time for envelope to decay from peak to -40 dB
 //                           after note-off
@@ -741,24 +740,6 @@ inline ParamSpecHint spec_hint_for_id(const char* name) {
   if (std::strcmp(name, "Chorus rate") == 0)       return {"hz"};
   if (std::strcmp(name, "FM LFO rate") == 0)       return {"hz"};
   return {""};  // not a labeled audio unit
-}
-
-// Fraction of samples strictly > 0 in the steady-state body. Returns the
-// duty-cycle equivalent of a 1-bit signal centered on 0. For a true pulse
-// wave this equals the high-time ratio.
-//
-// `limit_samples` caps the search range so callers can avoid the release
-// tail (the last half of render_param's output). Without the cap, a long
-// release tail drags the measured ratio toward zero.
-inline double measure_duty_ratio(const std::vector<float>& v,
-                                size_t limit_samples = 0) {
-  if (v.size() < 2048) return 0;
-  size_t start = 1024;
-  size_t end = std::min(v.size() - 1024, start + 4096);
-  if (limit_samples > 0 && limit_samples < end) end = limit_samples;
-  double high = 0;
-  for (size_t i = start; i < end; ++i) if (v[i] > 0) high += 1.0;
-  return high / static_cast<double>(end - start);
 }
 
 // Render audio at a given parameter state and return the (left, right) buffers
@@ -1186,10 +1167,10 @@ SCENARIO(integration_every_waveform_is_audible) {
 // resulting audio is measured in its labeled unit, and the measurement is
 // compared to the expected delta within tolerance.
 //
-// Tolerances are deliberately generous:
+// Tolerances:
 //   - ±20 cents pitch (covers NES timer quantization, integer rounding)
 //   - ±1.5 dB gain (covers tanh saturation on small signals)
-//   - ±15% duty (covers bleed-through of LPF + NES mixer non-linearity)
+//   - ±2 points duty, every step (adjacent steps are 12.5 points apart)
 //   - ±10% envelope duration (covers per-sample integer ticks)
 //
 // A param that fails here is a *labeled-spec regression*: the knob says
@@ -1295,25 +1276,30 @@ SCENARIO(integration_every_param_meets_its_labeled_spec) {
       // oracle already proves the param has audible effect.
       continue;
     } else if (units == "duty") {
-      // Pulse duty cycle: stepped enum with 4 positions 12.5/25/50/75%.
-      // We round the param value to the nearest index and look up the
-      // expected high-time ratio from kDuties (defined in params.hpp as
-      // {0.125, 0.25, 0.5, 0.75}). Allow ±10% slack to absorb LPF /
-      // non-linear-mixer distortion.
+      // Every step of the stepped duty enum, on a held note. The fraction of
+      // the sustained body above the waveform's midpoint (so a DC offset or a
+      // band-limited edge cannot bias it) must land within 2 points of the
+      // labelled 12.5/25/50/75%: tight enough that adjacent steps cannot pass
+      // for each other.
       constexpr double kDutyTable[] = {0.125, 0.25, 0.5, 0.75};
-      const double idx_a = std::round(s.min);
-      const double idx_b = std::round(test_max);
-      const double expected_a = kDutyTable[std::clamp<int>(static_cast<int>(idx_a), 0, 3)];
-      const double expected_b = kDutyTable[std::clamp<int>(static_cast<int>(idx_b), 0, 3)];
-      const double d_a = measure_duty_ratio(ra.left, /*limit_samples=*/2048);
-      const double d_b = measure_duty_ratio(rb.left, /*limit_samples=*/2048);
-      const bool ok = std::abs(d_a - expected_a) < 0.10 &&
-                      std::abs(d_b - expected_b) < 0.10;
-      CHECK(ok, std::string("'") + s.name +
-                "' duty ratio: min=" + std::to_string(d_a) +
-                " (expected " + std::to_string(expected_a) +
-                "), max=" + std::to_string(d_b) +
-                " (expected " + std::to_string(expected_b) + ")");
+      for (int step = 0; step < 4; ++step) {
+        Library ld(g_clap_path);
+        const clap_plugin_t* pd = ld.create();
+        set_param(pd, find_param(pd, "Waveform"), static_cast<double>(test_waveform));
+        for (const auto& pr : prereqs) set_param(pd, find_param(pd, pr.param_name), pr.value);
+        set_param(pd, static_cast<clap_id>(i), static_cast<double>(step));
+        const std::vector<float> body = render_param(pd, 40, 0).left;
+        pd->destroy(pd);
+        const auto first = body.begin() + 4096;  // past the attack
+        const auto [lo, hi] = std::minmax_element(first, body.end());
+        const double mid = (static_cast<double>(*lo) + static_cast<double>(*hi)) / 2.0;
+        const double high = static_cast<double>(std::count_if(first, body.end(),
+            [mid](float x) { return x > mid; })) / static_cast<double>(body.end() - first);
+        CHECK(std::abs(high - kDutyTable[step]) < 0.02,
+              std::string("'") + s.name + "' step " + std::to_string(step) + " measures " +
+              std::to_string(high * 100.0) + "% high, labelled " +
+              std::to_string(kDutyTable[step] * 100.0) + "%");
+      }
     } else if (units == "gain") {
       // Voice gain / Master: gain steps at the bottom of the range are
       // linear (tanh ≈ identity for small signals), but the top of the

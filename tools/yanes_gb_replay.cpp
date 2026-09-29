@@ -380,8 +380,10 @@ Render render(const std::vector<Write>& writes, uint64_t total) {
   std::array<Decimator, 2> mix_decimate{};
   size_t next = 0;
   double window[4][2];
-  // Four channels at full DAC swing and the loudest master level.
-  constexpr double kScale = 32767.0 / (4.0 * 8.0);
+  // Four channels at full DAC swing and the loudest master level fill half of
+  // full scale, the headroom SameBoy's own mixer leaves. Matching the oracle's
+  // scale makes a level difference between the two a finding, not a convention.
+  constexpr double kScale = 32767.0 / (4.0 * 8.0 * 2.0);
 
   for (uint64_t sample = 0; sample < total; ++sample) {
     double mixed[2][kOversample];

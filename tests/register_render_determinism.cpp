@@ -1,51 +1,34 @@
 // Register-render determinism oracle.
 //
 // yanes-register-render takes a register script (`sample reg value` per line)
-// and writes a WAV. We assert the same script produces bit-identical output
-// across two invocations. This catches:
-//   - non-determinism introduced by uninitialized chip state
-//   - build-time vs. config-time random seeding
-//   - drift in the ymfm-emulated chip when its internal tables move
-//
-// This is a different surface than tests/state_roundtrip_tests.cpp (which
-// covers CLAP-side state) and the Furnace envelope oracle (which covers
-// CLAP-side render). It exercises the low-level chip emulator that the
-// register-render binary uses directly.
+// and writes a WAV. We assert the same script produces audible, bit-identical
+// output across two invocations. This catches non-determinism introduced by
+// uninitialized chip state or run-time random seeding in the low-level chip
+// emulator that the register-render binary uses directly (VGM playback,
+// register scripts), a different surface than tests/state_roundtrip_tests.cpp.
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
-#include <sstream>
+#include <iterator>
 #include <string>
 #include <vector>
-#include <unistd.h>
 
 namespace {
 
-constexpr uint32_t kRate = 48000;
+namespace fs = std::filesystem;
 
-struct Write { uint64_t sample; uint32_t reg; uint8_t value; };
-
-// Build a simple register script. We can't know a priori the chip that the
-// caller is exercising, so the script just exercises the four registers a
-// generic FM chip (or YM2612 in our out-of-the-box setup) responds to. The
-// key invariant is *determinism* — the script must produce the same WAV each
-// time it is fed to yanes-register-render.
-std::string write_script(const std::string& path) {
-  std::ofstream f(path);
-  // Every chip: key-on (0x28), channel/freq-MSB (0xa4), freq-LSB (0xa0).
-  // Note: register addresses and meanings are chip-specific; this is a
-  // smoke-level stimulus that produces some audio. The test only checks
-  // that two renders of the same script agree.
-  f << "0 0x28 0x00  # key off\n"
-       "0 0xa4 0x4a  # freq MSB/LSB upper bits\n"
-       "0 0xa0 0x69  # freq LSB lower bits\n"
-       "1000 0x28 0xf0  # key on (channel bits 0xf0)\n"
-       "10000 0x28 0x00  # key off\n";
-  return path;
+// Each chip is driven by the same tone script its *_register_render CTest uses,
+// so the stimulus actually keys a voice on that chip. A script the chip ignores
+// renders silence twice, and two silences are trivially bit-identical.
+std::string fixture_for(const std::string& chip) {
+  if (chip == "ym2151" || chip == "ym3812" || chip == "ymf262") return chip + "_tone.reg";
+  return "ym2612_tone.reg";  // OPN family: YM2612, YM2203 and YM2608 share the OPN map.
 }
 
 // Read a single 16-bit signed PCM WAV into a mono float vector, summing channels
@@ -104,76 +87,57 @@ double max_abs_diff(const std::vector<float>& a, const std::vector<float>& b) {
   return m;
 }
 
-void run_case(const char* chip, const char* yanes_register_render) {
-  char script_template[] = "/tmp/yrr-script-XXXXXX.reg";
-  char wav1[]            = "/tmp/yrr-out1-XXXXXX.wav";
-  char wav2[]            = "/tmp/yrr-out2-XXXXXX.wav";
-  int fd = mkstemps(script_template, 4);
-  if (fd < 0) {
-    std::fprintf(stderr, "FAIL: mkstemps(script) failed\n");
-    std::abort();
-  }
-  close(fd);
-  fd = mkstemps(wav1, 4);
-  if (fd < 0) { std::fprintf(stderr, "FAIL: mkstemps(wav1) failed\n"); std::abort(); }
-  close(fd);
-  fd = mkstemps(wav2, 4);
-  if (fd < 0) { std::fprintf(stderr, "FAIL: mkstemps(wav2) failed\n"); std::abort(); }
-  close(fd);
+double peak(const std::vector<float>& a) {
+  double m = 0.0;
+  for (float v : a) m = std::max(m, static_cast<double>(std::abs(v)));
+  return m;
+}
 
-  write_script(script_template);
+[[noreturn]] void fail(const std::string& message) {
+  std::fprintf(stderr, "FAIL: %s\n", message.c_str());
+  std::exit(1);
+}
 
-  const std::string cmd1 = std::string(yanes_register_render) + " " + chip + " " +
-                            script_template + " " + wav1 + " >/dev/null 2>&1";
-  const std::string cmd2 = std::string(yanes_register_render) + " " + chip + " " +
-                            script_template + " " + wav2 + " >/dev/null 2>&1";
-  if (std::system(cmd1.c_str()) != 0) {
-    std::fprintf(stderr, "FAIL: yanes-register-render returned non-zero on first render of %s\n", chip);
-    std::abort();
+void run_case(const std::string& chip, const std::string& renderer, const fs::path& data_dir,
+              const fs::path& work_dir) {
+  const fs::path script = data_dir / fixture_for(chip);
+  const fs::path wav1 = work_dir / (chip + "_determinism_1.wav");
+  const fs::path wav2 = work_dir / (chip + "_determinism_2.wav");
+  for (const fs::path& wav : {wav1, wav2}) {
+    std::string cmd = "\"" + renderer + "\" " + chip + " \"" + script.string() + "\" \"" +
+                      wav.string() + "\"";
+#ifdef _WIN32
+    cmd = "\"" + cmd + "\"";  // cmd /c strips the outermost pair of quotes.
+#endif
+    if (std::system(cmd.c_str()) != 0) fail("yanes-register-render failed for " + chip);
   }
-  if (std::system(cmd2.c_str()) != 0) {
-    std::fprintf(stderr, "FAIL: yanes-register-render returned non-zero on second render of %s\n", chip);
-    std::abort();
-  }
-
-  const std::vector<float> a = load_wav_mono(wav1);
-  const std::vector<float> b = load_wav_mono(wav2);
-  if (a.size() != b.size()) {
-    std::fprintf(stderr, "FAIL: %s render length differs (%zu vs %zu) across two runs\n",
-                 chip, a.size(), b.size());
-    std::abort();
-  }
+  const std::vector<float> a = load_wav_mono(wav1.string());
+  const std::vector<float> b = load_wav_mono(wav2.string());
+  if (a.empty()) fail(chip + " render is not a readable 16-bit WAV");
+  if (peak(a) < 1e-3) fail(chip + " render is silent; determinism of silence proves nothing");
+  if (a.size() != b.size())
+    fail(chip + " render length differs across two runs (" + std::to_string(a.size()) + " vs " +
+         std::to_string(b.size()) + ")");
   const double mad = max_abs_diff(a, b);
-  if (mad != 0.0) {
-    std::fprintf(stderr, "FAIL: %s render is not bit-identical between two runs (max abs diff %g)\n",
-                 chip, mad);
-    std::abort();
-  }
-  std::printf("  %-8s render is bit-identical across two runs\n", chip);
-
-  std::remove(script_template);
-  std::remove(wav1);
-  std::remove(wav2);
+  if (mad != 0.0) fail(chip + " render is not bit-identical between two runs (max abs diff " +
+                       std::to_string(mad) + ")");
+  std::printf("  %-8s render is audible (peak %.3f) and bit-identical across two runs\n",
+              chip.c_str(), peak(a));
+  fs::remove(wav1);
+  fs::remove(wav2);
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 2) {
-    std::fprintf(stderr, "Usage: %s <path_to_yanes-register-render>\n", argv[0]);
-    return 1;
+  if (argc != 4) {
+    std::fprintf(stderr, "Usage: %s <yanes-register-render> <tests/data dir> <work dir>\n", argv[0]);
+    return 2;
   }
-  std::printf("================================================================\n");
   std::printf("yanes-register-render determinism oracle\n");
-  std::printf("================================================================\n");
-  // Iterate over the chips yanes-register-render supports. Each is an independent
-  // code path inside the emulator; a drift in any one fails this suite.
-  const char* chips[] = {"ym2612", "ym2203", "ym2608", "ym2151", "ym3812", "ymf262"};
-  for (const char* chip : chips) {
-    run_case(chip, argv[1]);
-  }
-  std::printf("================================================================\n");
+  // Each chip is an independent code path inside the emulator; drift in any one fails.
+  for (const char* chip : {"ym2612", "ym2203", "ym2608", "ym2151", "ym3812", "ymf262"})
+    run_case(chip, argv[1], argv[2], argv[3]);
   std::printf("Register-render determinism: PASS\n");
-  std::printf("================================================================\n");
   return 0;
 }

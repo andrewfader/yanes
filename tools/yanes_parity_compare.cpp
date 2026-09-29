@@ -8,6 +8,7 @@
 #include <iostream>
 #include <numeric>
 #include <numbers>
+#include <utility>
 #include <vector>
 
 static uint16_t u16(const std::vector<uint8_t> &b, size_t p) {
@@ -22,6 +23,8 @@ struct Wav {
   std::vector<double> mono;
 };
 
+// Integer PCM at 16, 24 or 32 bits and 32-bit float, plain or WAVE_FORMAT_EXTENSIBLE:
+// DAW renders (REAPER defaults to 24-bit) are as much a reference as emulator dumps.
 static Wav load(const char *path) {
   std::ifstream in(path, std::ios::binary);
   std::vector<uint8_t> b((std::istreambuf_iterator<char>(in)), {});
@@ -40,6 +43,8 @@ static Wav load(const char *path) {
       chans = u16(b, p + 10);
       w.rate = u32(b, p + 12);
       bits = u16(b, p + 22);
+      if (format == 0xfffe && z >= 26)
+        format = u16(b, p + 32);  // The sub-format GUID starts with the real tag.
     }
     if (!std::memcmp(b.data() + p, "data", 4)) {
       at = p + 8;
@@ -47,14 +52,31 @@ static Wav load(const char *path) {
     }
     p += 8U + z + (z & 1U);
   }
-  if (format != 1 || bits != 16 || !chans || !w.rate || !at)
+  const bool pcm = format == 1 && (bits == 16 || bits == 24 || bits == 32);
+  const bool floating = format == 3 && bits == 32;
+  if ((!pcm && !floating) || !chans || !w.rate || !at)
     return {};
-  const size_t frames = n / (2U * chans);
+  const size_t bytes = bits / 8U;
+  const size_t frames = n / (bytes * chans);
   w.mono.reserve(frames);
   for (size_t f = 0; f < frames; ++f) {
     double x = 0;
-    for (uint16_t c = 0; c < chans; ++c)
-      x += static_cast<int16_t>(u16(b, at + (f * chans + c) * 2U)) / 32768.0;
+    for (uint16_t c = 0; c < chans; ++c) {
+      const size_t q = at + (f * chans + c) * bytes;
+      if (floating) {
+        float v;
+        std::memcpy(&v, b.data() + q, 4);
+        x += v;
+      } else if (bits == 16) {
+        x += static_cast<int16_t>(u16(b, q)) / 32768.0;
+      } else if (bits == 24) {
+        int32_t v = static_cast<int32_t>(b[q] | (b[q + 1] << 8U) | (b[q + 2] << 16U));
+        if (v & 0x800000) v -= 0x1000000;
+        x += v / 8388608.0;
+      } else {
+        x += static_cast<int32_t>(u32(b, q)) / 2147483648.0;
+      }
+    }
     w.mono.push_back(x / chans);
   }
   return w;
@@ -594,11 +616,17 @@ int main(int argc, char **argv) {
     return 2;
   char *threshold_end = nullptr;
   const double minimum = std::strtod(argv[4], &threshold_end);
-  if (threshold_end == argv[4] || *threshold_end || !std::isfinite(minimum) || minimum < 0 || minimum > 1)
+  if (threshold_end == argv[4] || *threshold_end || !std::isfinite(minimum) || minimum < 0 || minimum > 1) {
+    std::cerr << "minimum correlation must be a number in [0, 1]: " << argv[4] << "\n";
     return 2;
+  }
   Wav a = load(argv[1]), raw = load(argv[2]);
-  if (!a.rate || !raw.rate || a.mono.empty() || raw.mono.empty())
-    return 1;
+  for (const auto &[wav, path] : {std::pair{&a, argv[1]}, std::pair{&raw, argv[2]}})
+    if (!wav->rate || wav->mono.empty()) {
+      std::cerr << "cannot read " << path
+                << " (need 16/24/32-bit PCM or 32-bit float WAV)\n";
+      return 1;
+    }
   const size_t frames = std::min(
       a.mono.size(), static_cast<size_t>(raw.mono.size() *
                                          static_cast<double>(a.rate) / raw.rate));

@@ -19,15 +19,19 @@ int main(int argc,char**argv){
   // other fields are how the reference module articulates the note — which key,
   // how long it is held, and the release the chip's own envelope leaves behind.
   struct Fixture{const char* name;double waveform;int channel,note_blocks,key;};
+  // Every reference module lifts the key at row 16: 96 ticks at Furnace's default
+  // speed 6 and 60 Hz is 1.600 s, exactly 150 blocks. The SIDs gate for a single
+  // block because their default D=8/S=0 envelope has decayed to nothing long
+  // before row 16; the reference hears that decay, not the gate.
   constexpr Fixture fixtures[]={
-    {"nes-pulse",0,0,153,72},{"nes-triangle",1,0,153,60},{"nes-noise",2,0,153,60},
-    {"gameboy-pulse",10,0,44,60},{"gameboy-wave",11,0,153,48},{"gameboy-noise",12,0,41,60},
-    {"sms-tone",13,0,153,84},{"sms-noise",14,0,153,84},{"pce-wave",26,0,153,72},
-    {"ay-tone",22,0,153,60},{"pokey-tone",24,0,148,60},
-    {"sid6581",38,0,1,60},{"sid8580",39,0,1,60},{"scc",40,0,147,72},
-    {"saa1099",42,0,153,60},{"tia",44,0,153,60},{"vrc6-pulse",3,0,153,72},
-    {"vrc6-saw",4,0,153,72},{"fds",5,0,153,72},{"n163",6,0,153,60},
-    {"vrc7",7,0,165,60}};
+    {"nes-pulse",0,0,150,72},{"nes-triangle",1,0,150,60},{"nes-noise",2,0,150,60},
+    {"gameboy-pulse",10,0,150,60},{"gameboy-wave",11,0,150,48},{"gameboy-noise",12,0,150,60},
+    {"sms-tone",13,0,150,84},{"sms-noise",14,0,150,84},{"pce-wave",26,0,150,72},
+    {"ay-tone",22,0,150,60},{"pokey-tone",24,0,150,60},
+    {"sid6581",38,0,1,60},{"sid8580",39,0,1,60},{"scc",40,0,150,72},
+    {"saa1099",42,0,150,60},{"tia",44,0,150,60},{"vrc6-pulse",3,0,150,72},
+    {"vrc6-saw",4,0,150,72},{"fds",5,0,150,72},{"n163",6,0,150,60},
+    {"vrc7",7,0,150,60}};
   std::string requested=argv[2];int key_offset=0;
   if(requested.ends_with("-low")){requested.resize(requested.size()-4);key_offset=-12;}
   else if(requested.ends_with("-high")){requested.resize(requested.size()-5);key_offset=12;}

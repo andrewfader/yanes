@@ -10,6 +10,13 @@ on:
 permissions:
   contents: read
 
+# The reference engines the Linux job scores YANES against. Pinned so a red run
+# always means a YANES change, not an upstream one; bump a SHA (and rerun the
+# suite locally, see FURNACE_PARITY.md) to move to a newer upstream.
+env:
+  FURNACE_REF: fa9541db8004fcdab92808ef57779cd0249e451f
+  SAMEBOY_REF: 213a12ce93d66b105a113debd9396306066a7cfc
+
 jobs:
   build-and-test:
     name: ${{ matrix.name }}
@@ -21,19 +28,15 @@ jobs:
           - name: Linux x64
             os: ubuntu-24.04
             artifact: linux-x64
-            build_furnace: true
           - name: Windows x64
             os: windows-2022
             artifact: windows-x64
-            build_furnace: false
           - name: macOS Apple Silicon
             os: macos-15
             artifact: macos-arm64
-            build_furnace: false
           - name: macOS Intel
             os: macos-15-intel
             artifact: macos-x64
-            build_furnace: false
 
     steps:
       - name: Checkout repository
@@ -43,66 +46,65 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
+          # The last four are Furnace's system libraries (headless build below).
           sudo apt-get install -y build-essential cmake pkg-config libx11-dev libxft-dev \
             libsndfile1-dev libfftw3-dev libfmt-dev zlib1g-dev
-          # libsdl2-dev is intentionally not installed: the Furnace build below
-          # uses -DBUILD_GUI=OFF -DUSE_SDL2=OFF, so SDL2 is not linked.
 
-      - name: Build Furnace (Linux only)
-        # Furnace is built from source on Linux so the envelope oracle and the
-        # 21-chip audio parity suite can run against the upstream reference
-        # engine. The build is headless (-DBUILD_GUI=OFF) and uses system audio
-        # backends, so the CI image's default libs are enough — no
-        # SDL2/PortAudio/JACK needed at runtime. Other platforms are skipped:
-        # their toolchains need different setup (MSVC vcpkg on Windows,
-        # Homebrew on macOS) and the oracle tests are already covered on
-        # Linux where the regression signal matters.
-        #
-        # Uses the latest upstream master; the .fur fixtures under
-        # tests/furnace/ must be regenerated against the same commit whenever
-        # the chip models change (run tools/regen_furnace_fixtures.sh with
-        # FURNACE_SRC pointing at a matching checkout).
-        if: matrix.build_furnace
+      # Furnace is the reference for the 63-fixture chip-audio suite (timbre,
+      # pitch and envelope). Built headless once per pinned commit and cached.
+      - name: Restore Furnace
+        id: furnace-cache
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/furnace-bin
+          key: furnace-${{ runner.os }}-${{ env.FURNACE_REF }}-v1
+
+      - name: Build Furnace
+        if: runner.os == 'Linux' && steps.furnace-cache.outputs.cache-hit != 'true'
         run: |
           set -e
-          FURNACE_SHA=$(git ls-remote https://github.com/tildearrow/furnace.git HEAD | awk '{print $1}')
-          echo "Furnace HEAD = $FURNACE_SHA"
-          rm -rf "$RUNNER_TEMP/furnace-bin"
-          git clone --no-single-branch --recurse-submodules \
-            https://github.com/tildearrow/furnace.git "$RUNNER_TEMP/furnace"
-          cd "$RUNNER_TEMP/furnace"
-          git checkout "$FURNACE_SHA"
-          cmake -S . -B build \
-            -DBUILD_GUI=OFF \
-            -DUSE_SDL2=OFF \
-            -DWITH_RENDER_OPENGL=OFF \
-            -DWITH_RENDER_OPENGL1=OFF \
-            -DWITH_RENDER_METAL=OFF \
-            -DWITH_RENDER_DX11=OFF \
-            -DWITH_RENDER_DX9=OFF \
-            -DWITH_RENDER_SDL=OFF \
-            -DUSE_FREETYPE=OFF \
-            -DWITH_JACK=OFF \
-            -DWITH_PORTAUDIO=OFF \
-            -DUSE_RTMIDI=OFF \
-            -DSYSTEM_LIBSNDFILE=ON \
-            -DSYSTEM_FFTW=ON \
-            -DSYSTEM_FMT=ON \
-            -DSYSTEM_ZLIB=ON \
-            -DWITH_OGG=OFF \
-            -DWITH_MPEG=OFF \
-            -DWITH_LOCALE=OFF \
-            -DUSE_MOMO=OFF \
-            -DWITH_DEMOS=OFF \
-            -DWITH_INSTRUMENTS=OFF \
-            -DWITH_WAVETABLES=OFF \
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --target furnace --parallel $(nproc)
-          mkdir -p "$GITHUB_WORKSPACE/build-ci"
-          cp build/furnace "$GITHUB_WORKSPACE/build-ci/furnace"
+          src="$RUNNER_TEMP/furnace-src"
+          git init -q "$src"
+          git -C "$src" fetch -q --depth 1 https://github.com/tildearrow/furnace.git "$FURNACE_REF"
+          git -C "$src" checkout -q FETCH_HEAD
+          git -C "$src" submodule update -q --init --depth 1 --recursive
+          # Upstream sources lean on transitive <climits>/<cstring> includes that
+          # current libstdc++ no longer provides.
+          cmake -S "$src" -B "$src/build" -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_GUI=OFF -DUSE_SDL2=OFF -DUSE_FREETYPE=OFF -DUSE_RTMIDI=OFF -DUSE_MOMO=OFF \
+            -DWITH_RENDER_OPENGL=OFF -DWITH_RENDER_OPENGL1=OFF -DWITH_RENDER_METAL=OFF \
+            -DWITH_RENDER_DX11=OFF -DWITH_RENDER_DX9=OFF -DWITH_RENDER_SDL=OFF \
+            -DWITH_JACK=OFF -DWITH_PORTAUDIO=OFF -DWITH_OGG=OFF -DWITH_MPEG=OFF -DWITH_LOCALE=OFF \
+            -DWITH_DEMOS=OFF -DWITH_INSTRUMENTS=OFF -DWITH_WAVETABLES=OFF \
+            -DSYSTEM_LIBSNDFILE=ON -DSYSTEM_FFTW=ON -DSYSTEM_FMT=ON -DSYSTEM_ZLIB=ON \
+            "-DCMAKE_CXX_FLAGS=-include climits -include cstring"
+          cmake --build "$src/build" --target furnace --parallel "$(nproc)"
+          mkdir -p "$RUNNER_TEMP/furnace-bin"
+          cp "$src/build/furnace" "$RUNNER_TEMP/furnace-bin/furnace"
+
+      # SameBoy is the reference for the Game Boy envelope lane. CMake compiles
+      # its core from this checkout, so only the source is needed.
+      - name: Fetch SameBoy
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          src="$RUNNER_TEMP/sameboy"
+          git init -q "$src"
+          git -C "$src" fetch -q --depth 1 https://github.com/LIJI32/SameBoy.git "$SAMEBOY_REF"
+          git -C "$src" checkout -q FETCH_HEAD
+          git -C "$src" apply "$GITHUB_WORKSPACE/third_party/sameboy-apu-register-log.patch"
 
       - name: Configure CMake
-        run: cmake -S . -B build-ci -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/stage" -DYANES_FURNACE_EXECUTABLE="${{ github.workspace }}/build-ci/furnace"
+        shell: bash
+        run: |
+          oracles=()
+          if [ "$RUNNER_OS" = Linux ]; then
+            oracles=(-DYANES_FURNACE_EXECUTABLE="$RUNNER_TEMP/furnace-bin/furnace"
+                     -DYANES_SAMEBOY_SRC="$RUNNER_TEMP/sameboy")
+          fi
+          cmake -S . -B build-ci -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/stage" "${oracles[@]}"
 
       - name: Build
         run: cmake --build build-ci --config Release --parallel 2
