@@ -44,6 +44,22 @@ constexpr double kRate = 48000.0;
 constexpr uint32_t kBlock = 256;
 const char* g_clap_path = nullptr;
 
+// libc++ (macOS) does not ship the C++17 <cmath> special functions, so provide
+// the Bessel function of the first kind by its power series. The arguments here
+// are small (index <= 2), where the series converges in a handful of terms:
+//   J_n(x) = sum_{m>=0} (-1)^m / (m! (m+n)!) (x/2)^(2m+n)
+double bessel_j(int n, double x) {
+  double term = 1.0;
+  for (int k = 1; k <= n; ++k) term *= (x / 2.0) / k;  // (x/2)^n / n!
+  double sum = term;
+  for (int m = 1; m < 40; ++m) {
+    term *= -(x * x / 4.0) / (m * (m + n));
+    sum += term;
+    if (std::abs(term) < 1e-18) break;
+  }
+  return sum;
+}
+
 // ----- rendering --------------------------------------------------------------
 
 struct Setting { uint32_t id; double value; };
@@ -898,7 +914,7 @@ void register_oscillators() {
     for (double index : {0.0, 0.5, 1.0, 2.0}) {
       const auto h = measure::harmonics(Span(note(with(kQuiet, {{P::kWaveform, 7}, {P::kFmRatio, 4}, {P::kFmIndex, index}, {P::kFmSustainRate, 0}}), 0.6, 0.6).mono(),
                                               static_cast<size_t>(0.2 * kRate), static_cast<size_t>(0.35 * kRate)), kRate, midi_hz(60), 5);
-      const double j0 = std::cyl_bessel_j(0.0, index), j1 = std::cyl_bessel_j(1.0, index);
+      const double j0 = bessel_j(0, index), j1 = bessel_j(1, index);
       if (index == 0.0) expect(h[4] < 0.001 * h[0], "index 0 is a pure sine");
       else expect_near(measure::db(h[4] / h[0]), measure::db(std::abs(j1 / j0)), 0.5, "dB", fmt("index %.1f: J1/J0", index));
     }

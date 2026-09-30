@@ -39,7 +39,10 @@ constexpr double kChipFullScale[] = {5881.0, 11000.0, 5530.0, 2670.0, 5320.0, 10
 // 14 steps (10.5 dB) more modulation at 1, 26 steps less at 0. It used to set the
 // carriers' level instead, which only made the voice quieter or louder.
 constexpr int modulator_offset(double brightness) {
-  return static_cast<int>(std::lround((0.65 - std::clamp(brightness, 0.0, 1.0)) * 40.0));
+  // std::lround is not constexpr (MSVC rejects it in a constant expression), so
+  // round half away from zero by hand.
+  const double steps = (0.65 - std::clamp(brightness, 0.0, 1.0)) * 40.0;
+  return static_cast<int>(steps < 0.0 ? steps - 0.5 : steps + 0.5);
 }
 constexpr uint8_t opl_operator_flags(const FmControls& c, int op) {
   return static_cast<uint8_t>((c.am_depth ? 0x80 : 0) | (c.pm_depth ? 0x40 : 0) | 0x20 |
