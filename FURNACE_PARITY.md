@@ -203,8 +203,12 @@ of a semitone sharp; YANES picks the nearest period. Snare, cymbal and hi-hat ar
 - **ymfm's OPL/OPLL hi-hat and cymbal phase.** Fed identical registers, ymfm's top cymbal
   differed from Nuked-OPLL (the die-derived core Furnace uses). ymfm built the phase select as
   `(hh2 ^ hh7) | hh3 | (tc3 ^ tc5)`; Nuked-OPLL and Nuked-OPL3 use `(hh2 ^ hh7) | (hh3 ^ tc5) |
-  (tc3 ^ tc5)`. `third_party/ymfm-rhythm-phase-select.patch` makes that one-term change, applied
-  when CMake fetches ymfm.
+  (tc3 ^ tc5)`. CMakeLists.txt makes that one-term change in ymfm_fm.ipp right after
+  FetchContent_MakeAvailable(ymfm) (a `file(READ)` + `string(REPLACE)` + `file(WRITE)`).
+  Doing it directly in CMake instead of through FetchContent's PATCH_COMMAND was necessary
+  because the Windows CI runner's git autocrlf rewrites the cloned `.ipp` to CRLF on
+  checkout, which made `git apply` reject the patch with "patch does not apply" even though
+  the affected line is byte-identical apart from the CR.
 - **YM2413 F-numbers.** The cymbal and hi-hat partials are XORs of phase bits, so one F-number
   step changes them completely: C-4 as block 3 / 345 and as block 4 / 172 sound unrelated. MSX
   drivers and Furnace keep a one-octave table from about 172 to 343 per block; YANES now does too

@@ -34,15 +34,23 @@ endif()
 
 # One fix to ymfm's OPL/OPLL rhythm: the hi-hat/top-cymbal phase select's middle term is
 # (op13 bit 3 XOR op17 bit 5), as in the die-derived Nuked-OPLL and Nuked-OPL3, where ymfm used
-# op13 bit 3 alone. The YM2413 top cymbal then matches Furnace's Nuked-OPLL reference. Applied
-# idempotently so a re-configure does not fail on an already-patched checkout.
+# op13 bit 3 alone. The YM2413 top cymbal then matches Furnace's Nuked-OPLL reference. We apply
+# the fix directly to ymfm_fm.ipp via CMake (string replace) rather than through FetchContent's
+# PATCH_COMMAND because the Windows CI runner's git autocrlf rewrites the cloned source to CRLF
+# on checkout, which makes `git apply` reject the patch with "patch does not apply" even though
+# the line content is byte-identical modulo CRs. The CMake-level edit is also idempotent: if the
+# fix is already applied, the find-string is not present and the edit is a no-op.
 FetchContent_Declare(ymfm
   GIT_REPOSITORY https://github.com/aaronsgiles/ymfm.git
   GIT_TAG 81aec25ccbb98f4873a255f7551ac4dadac59b4a
-  GIT_SHALLOW TRUE
-  PATCH_COMMAND git apply --reverse --check ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ymfm-rhythm-phase-select.patch
-    || git apply ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ymfm-rhythm-phase-select.patch)
+  GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(ymfm)
+file(READ "${ymfm_SOURCE_DIR}/src/ymfm_fm.ipp" _ymfm_fm_ipp)
+string(REPLACE
+  "uint32_t phase_select = (bitfield(op13phase, 2) ^ bitfield(op13phase, 7)) | bitfield(op13phase, 3) | (bitfield(op17phase, 5) ^ bitfield(op17phase, 3));"
+  "uint32_t phase_select = (bitfield(op13phase, 2) ^ bitfield(op13phase, 7)) | (bitfield(op13phase, 3) ^ bitfield(op17phase, 5)) | (bitfield(op17phase, 5) ^ bitfield(op17phase, 3));"
+  _ymfm_fm_ipp "${_ymfm_fm_ipp}")
+file(WRITE "${ymfm_SOURCE_DIR}/src/ymfm_fm.ipp" "${_ymfm_fm_ipp}")
 add_library(yanes_ymfm STATIC
   ${ymfm_SOURCE_DIR}/src/ymfm_adpcm.cpp
   ${ymfm_SOURCE_DIR}/src/ymfm_opl.cpp
