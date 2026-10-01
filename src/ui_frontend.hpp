@@ -10,6 +10,10 @@
 #include "ui_pages.hpp"
 
 bool dpcm_waveform(int waveform) { return waveform==9||waveform==18||waveform==32||waveform==33; }
+// The sample players that read the bank (the SNES sampler, Paula, GBA, OKI).
+bool bank_waveform(int waveform) { return waveform==63||waveform==64||waveform==69||waveform==73; }
+// The YM2413 voices: ROM instruments, with the FM controls only shaping instrument 0.
+bool opll_waveform(int waveform) { return waveform==70||waveform==71; }
 bool duty_waveform(int waveform) {
   return waveform==0||waveform==10||waveform==18||waveform==19||waveform==38||waveform==39;
 }
@@ -32,16 +36,21 @@ bool gui_param_relevant(const Plugin* p, clap_id id) {
   if (id >= kDutyStep1 && id <= kDutyStep8) return duty_waveform(waveform) && value(kDutySeqMode) >= 0.5;
   if (id >= kCentsStep1 && id <= kCentsStep8) return value(kCentsSeqMode) >= 0.5;
   if (id == kFmSustainRate && fm_held_decay_waveform(waveform)) return true;
-  // A pure hardware FM source releases through its operators (FM release), not the voice envelope.
-  if (id == kReleaseMs && (waveform == 17 || (waveform >= 27 && waveform <= 30) || waveform == 36)) return false;
+  // A pure hardware FM source releases through its operators (FM release), not the voice envelope;
+  // the OKI chip plays every sound to its end.
+  if (id == kReleaseMs && (waveform == 17 || (waveform >= 27 && waveform <= 30) || waveform == 36 ||
+                           waveform == 70 || waveform == 69)) return false;
+  const bool opll_rom = opll_waveform(waveform) && value(kGenesisAlgorithm) >= 0.5;
+  if (opll_rom && (id == kGenesisFeedback || id == kFmBrightness)) return false;
   if (id >= kFmAttack && id <= kFmPmDepth) {
+    if (opll_waveform(waveform) && (opll_rom || id == kFmDetune || id == kFmSustainRate || id == kFmLfoRate)) return false;
     const bool opl = waveform == 27 || waveform == 28 || waveform == 36;
     if (opl && (id == kFmDetune || id == kFmSustainRate || id == kFmLfoRate)) return false;
     if (waveform == 31 && (id == kFmLfoRate || id == kFmAmDepth || id == kFmPmDepth)) return false;
     return hardware_fm_waveform(waveform);
   }
   if (id == kDpcmInitialLevel) return dpcm_waveform(waveform);  // DPCM DAC start only
-  if (id >= kDpcmBaseKey && id <= kDpcmTrimEnd) return dpcm_waveform(waveform) || waveform == 63;
+  if (id >= kDpcmBaseKey && id <= kDpcmTrimEnd) return dpcm_waveform(waveform) || bank_waveform(waveform);
   switch(id){
     case kDuty:case kDutySeqMode:return duty_waveform(waveform);
     case kDutySeqLength:case kDutySeqRate:return duty_waveform(waveform) && value(kDutySeqMode) >= 0.5;
@@ -55,25 +64,38 @@ bool gui_param_relevant(const Plugin* p, clap_id id) {
     case kLayerMix:return static_cast<int>(value(kLayerMode)) != 0;
     case kNoisePeriod:return waveform==2||waveform==18;
     case kNoiseMode:return waveform==2||waveform==12||waveform==14||waveform==16||waveform==18||waveform==19||
-                           waveform==20||waveform==21||waveform==24||waveform==25||waveform==34||waveform==42||waveform==43;
+                           waveform==20||waveform==21||waveform==24||waveform==25||waveform==34||waveform==42||waveform==43||
+                           waveform==64||waveform==72;
     case kExpansionShape:return waveform==3||waveform==4||waveform==5||waveform==6||waveform==11||waveform==19||waveform==24||waveform==25||
                                 waveform==26||waveform==34||waveform==35||waveform==38||waveform==39||waveform==40||
-                                waveform==41||waveform==44||waveform==45||waveform==52||waveform==53||waveform==57||waveform==59;
+                                waveform==41||waveform==44||waveform==45||waveform==52||waveform==53||waveform==57||waveform==59||
+                                waveform==64||waveform==69||(waveform>=72&&waveform<=77);
     case kFmRatio:return waveform==7||waveform==51||waveform==60;
     case kFmIndex:return waveform==7||waveform==49||waveform==51||waveform==55||waveform==60||waveform==61;
     case kDpcmRate:return dpcm_waveform(waveform);
     case kGenesisAlgorithm:return waveform==49||hardware_fm_waveform(waveform);
     case kGenesisFeedback:return hardware_fm_waveform(waveform);
     case kChipCutoff:case kChipResonance:return waveform==38||waveform==39||waveform==52||waveform==53||waveform==56;
-    case kWavetablePosition:return waveform==46||waveform==47||waveform==48||waveform==50||waveform==54||waveform==62;
-    case kWavetableWarp:return waveform==46||waveform==47||waveform==62;
+    case kWavetablePosition:return waveform==46||waveform==47||waveform==48||waveform==50||waveform==54||waveform==62||waveform==68;
+    case kWavetableWarp:return waveform==46||waveform==47||waveform==62||waveform==68;
     case kAdditiveTilt:return waveform==48;
     case kFmBrightness:return waveform==49||waveform==51||waveform==55||waveform==61||hardware_fm_waveform(waveform);
     default:return true;
   }
 }
 const char* gui_param_name(clap_id id,int waveform){
+  if(id==kNoiseMode&&waveform==64)return "LED filter";
+  if(id==kNoiseMode&&waveform==72)return "Integrator";
+  if(id==kGenesisAlgorithm&&opll_waveform(waveform))return "OPLL instrument";
+  if(id==kWavetablePosition&&waveform==68)return "Vowel";
+  if(id==kWavetableWarp&&waveform==68)return "Talk rate";
   if(id!=kExpansionShape)return kSpecs[static_cast<size_t>(id)].name;
+  if(waveform==64||waveform==73)return "Built-in loop";
+  if(waveform==69)return "Kit layout";
+  if(waveform==72)return "LFSR taps";
+  if(waveform==74||waveform==75)return "Wave table";
+  if(waveform==76)return "Envelope shape";
+  if(waveform==77)return "Slap / pop";
   if(waveform==57)return "Drum character";
   if(waveform==59)return "Sample tone";
   if(waveform==46||waveform==47||waveform==48||waveform==50||waveform==54)return "Table shape";
@@ -125,6 +147,16 @@ inline float ui_source_sample(Plugin* p, double phase) {
     case 60: return yanes::bell_fm(phase, v(kFmRatio), v(kFmIndex), 0.0);
     case 61: return yanes::feedback_fm(phase, v(kFmIndex), v(kFmBrightness));
     case 62: return yanes::formant_wave(phase, v(kWavetablePosition), v(kWavetableWarp));
+    case 64: return yanes::extra::paula_builtin(shape, static_cast<int>(phase * yanes::extra::kPaulaLoop)) / 128.0f;
+    case 65: return yanes::pulse_raw(phase, 0.25);
+    case 66: case 67: return yanes::pulse_raw(phase, 0.5);
+    case 73: return yanes::extra::gba_builtin(shape, static_cast<int>(phase * yanes::extra::kGbaLoop)) / 128.0f;
+    case 74: case 75: return yanes::extra::console_wavetable(shape, phase, waveform == 74 ? 64 : 16, waveform == 75);
+    case 76: {
+      const int envelope = shape == 7 ? 0 : (shape & 3);
+      return static_cast<float>(yanes::extra::kAyDac[static_cast<size_t>(yanes::extra::ay_envelope_step(envelope, phase))] * 2.0 - 1.0);
+    }
+    case 77: return static_cast<float>(yanes::extra::slap_bass(phase, 0.0, shape / 7.0, 0.0));
     default: break;
   }
   if (waveform == 2 || waveform == 12 || waveform == 14 || waveform == 16 || waveform == 37) {
@@ -365,8 +397,9 @@ class PluginEditorHost final : public yanes::ui::EditorHost {
       g.polyline(response, amber, 2);
     } else if (page == 3) {
       const int waveform = static_cast<int>(value(kWaveform));
-      const int ops = waveform == 49 ? 6 : 4;
-      const int algorithm = static_cast<int>(value(kGenesisAlgorithm)) & (ops == 6 ? 31 : 7);
+      // The YM2413 is a fixed modulator-into-carrier pair; its "algorithm" control picks an instrument.
+      const int ops = waveform == 49 ? 6 : (opll_waveform(waveform) ? 2 : 4);
+      const int algorithm = opll_waveform(waveform) ? 0 : static_cast<int>(value(kGenesisAlgorithm)) & (ops == 6 ? 31 : 7);
       g.text(r.x + 20, r.y + 24, "OPERATOR ROUTING", muted, 260, TextSize::Small);
       for (int i = 0; i < ops; ++i) {
         const int x = r.x + 40 + i * 120, y = r.y + 40;

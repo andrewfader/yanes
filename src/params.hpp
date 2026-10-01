@@ -53,7 +53,7 @@ struct ParamSpec {
 };
 
 constexpr std::array<ParamSpec, kParamCount> kSpecs{{
-    {"Waveform", "Oscillator", 0, 63, 0, true},
+    {"Waveform", "Oscillator", 0, 77, 0, true},
     {"Pulse duty", "Oscillator", 0, 3, 1, true},
     {"Noise period", "Oscillator/Noise", 0, 15, 8, true},
     {"Noise mode", "Oscillator/Noise", 0, 1, 0, true},
@@ -131,7 +131,7 @@ constexpr std::array<ParamSpec, kParamCount> kSpecs{{
     {"DPCM trim end", "NES/DPCM bank", 0.05, 1, 1, false},
     {"Channel mute mask", "Hardware/Stack mixer", 0, 65535, 0, true},
     {"Channel solo mask", "Hardware/Stack mixer", 0, 65535, 0, true},
-    {"Preset", "Presets", 0, 99, 0, true},
+    {"Preset", "Presets", 0, 115, 0, true},
     {"Pitch bend range", "Performance", 0, 48, 2, true},
     {"Duty sequence", "Sequences/Duty", 0, 2, 0, true},
     {"Duty length", "Sequences/Duty", 1, 8, 4, true},
@@ -210,7 +210,10 @@ constexpr const char* kWaveNames[] = {
     "Porta FM keyboard", "Vintage analog poly", "Matrix brass poly", "Early digital ensemble",
     "Electromechanical tine", "Ladder mono synth", "Retro chip drum kit", "Custom wavetable",
     "SNES Gaussian sample", "Neo Geo FM bell", "Arcade feedback FM", "Vowel formant wavetable",
-    "SNES sample bank"};
+    "SNES sample bank", "Amiga Paula 8-bit sample", "ZX Spectrum beeper", "PC speaker",
+    "Apple II speaker", "TMS5220 LPC speech", "OKI MSM6295 ADPCM", "MSX YM2413 FM",
+    "MSX-MUSIC stack", "Atari Lynx Mikey", "GBA DirectSound", "Virtual Boy VSU wavetable",
+    "WonderSwan wavetable", "AY-3-8910 envelope buzzer", "Slap bass"};
 constexpr const char* kArpNames[] = {"Off", "Major", "Minor", "Octaves", "NES chord", "User steps"};
 constexpr const char* kLayerNames[] = {"Off", "Octave", "Fifth", "Sub octave", "Triangle", "Noise"};
 constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord lead",
@@ -273,7 +276,23 @@ constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord l
     "SID PWM arp lead",
     "CS-80 brass swell",
     "Master System FM",
-    "SNES orchestra pad"};
+    "SNES orchestra pad",
+    "Amiga ProTracker lead",
+    "Amiga MOD bass",
+    "ZX Spectrum beeper lead",
+    "PC speaker fast chord",
+    "Apple II speaker bass",
+    "Talking lead",
+    "Arcade ADPCM drums",
+    "Arcade ADPCM voice shouts",
+    "MSX FM piano",
+    "MSX-MUSIC channel stack",
+    "Atari Lynx buzz lead",
+    "GBA DirectSound strings",
+    "Virtual Boy wave lead",
+    "WonderSwan wave lead",
+    "AY buzzer bass",
+    "Seinfeld slap bass"};
 static_assert(std::size(kWaveNames) == static_cast<size_t>(kSpecs[kWaveform].max) + 1);
 static_assert(std::size(kPresetNames) == static_cast<size_t>(kSpecs[kPreset].max) + 1);
 

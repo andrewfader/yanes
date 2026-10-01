@@ -1507,19 +1507,22 @@ namespace {
 
 // ----- sources ------------------------------------------------------------------
 
-enum class Kind { kTonal, kNoise, kPercussive };
+// kHit is a percussive sound shorter than the 50 ms the others are measured from: the YM2413's
+// rhythm drums (101), whose ROM patches fall at their release rate once they reach sustain.
+enum class Kind { kTonal, kNoise, kPercussive, kHit };
 
 Kind kind_of(int waveform) {
   switch (waveform) {
     case 2: case 12: case 14: case 16: case 23: case 25: case 37: return Kind::kNoise;
-    case 9: case 57: case 100: return Kind::kPercussive;
+    case 9: case 57: case 69: case 100: return Kind::kPercussive;
+    case 101: return Kind::kHit;
     default: return Kind::kTonal;
   }
 }
 
 // What a source (or a stack channel playing it) must sound like at C-4.
 void expect_kind(const std::vector<float>& x, Kind kind, const std::string& what) {
-  const double level = rms_db(x, 0.05, 0.3);
+  const double level = kind == Kind::kHit ? rms_db(x, 0.0, 0.05) : rms_db(x, 0.05, 0.3);
   expect(level > -50, fmt("%s is audible (%.1f dBFS)", what.c_str(), level));
   if (kind == Kind::kTonal && what == P::kWaveNames[56]) {
     // The ladder mono synth carries a sub-oscillator an octave down: the played
@@ -1543,7 +1546,7 @@ int stack_channels(int stack) {
   switch (stack) {
     case 18: return 5; case 19: return 4; case 20: return 4; case 21: return 10; case 31: return 6;
     case 32: return 16; case 33: return 9; case 34: return 4; case 35: return 6; case 36: return 16;
-    case 41: return 5; case 43: return 6; case 45: return 2; default: return 0;
+    case 41: return 5; case 43: return 6; case 45: return 2; case 71: return 14; default: return 0;
   }
 }
 
@@ -1563,14 +1566,16 @@ int stack_voice(int stack, int channel) {
     case 41: return 40;
     case 43: return 42;
     case 45: return 44;
+    case 71: return channel < 6 ? 70 : (channel < 11 ? 101 : 22);
     default: return -1;
   }
 }
 
 void register_sources() {
   prove(P::kWaveform, "Waveform selects the named chip voice; stacks route MIDI channels to the chip's channels", [] {
-    std::vector<std::vector<float>> solo(59);
-    for (int w = 0; w < 59; ++w) {
+    constexpr int kVoices = static_cast<int>(std::size(P::kWaveNames));
+    std::vector<std::vector<float>> solo(kVoices);
+    for (int w = 0; w < kVoices; ++w) {
       if (stack_voice(w, 0) >= 0) continue;
       solo[static_cast<size_t>(w)] = note({{P::kWaveform, static_cast<double>(w)}}, 1.5, 1.5).mono();
       expect_kind(solo[static_cast<size_t>(w)], kind_of(w), P::kWaveNames[w]);
@@ -1581,24 +1586,82 @@ void register_sources() {
     auto same_family = [](int a, int b) {
       const std::array<int, 6> squares{8, 13, 15, 22, 42, 44};
       auto in = [&](int w) { return std::find(squares.begin(), squares.end(), w) != squares.end(); };
-      return (in(a) && in(b)) || (a == 14 && b == 16) || (a == 16 && b == 14);
+      // The SNES sampler with an empty bank plays the SNES Gaussian voice it falls back on.
+      return (in(a) && in(b)) || (a == 14 && b == 16) || (a == 16 && b == 14) || (a == 59 && b == 63);
     };
-    for (int a = 0; a < 59; ++a)
-      for (int b = a + 1; b < 59; ++b) {
+    for (int a = 0; a < kVoices; ++a)
+      for (int b = a + 1; b < kVoices; ++b) {
         if (solo[static_cast<size_t>(a)].empty() || solo[static_cast<size_t>(b)].empty() || same_family(a, b)) continue;
         if (kind_of(a) == Kind::kNoise && kind_of(b) == Kind::kNoise) continue;  // compared by their own proofs
         expect(timbre_similarity(solo[static_cast<size_t>(a)], solo[static_cast<size_t>(b)]) < 0.999,
                fmt("%s and %s sound different", P::kWaveNames[a], P::kWaveNames[b]));
       }
     // Stacks: every MIDI channel plays the chip channel the stack documents.
-    for (int stack = 0; stack < 59; ++stack) {
+    for (int stack = 0; stack < kVoices; ++stack) {
       if (stack_voice(stack, 0) < 0) continue;
       for (int channel = 0; channel < stack_channels(stack); ++channel) {
         const int voice = stack_voice(stack, channel);
         if (channel > 0 && voice == stack_voice(stack, channel - 1) && channel != stack_channels(stack) - 1) continue;
         const auto x = render({{P::kWaveform, static_cast<double>(stack)}}, {on(0, 60, channel), off(1.5, 60, channel)}, 1.5).mono();
-        expect_kind(x, kind_of(voice), fmt("%s channel %d (%s)", P::kWaveNames[stack], channel + 1, voice == 100 ? "rhythm" : P::kWaveNames[voice]));
+        expect_kind(x, kind_of(voice), fmt("%s channel %d (%s)", P::kWaveNames[stack], channel + 1, voice >= 100 ? "rhythm" : P::kWaveNames[voice]));
       }
+    }
+    // What the later voices advertise beyond their kind.
+    {
+      // The PC speaker plays one tone at a time: a held chord alternates, 60 times a second.
+      const auto chord = render({{P::kWaveform, 66}}, {on(0, 60), on(0, 67), off(1.0, 60), off(1.0, 67)}, 1.0).mono();
+      int c_only = 0, g_only = 0, both = 0;
+      for (double t = 0.1; t < 0.9; t += 1.0 / 60.0) {
+        const Span w(chord, static_cast<size_t>((t + 0.002) * kRate), static_cast<size_t>(0.012 * kRate));
+        const double c = measure::tone_amplitude(w, kRate, midi_hz(60)), g = measure::tone_amplitude(w, kRate, midi_hz(67));
+        if (c > 3 * g) ++c_only; else if (g > 3 * c) ++g_only; else ++both;
+      }
+      expect(c_only > 10 && g_only > 10 && both < c_only + g_only, fmt("PC speaker arpeggiates a chord (C alone %d, G alone %d, mixed %d)", c_only, g_only, both));
+      // The Spectrum's pin-pulse engine sounds both notes at once.
+      const auto zx = render({{P::kWaveform, 65}}, {on(0, 60), on(0, 67), off(1.0, 60), off(1.0, 67)}, 1.0).mono();
+      const Span zw(zx, 9600, 2400);
+      const double zc = measure::tone_amplitude(zw, kRate, midi_hz(60)), zg = measure::tone_amplitude(zw, kRate, midi_hz(67));
+      expect(zc > 0.02 && zg > 0.02 && zc < 3 * zg && zg < 3 * zc, fmt("ZX beeper plays a chord at once (%.3f / %.3f)", zc, zg));
+      // ... and its pin pulse narrows, so it gets quieter, as the release runs out.
+      const auto zr = render({{P::kWaveform, 65}, {P::kReleaseMs, 400}}, {on(0), off(0.3)}, 1.0).mono();
+      const double held = rms_db(zr, 0.15, 0.1), fading = rms_db(zr, 0.55, 0.1);
+      expect(fading < held - 2, fmt("ZX beeper release narrows the pulse (%.1f dB -> %.1f dB RMS)", held, fading));
+    }
+    {
+      // Paula's LED filter takes the top end off.
+      const auto open = note({{P::kWaveform, 64}, {P::kExpansionShape, 0}}).mono();
+      const auto led = note({{P::kWaveform, 64}, {P::kExpansionShape, 0}, {P::kNoiseMode, 1}}).mono();
+      const double ho = measure::band_fraction(Span(open, 9600, 16384), kRate, 4000, 16000);
+      const double hl = measure::band_fraction(Span(led, 9600, 16384), kRate, 4000, 16000);
+      expect(hl < 0.5 * ho, fmt("Paula LED filter takes the top end off (power above 4 kHz %.4f -> %.4f)", ho, hl));
+    }
+    {
+      // The OKI chip replays at a fixed rate: pitch bend cannot change a sound.
+      const auto straight = render({{P::kWaveform, 69}}, {on(0, 60), off(0.3, 60)}, 0.4).mono();
+      const auto bent = render({{P::kWaveform, 69}}, {bend(0, 1.0), on(0.001, 60), off(0.3, 60)}, 0.4).mono();
+      const double r = measure::correlation(Span(straight, 480, 9600), Span(bent, 528, 9600));
+      expect(r > 0.98, fmt("OKI ADPCM ignores pitch bend (correlation %.3f)", r));
+      // The MSX stack's five rhythm channels are five different drums.
+      std::vector<std::vector<float>> drums;
+      for (int channel = 6; channel < 11; ++channel)
+        drums.push_back(render({{P::kWaveform, 71}}, {on(0, 60, channel), off(0.4, 60, channel)}, 0.4).mono());
+      for (size_t a = 0; a < drums.size(); ++a)
+        for (size_t b = a + 1; b < drums.size(); ++b)
+          expect(timbre_similarity(drums[a], drums[b]) < 0.99, fmt("MSX rhythm channels %zu and %zu are different drums", a + 7, b + 7));
+    }
+    {
+      // The talking lead moves its vowel when Talk rate is up, and holds it at zero.
+      auto centroid_range = [](const std::vector<float>& x) {
+        double lo = 1e9, hi = 0;
+        for (double t = 0.1; t < 1.3; t += 0.05) {
+          const double c = measure::spectral_centroid(Span(x, static_cast<size_t>(t * kRate), 2048), kRate, 11);
+          lo = std::min(lo, c); hi = std::max(hi, c);
+        }
+        return hi / lo;
+      };
+      const double talking = centroid_range(note({{P::kWaveform, 68}, {P::kWavetableWarp, 0.5}}, 1.5, 1.5).mono());
+      const double still = centroid_range(note({{P::kWaveform, 68}, {P::kWavetableWarp, 0.0}}, 1.5, 1.5).mono());
+      expect(talking > 1.3 && still < 1.15, fmt("TMS5220 talks with Talk rate up (centroid range x%.2f), holds still at 0 (x%.2f)", talking, still));
     }
   });
 }
@@ -1613,7 +1676,7 @@ struct PresetClaim { std::vector<int> voices; unsigned claims; };
 
 // What each preset's name says, as the voice it must select and the character it must have.
 PresetClaim preset_claim(int id) {
-  static const std::array<PresetClaim, 100> table = {{
+  static const std::array<PresetClaim, std::size(P::kPresetNames)> table = {{
       {{}, 0},                          // 0 Manual
       {{0}, kSustain},                  // Clean NES lead
       {{0}, kSustain | kArp},           // NES chord lead
@@ -1714,6 +1777,22 @@ PresetClaim preset_claim(int id) {
       {{53}, kSustain},                 // 97 CS-80 brass swell
       {{7}, 0},                         // 98 Master System FM (OPLL)
       {{63}, kSustain | kChorus},       // 99 SNES orchestra pad (S-DSP echo)
+      {{64}, kSustain},                 // 100 Amiga ProTracker lead
+      {{64}, kBass},                    // 101 Amiga MOD bass
+      {{65}, kSustain},                 // 102 ZX Spectrum beeper lead
+      {{66}, kArp},                     // 103 PC speaker fast chord
+      {{67}, kBass},                    // 104 Apple II speaker bass
+      {{68}, kSustain},                 // 105 Talking lead
+      {{69}, kDrums},                   // 106 Arcade ADPCM drums
+      {{69}, kDrums},                   // 107 Arcade ADPCM voice shouts
+      {{70}, kDecay},                   // 108 MSX FM piano
+      {{71}, kStack},                   // 109 MSX-MUSIC channel stack
+      {{72}, kSustain},                 // 110 Atari Lynx buzz lead
+      {{73}, kSustain},                 // 111 GBA DirectSound strings
+      {{74}, kSustain},                 // 112 Virtual Boy wave lead
+      {{75}, kSustain},                 // 113 WonderSwan wave lead
+      {{76}, kBass},                    // 114 AY buzzer bass
+      {{77}, kBass},                    // 115 Seinfeld slap bass
   }};
   return table[static_cast<size_t>(id)];
 }

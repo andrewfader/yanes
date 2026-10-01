@@ -1467,6 +1467,20 @@ SCENARIO(integration_every_preset_uses_the_chip_it_is_named_after) {
   // Order matters; first match wins. More-specific rules go first.
   struct PresetChipMap { const char* match; int waveform; const char* chip; };
   constexpr PresetChipMap kMap[] = {
+      {"Amiga", 64, "Amiga Paula"},
+      {"ZX Spectrum", 65, "ZX Spectrum beeper"},
+      {"PC speaker", 66, "PC speaker"},
+      {"Apple II", 67, "Apple II speaker"},
+      {"Talking", 68, "TMS5220 LPC speech"},
+      {"Arcade ADPCM", 69, "OKI MSM6295 ADPCM"},
+      {"MSX-MUSIC", 71, "MSX-MUSIC stack"},
+      {"MSX", 70, "MSX YM2413 FM"},
+      {"Lynx", 72, "Atari Lynx Mikey"},
+      {"GBA", 73, "GBA DirectSound"},
+      {"Virtual Boy", 74, "Virtual Boy VSU"},
+      {"WonderSwan", 75, "WonderSwan wavetable"},
+      {"AY buzzer", 76, "AY-3-8910 envelope buzzer"},
+      {"Seinfeld", 77, "Slap bass"},
       {"Genesis channel stack", 21, "Genesis 10ch stack"},
       {"Genesis noise", 16, "Genesis PSG noise"},
       {"Genesis PSG", 15, "Genesis PSG tone"},

@@ -26,6 +26,7 @@ extern char** environ;
 #endif
 
 #include "dsp.hpp"
+#include "extra_chips.hpp"
 #include "snes_dsp.hpp"
 #include "hardware_fm.hpp"
 #include "nes_apu.hpp"
@@ -152,6 +153,16 @@ struct Voice {
   std::shared_ptr<const std::vector<uint8_t>> dpcm_data{};
   double sample_pos{};  // SNES sampler: fractional read position in decoded PCM
   std::shared_ptr<const yanes::snes::BrrSample> snes_data{};
+  bool beeper_bit{};         // One-bit speakers: where this voice's pin is now.
+  bool sample_done{};        // OKI ADPCM: the one-shot sound has played out.
+  double held_level{-1.0};   // GBA: volume, latched once per video frame.
+  double sample_clock{};     // Fixed-rate players (GBA mixer, OKI, TMS5220): ticks owed.
+  double sample_hold{};      // Their latest output sample.
+  std::array<double, 4> filt{};  // Per-voice output filter state of the newer chip models.
+  int speech_frame{};        // TMS5220: samples until the next parameter interpolation.
+  uint16_t lynx_state{};
+  yanes::extra::LpcVoice lpc{};
+  yanes::extra::OkiAdpcm adpcm{};
 };
 
 struct Plugin {
@@ -180,6 +191,9 @@ struct Plugin {
   std::atomic<bool> tail_changed_pending{};
   const clap_host_tail_t* host_tail{};
   double hum_phase{};
+  // One-bit speakers: the bits of every voice meet at one pin, then the speaker's response.
+  double beeper_hp_x{}, beeper_hp_y{}, beeper_lp{};
+  uint64_t beeper_ticks{};
   std::array<double,16> pitch_bend{};
   std::array<double,16> mod_wheel{};
   std::array<double,16> channel_volume{1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,
@@ -262,10 +276,6 @@ struct Plugin {
 };
 
 Plugin* self(const clap_plugin_t* plugin) { return static_cast<Plugin*>(plugin->plugin_data); }
-// Decode a slot's 1-bit DPCM stream back to the stepped bipolar levels the DAC
-// would produce, so the SNES sampler can replay it as a pitched PCM sample. The
-// DPCM bytes are the single persisted source of truth, so reconstructing here
-// keeps a freshly loaded sample and one restored from project state identical.
 void install_dpcm_bank(Plugin* p,size_t slot,std::shared_ptr<const std::vector<uint8_t>> bank){
   p->retired_dpcm_banks.erase(std::remove_if(p->retired_dpcm_banks.begin(),p->retired_dpcm_banks.end(),
     [](const auto& owner){return owner.use_count()==1;}),p->retired_dpcm_banks.end());
@@ -369,6 +379,7 @@ struct VoiceDefaults {
   int waveform;
   double duty, shape, noise_period, noise_mode, fm_ratio, fm_index, release_ms;
   double hardware_envelope, envelope_rate;
+  double fm_algorithm{-1};  // The YM2413 voices pick a ROM instrument with the FM algorithm control.
 };
 // Chips without an envelope generator silence the channel the moment the gate
 // clears, so a release of 0 is the authentic tail, not an omission. VRC7 and the
@@ -413,6 +424,20 @@ constexpr VoiceDefaults kVoiceDefaults[] = {
     {59, -1, 4, -1, -1, -1, -1, -1, 0, -1},   // SNES: mid Gaussian brightness
     {60, -1, -1, -1, -1, 3.5, 5, 900, 0, -1}, // Neo Geo bell: inharmonic ratio, long ring
     {61, -1, -1, -1, -1, -1, 5, -1, 0, -1},   // Arcade feedback FM: strong self-feedback
+    {64, -1, 1, -1, 0, -1, -1, 0, 0, -1},     // Amiga Paula: built-in saw loop, LED filter off
+    {65, -1, -1, -1, -1, -1, -1, 0, 0, -1},   // ZX Spectrum beeper: no envelope but the pulse width
+    {66, -1, -1, -1, -1, -1, -1, 0, 0, -1},   // PC speaker: a PIT square, on or off
+    {67, -1, -1, -1, -1, -1, -1, 0, 0, -1},   // Apple II speaker: toggled from software
+    {68, -1, -1, -1, -1, -1, -1, 0, 0, -1},   // TMS5220 speech
+    {69, -1, 0, -1, -1, -1, -1, -1, 0, -1},   // OKI ADPCM: standard kit; one-shot, so no release
+    {70, -1, -1, -1, -1, -1, -1, -1, 0, -1, 1},  // MSX YM2413: ROM instrument 1 (violin), EG release
+    {71, -1, -1, -1, -1, -1, -1, -1, 0, -1, 1},  // MSX-MUSIC stack: ditto
+    {72, -1, 0, -1, 0, -1, -1, 0, 0, -1},     // Atari Lynx: two-step (square) taps, integrator off
+    {73, -1, 3, -1, -1, -1, -1, 0, 0, -1},    // GBA DirectSound: built-in string loop
+    {74, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // Virtual Boy VSU
+    {75, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // WonderSwan
+    {76, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // AY buzzer: falling-saw envelope
+    {77, -1, 4, -1, -1, -1, -1, 90, 0, -1},   // Slap bass: thumb between soft and popped
 };
 
 void set_param(Plugin* p, clap_id id, double value, bool apply_preset);
@@ -440,7 +465,7 @@ void apply_voice_defaults(Plugin* p, int waveform) {
         {kNoisePeriod, voice.noise_period}, {kNoiseMode, voice.noise_mode},
         {kFmRatio, voice.fm_ratio},    {kFmIndex, voice.fm_index},
         {kReleaseMs, voice.release_ms}, {kHardwareEnvelope, voice.hardware_envelope},
-        {kEnvelopeRate, voice.envelope_rate}};
+        {kEnvelopeRate, voice.envelope_rate}, {kGenesisAlgorithm, voice.fm_algorithm}};
     for (const auto& [target, setting] : settings)
       if (setting >= 0.0) set_param(p, target, setting, false);
     // The voice brought several parameters with it, so the host has to re-read
@@ -604,6 +629,23 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 97: put(kWaveform, 53); put(kExpansionShape, 4); put(kAttackMs, 80); put(kReleaseMs, 900); put(kVibratoDepth, 0.15); put(kChorusMix, 0.20); put(kGainDb, -1.0); break; // CS-80 brass swell
     case 98: put(kWaveform, 7); put(kFmRatio, 2); put(kFmIndex, 3.2); put(kReleaseMs, 220); put(kChorusMix, 0.12); put(kGainDb, -6.0); put(kFmSustainRate, 0); break; // Master System FM (YM2413/OPLL add-on, via the OPLL-core VRC7 voice)
     case 99: put(kWaveform, 63); put(kExpansionShape, 7); put(kAttackMs, 70); put(kReleaseMs, 1100); put(kChorusMix, 0.24); put(kChorusRate, 0.26); put(kEchoMix, 0.26); put(kEchoTime, 140); put(kEchoFeedback, 0.42); put(kGainDb, 2.0); break; // SNES orchestra pad (S-DSP echo on the sampler voice)
+    // Sample players, one-bit speakers, speech and the later handhelds.
+    case 100: put(kWaveform, 64); put(kExpansionShape, 3); put(kVibratoDepth, 0.12); put(kGainDb, -9.0); break; // Amiga ProTracker lead (25% pulse loop)
+    case 101: put(kWaveform, 64); put(kExpansionShape, 6); put(kNoiseMode, 1); put(kTranspose, -12); put(kGainDb, -7.0); break; // Amiga MOD bass (LED filter on)
+    case 102: put(kWaveform, 65); put(kReleaseMs, 80); put(kGainDb, -6.0); break; // ZX Spectrum beeper lead (release narrows the pin pulse)
+    case 103: put(kWaveform, 66); put(kArpMode, 1); put(kArpRate, 30); put(kGainDb, -6.5); break; // PC speaker fast chord
+    case 104: put(kWaveform, 67); put(kTranspose, -12); put(kGainDb, -2.5); break; // Apple II speaker bass
+    case 105: put(kWaveform, 68); put(kWavetablePosition, 0.1); put(kWavetableWarp, 0.4); put(kVibratoDepth, 0.15); put(kGainDb, 2.0); break; // Talking lead
+    case 106: put(kWaveform, 69); put(kGainDb, -3.0); break; // Arcade ADPCM drums
+    case 107: put(kWaveform, 69); put(kExpansionShape, 1); put(kGainDb, 1.5); break; // Arcade ADPCM voice shouts (every key shouts)
+    case 108: put(kWaveform, 70); put(kGenesisAlgorithm, 3); put(kGainDb, -2.5); break; // MSX FM piano (YM2413 ROM piano)
+    case 109: put(kWaveform, 71); put(kStrictHardware, 1); put(kGainDb, 3.0); break; // MSX-MUSIC channel stack
+    case 110: put(kWaveform, 72); put(kExpansionShape, 4); put(kGainDb, -12.0); break; // Atari Lynx buzz lead
+    case 111: put(kWaveform, 73); put(kAttackMs, 60); put(kReleaseMs, 300); put(kGainDb, -3.0); break; // GBA DirectSound strings
+    case 112: put(kWaveform, 74); put(kExpansionShape, 3); put(kVibratoDepth, 0.1); put(kGainDb, -5.0); break; // Virtual Boy wave lead
+    case 113: put(kWaveform, 75); put(kGainDb, -9.0); break; // WonderSwan wave lead
+    case 114: put(kWaveform, 76); put(kExpansionShape, 4); put(kTranspose, -12); put(kGainDb, -4.0); break; // AY buzzer bass (envelope saw synced to the tone)
+    case 115: put(kWaveform, 77); put(kExpansionShape, 6); put(kTranspose, -12); put(kReleaseMs, 60); put(kGainDb, 0.5); break; // Seinfeld slap bass
     default: break;
   }
 }
@@ -628,7 +670,19 @@ yanes::HardwareFmVoice::Kind fm_kind(int waveform,int selected){
   if(waveform==28)return selected==36?yanes::HardwareFmVoice::Kind::Opl3:yanes::HardwareFmVoice::Kind::Opl3FourOp;
   if(waveform==29)return selected==31?yanes::HardwareFmVoice::Kind::Opn:yanes::HardwareFmVoice::Kind::Opna;
   if(waveform==30)return yanes::HardwareFmVoice::Kind::Opm;
+  if(waveform==70)return yanes::HardwareFmVoice::Kind::Opll;
+  if(waveform==101)return yanes::HardwareFmVoice::Kind::OpllRhythm;
   return yanes::HardwareFmVoice::Kind::Ym2612;
+}
+// Voices that play on a hardware chip core; 101 is a YM2413 rhythm drum inside the MSX stack.
+constexpr bool chip_core_voice(int waveform) {
+  return waveform == 17 || (waveform >= 27 && waveform <= 30) || waveform == 70 || waveform == 101;
+}
+// The FM controls for one voice: a YM2413 rhythm voice also says which drum its channel keys.
+yanes::FmControls voice_fm_controls(const Plugin* p, int waveform, int channel) {
+  yanes::FmControls c = fm_controls(p);
+  if (waveform == 101) c.rhythm = std::clamp(channel - 6, 0, 4);
+  return c;
 }
 
 void gui_push(Plugin* p, uint8_t type, clap_id id, double value) {
@@ -725,7 +779,8 @@ void note_on(Plugin* p, int channel, int key, int note_id, double velocity, int1
   const int selected = static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
   const bool stack_mode = selected == 18 || selected == 19 || selected == 20 || selected == 21 ||
                           selected == 31 || selected == 32 || selected == 33 || selected == 34 ||
-                          selected == 35 || selected == 36 || selected == 41 || selected == 43 || selected == 45;
+                          selected == 35 || selected == 36 || selected == 41 || selected == 43 || selected == 45 ||
+                          selected == 71;
   if (stack_mode && p->params[kStrictHardware].load(std::memory_order_relaxed) >= 0.5) {
     for (auto& v : p->voices) if (v.active && v.channel == channel) kill_voice(p, v, out, time);
   }
@@ -762,10 +817,10 @@ void note_on(Plugin* p, int channel, int key, int note_id, double velocity, int1
   if ((selected_waveform == 31 && channel < 3) || (selected_waveform == 32 && channel < 6)) fm_waveform = 29;
   if (selected_waveform == 33 && channel < 8) fm_waveform = 30;
   if (selected_waveform == 36) fm_waveform = 28;
-  if (p->params[kCustomWave].load(std::memory_order_relaxed) < 0.5 &&
-      (fm_waveform == 17 || (fm_waveform >= 27 && fm_waveform <= 30))) {
+  if (selected_waveform == 71) fm_waveform = channel < 6 ? 70 : (channel < 11 ? 101 : 22);
+  if (p->params[kCustomWave].load(std::memory_order_relaxed) < 0.5 && chip_core_voice(fm_waveform)) {
     const auto kind=fm_kind(fm_waveform,selected_waveform);
-    p->hardware_fm[voice_index].key_on(kind, yanes::midi_frequency(key), fm_controls(p));
+    p->hardware_fm[voice_index].key_on(kind, yanes::midi_frequency(key), voice_fm_controls(p, fm_waveform, channel));
     voice->hardware_signature=fm_waveform|(static_cast<int>(kind)<<8);
   }
   if (selected_waveform == 18 && channel >= 0 && channel <= 3) {
@@ -914,12 +969,17 @@ double voice_cents(const Plugin* p, const Voice& v) {
   return p->params[static_cast<clap_id>(kCentsStep1 + step)].load(std::memory_order_relaxed) / 100.0;
 }
 
+// Sources that carry a DC offset of their own and are AC-coupled at ~20 Hz like a custom table:
+// the TMS5220's one-sided chirp, the Lynx integrator, and the AY's unipolar envelope DAC.
+constexpr bool fast_dc_waveform(int waveform) { return waveform == 68 || waveform == 72 || waveform == 76; }
+
 // The SIDs' waveform DAC bias, a custom table and the retro rack's sample-hold all leave a DC
 // offset on the output, so those paths run through a DC blocker.
 bool output_dc_blocker_active(const Plugin* p) {
   const int waveform = static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
   return p->params[kCustomWave].load(std::memory_order_relaxed) >= 0.5 || waveform == 58 ||
-         waveform == 38 || waveform == 39 || effective_param<kRetroAmount>(p) > 0.00001;
+         waveform == 38 || waveform == 39 || fast_dc_waveform(waveform) ||
+         effective_param<kRetroAmount>(p) > 0.00001;
 }
 
 // Upper bound on the output DC blocker's post-voice fade (8 Hz from a full-scale
@@ -934,7 +994,8 @@ constexpr double kChipReleaseCapSeconds = 10.0;
 // Sources whose voices run on a hardware FM chip core (stacks included). Shared
 // with the editor's relevance rules.
 bool hardware_fm_waveform(int waveform) {
-  return waveform == 17 || (waveform >= 27 && waveform <= 33) || waveform == 21 || waveform == 36;
+  return waveform == 17 || (waveform >= 27 && waveform <= 33) || waveform == 21 || waveform == 36 ||
+         waveform == 70 || waveform == 71;
 }
 // FM-family voices whose held level decays at the FM sustain rate.
 bool fm_held_decay_waveform(int waveform) {
@@ -945,16 +1006,54 @@ bool fm_held_decay_waveform(int waveform) {
 // gate and decay exponentially. The other chips cut the channel at the gate; for
 // them the Release knob is a synth convenience and fades linearly.
 constexpr bool chip_eg_release(int waveform) { return waveform == 7 || waveform == 38 || waveform == 39; }
+// The trim window and loop rule the sample-bank players share (Paula, GBA, OKI; the SNES voice
+// keeps its own copy): the read position runs from the trim start to the trim end, then wraps to
+// the sample's own loop point, or the trim start, on a looping slot.
+struct BankWindow { size_t start, end; };
+BankWindow bank_window(const Plugin* p, size_t n) {
+  const size_t start = std::min(n - 1, static_cast<size_t>(static_cast<double>(n) * effective_param<kDpcmTrimStart>(p)));
+  const size_t end = std::min(n, static_cast<size_t>(static_cast<double>(n) * effective_param<kDpcmTrimEnd>(p)));
+  return {start, std::max(start + 1, end)};
+}
+// False once a one-shot slot has played to the end of its window.
+bool bank_wrap(const Plugin* p, Voice& v, const BankWindow& w) {
+  if (v.sample_pos < static_cast<double>(w.end)) return true;
+  const uint32_t loop_mask = static_cast<uint32_t>(p->params[kDpcmLoopMask].load(std::memory_order_relaxed));
+  if (!(loop_mask & (1U << v.dpcm_slot))) return false;
+  double loop = v.snes_data->loop >= 0 ? static_cast<double>(v.snes_data->loop) : static_cast<double>(w.start);
+  if (loop < static_cast<double>(w.start) || loop >= static_cast<double>(w.end)) loop = static_cast<double>(w.start);
+  v.sample_pos = loop + std::fmod(v.sample_pos - loop, static_cast<double>(w.end) - loop);
+  return true;
+}
+// Playback speed against the slot's recorded pitch (its base key, as the SNES voice uses).
+double bank_ratio(const Plugin* p, const Voice& v, double frequency) {
+  const int base_key = std::clamp(static_cast<int>(p->params[kDpcmBaseKey].load(std::memory_order_relaxed)) + v.dpcm_slot, 0, 127);
+  return frequency / std::max(1.0, yanes::midi_frequency(static_cast<double>(base_key)));
+}
+// The 8-bit byte a sample player reads from the bank's 16-bit decode.
+double bank_byte(const Voice& v, const BankWindow& w) {
+  const size_t index = std::min(w.end - 1, static_cast<size_t>(std::max(0.0, v.sample_pos)));
+  return static_cast<double>(v.snes_data->pcm[index] >> 8) / 128.0;
+}
+
 constexpr double kReleaseFloor = 0.001;  // -60 dB
 const double kReleaseFloorLog = std::log(kReleaseFloor);
 
 float render_voice(Plugin* p, Voice& v) {
   v.layer_sample = 0.0f;
+  v.beeper_bit = false;
+  if (v.sample_done) { stop_hardware(p, v); v.active = false; return 0.0f; }
   const double attack = effective_param<kAttackMs>(p);
   double release = effective_param<kReleaseMs>(p);
+  // The OKI chip plays a sound to its end whatever the key does; only a looping bank slot, which
+  // has no end, stops with the key.
+  const bool oki_loops = v.snes_data &&
+      (static_cast<uint32_t>(p->params[kDpcmLoopMask].load(std::memory_order_relaxed)) & (1U << v.dpcm_slot));
+  const bool one_shot = static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 69 &&
+                        p->params[kCustomWave].load(std::memory_order_relaxed) < 0.5 && !oki_loops;
   // A hardware FM chip releases through its own operator envelopes (FM release);
   // the voice lives until the chip falls silent, checked after rendering below.
-  if (v.releasing && v.hardware_signature < 0) {
+  if (v.releasing && v.hardware_signature < 0 && !one_shot) {
     if (release <= 0.0) {
       stop_hardware(p, v);
       v.active = false;
@@ -1058,13 +1157,16 @@ float render_voice(Plugin* p, Voice& v) {
     waveform = 42;
   } else if (waveform == 45) { // TIA: two independently controlled polynomial voices.
     waveform = 44;
+  } else if (waveform == 71) { // MSX-MUSIC: six YM2413 melodic, five rhythm drums, three PSG tones.
+    waveform = v.channel < 6 ? 70 : (v.channel < 11 ? 101 : 22);
   }
   const bool custom_wave = p->params[kCustomWave].load(std::memory_order_relaxed) >= 0.5 ||
       static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 58;
-  const bool hardware_waveform=!custom_wave && (waveform==17||(waveform>=27&&waveform<=30));
+  const bool hardware_waveform=!custom_wave && chip_core_voice(waveform);
   if(!hardware_waveform&&v.hardware_signature>=0){p->hardware_fm[static_cast<size_t>(&v-p->voices.data())].key_off();v.hardware_signature=-1;}
   const double chip_clock = p->params[kClockMode].load(std::memory_order_relaxed) >= 0.5
                                 ? 1662607.0 : yanes::kCpuClock;
+  const int shape_param = std::clamp(static_cast<int>(p->params[kExpansionShape].load(std::memory_order_relaxed)), 0, 7);
   if (waveform == 0 || waveform == 1) {
     const double divider = waveform == 1 ? 32.0 : 16.0;
     const double timer = std::clamp(std::round(chip_clock / (divider * frequency) - 1.0), 0.0, 2047.0);
@@ -1092,6 +1194,22 @@ float render_voice(Plugin* p, Voice& v) {
     frequency = acc * sid_clock / 16777216.0;
   } else if(waveform==44&&v.key<60){
     frequency*=std::pow(0.96745,(60-v.key)/12.0);
+  } else if (waveform == 64 && !(v.snes_data && v.snes_data->pcm.size() >= 2)) {
+    // A built-in loop replays one byte per Paula period.
+    frequency = yanes::extra::paula_rate(frequency * yanes::extra::kPaulaLoop) / yanes::extra::kPaulaLoop;
+  } else if (waveform == 65) {
+    frequency = yanes::extra::zx_frequency(frequency);
+  } else if (waveform == 66) {
+    frequency = yanes::extra::pc_speaker_frequency(frequency);
+  } else if (waveform == 67) {
+    frequency = yanes::extra::apple2_frequency(frequency);
+  } else if (waveform == 74) {
+    frequency = yanes::extra::vsu_frequency(frequency);
+  } else if (waveform == 75) {
+    frequency = yanes::extra::wonderswan_frequency(frequency);
+  } else if (waveform == 76) {
+    const int envelope = shape_param == 7 ? 0 : (shape_param & 3);
+    frequency = yanes::extra::ay_envelope_frequency(frequency, envelope >= 2);
   }
   const double increment = std::min(0.49, frequency / p->sample_rate);
   float value = 0.0f;
@@ -1228,10 +1346,10 @@ float render_voice(Plugin* p, Voice& v) {
     const bool white = p->params[kNoiseMode].load(std::memory_order_relaxed) >= 0.5;
     while (v.noise_phase >= 1.0) { v.console_lfsr = yanes::sega_psg_lfsr_clock(v.console_lfsr, white); v.noise_phase -= 1.0; }
     value = (v.console_lfsr & 1U) ? -1.0f : 1.0f;
-  } else if (waveform == 17 || (waveform >= 27 && waveform <= 30)) {
+  } else if (chip_core_voice(waveform)) {
     const size_t voice_index = static_cast<size_t>(&v - p->voices.data());
     const auto kind=fm_kind(waveform,selected_waveform);const int signature=waveform|(static_cast<int>(kind)<<8);
-    if(v.hardware_signature!=signature){p->hardware_fm[voice_index].key_on(kind,frequency,fm_controls(p));if(v.releasing)p->hardware_fm[voice_index].key_off();v.hardware_signature=signature;}
+    if(v.hardware_signature!=signature){p->hardware_fm[voice_index].key_on(kind,frequency,voice_fm_controls(p,waveform,v.channel));if(v.releasing)p->hardware_fm[voice_index].key_off();v.hardware_signature=signature;}
     value = p->hardware_fm[voice_index].render(p->sample_rate, frequency);
     if (v.releasing) {
       // Silent means no movement around the DAC's resting level, which the YM2612
@@ -1448,27 +1566,188 @@ float render_voice(Plugin* p, Voice& v) {
       const double trim_end_f = effective_param<kDpcmTrimEnd>(p);
       const size_t trim_end = trim_end_f > 0.0 ? std::min(n, static_cast<size_t>(static_cast<double>(n) * trim_end_f)) : n;
       const size_t end = std::max(trim_start + 1, trim_end);
+      bool ended = false;
       if (v.sample_pos >= static_cast<double>(end)) {
         const uint32_t loop_mask = static_cast<uint32_t>(p->params[kDpcmLoopMask].load(std::memory_order_relaxed));
         if (loop_mask & (1U << v.dpcm_slot)) {
-          const double loop_point = std::max(static_cast<double>(trim_start),
-                                             sample->loop >= 0 ? static_cast<double>(sample->loop) : static_cast<double>(trim_start));
-          const double span = static_cast<double>(end) - loop_point;
-          if (span > 0.0) v.sample_pos = loop_point + std::fmod(v.sample_pos - loop_point, span);
-          else v.sample_pos = loop_point;
+          // The sample's own loop point, unless the trim window excludes it.
+          double loop_point = sample->loop >= 0 ? static_cast<double>(sample->loop) : static_cast<double>(trim_start);
+          if (loop_point < static_cast<double>(trim_start) || loop_point >= static_cast<double>(end))
+            loop_point = static_cast<double>(trim_start);
+          v.sample_pos = loop_point + std::fmod(v.sample_pos - loop_point, static_cast<double>(end) - loop_point);
         } else {
+          // Like the S-DSP, a one-shot sample is silent once its end block plays.
           v.releasing = true;
+          ended = true;
         }
       }
       const double clamped = std::min(v.sample_pos, static_cast<double>(end) - 1.0);
       const long index = static_cast<long>(std::floor(clamped));
       const int frac12 = static_cast<int>((clamped - std::floor(clamped)) * 4096.0) & 0xFFF;
       auto at = [&](long i) { return static_cast<int>(pcm[static_cast<size_t>(std::clamp<long>(i, 0, static_cast<long>(end) - 1))]); };
-      value = static_cast<float>(yanes::snes::interpolate(at(index - 1), at(index), at(index + 1), at(index + 2), frac12)) / 32768.0f;
+      value = ended ? 0.0f : static_cast<float>(yanes::snes::interpolate(at(index - 1), at(index), at(index + 1), at(index + 2), frac12)) / 32768.0f;
       v.sample_pos += advance;
     } else {
       value = yanes::snes_wave(v.phase, shape);
     }
+  } else if (waveform == 64) {
+    // Paula: each byte is held for a whole period, with no interpolation between them.
+    double byte = 0.0;
+    if (v.snes_data && v.snes_data->pcm.size() >= 2) {
+      const BankWindow window = bank_window(p, v.snes_data->pcm.size());
+      if (bank_wrap(p, v, window)) {
+        byte = bank_byte(v, window);
+        const double rate = yanes::extra::paula_rate(yanes::snes::kNativeRate * bank_ratio(p, v, frequency));
+        v.sample_pos += rate / p->sample_rate;
+      } else {
+        v.releasing = true;
+      }
+    } else {
+      // Four sub-samples keep the host's own aliasing down; the held steps are the chip's.
+      for (int n = 0; n < 4; ++n) {
+        const double phase = std::fmod(v.phase + increment * n / 4.0, 1.0);
+        byte += yanes::extra::paula_builtin(shape, static_cast<int>(phase * yanes::extra::kPaulaLoop)) / 128.0 * 0.25;
+      }
+    }
+    // The A500's fixed RC lowpass, then the LED filter when it is switched on.
+    v.filt[0] += (1.0 - std::exp(-6.28318530718 * 4420.0 / p->sample_rate)) * (byte - v.filt[0]);
+    double out = v.filt[0];
+    if (p->params[kNoiseMode].load(std::memory_order_relaxed) >= 0.5) {
+      const double w0 = 6.28318530718 * 3275.0 / p->sample_rate, alpha = std::sin(w0) / (2.0 * 0.70710678);
+      const double cw = std::cos(w0), a0 = 1.0 + alpha;
+      const double b0 = (1.0 - cw) * 0.5 / a0, b1 = (1.0 - cw) / a0, a1 = -2.0 * cw / a0, a2 = (1.0 - alpha) / a0;
+      const double y = b0 * out + v.filt[1];
+      v.filt[1] = b1 * out - a1 * y + v.filt[2];
+      v.filt[2] = b0 * out - a2 * y;
+      out = y;
+    }
+    value = static_cast<float>(out);
+  } else if (waveform == 65 || waveform == 66 || waveform == 67) {
+    // One-bit speakers: the pin is high or low, nothing in between. The mixer joins every
+    // voice's bit the way each machine's sound routines did. The Spectrum's pin-pulse engines
+    // have no volume control but the width of the pulse, so the envelope narrows it.
+    double width = 0.5;
+    if (waveform == 65) {
+      const double velocity = p->params[kVelocity].load(std::memory_order_relaxed) >= 0.5 ? v.velocity : 1.0;
+      width = 0.25 * std::clamp(v.env * v.volume_expression * velocity, 0.02, 1.0);
+    }
+    v.beeper_bit = v.phase < width;
+    value = v.beeper_bit ? 1.0f : -1.0f;
+  } else if (waveform == 68) {
+    // TMS5220-style speech: an 8 kHz chirp-excited lattice, its coefficients interpolated
+    // every 25 samples. Table position is the vowel; Table warp makes it talk.
+    constexpr double speech_rate = 8000.0;
+    const double position = effective_param<kWavetablePosition>(p);
+    const double talk_speed = effective_param<kWavetableWarp>(p);
+    v.sample_clock += speech_rate / p->sample_rate;
+    while (v.sample_clock >= 1.0) {
+      v.sample_clock -= 1.0;
+      if (v.speech_frame-- <= 0) {
+        v.speech_frame = 24;
+        const double age = elapsed_samples / p->sample_rate;
+        const double talk = talk_speed > 0.001
+            ? 0.6 * (0.5 - 0.5 * std::cos(6.28318530718 * (0.5 + 5.5 * talk_speed) * age)) : 0.0;
+        v.lpc.set_formants(yanes::extra::vowel_at(position + talk), speech_rate, true);
+      }
+      const double y = std::clamp(v.lpc.tick(std::min(frequency, 2000.0), speech_rate, 1.0) * 0.9, -1.0, 1.0);
+      v.sample_hold = std::round(y * 127.0) / 127.0;  // The 8-bit DAC.
+    }
+    v.filt[0] += (1.0 - std::exp(-6.28318530718 * 3600.0 / p->sample_rate)) * (v.sample_hold - v.filt[0]);
+    value = static_cast<float>(v.filt[0]);
+  } else if (waveform == 69) {
+    // OKI MSM6295: whatever it plays goes through 4-bit ADPCM at a fixed 7575 Hz, so a sound
+    // can never change pitch. A loaded bank slot plays at its own speed; otherwise the key
+    // picks a built-in arcade kit sound (or, with Shape above 0, a shout on every key).
+    v.sample_clock += yanes::extra::kOkiRate / p->sample_rate;
+    while (v.sample_clock >= 1.0 && !v.sample_done) {
+      v.sample_clock -= 1.0;
+      double target = 0.0;
+      if (v.snes_data && v.snes_data->pcm.size() >= 2) {
+        const BankWindow window = bank_window(p, v.snes_data->pcm.size());
+        if (bank_wrap(p, v, window)) {
+          const size_t index = std::min(window.end - 1, static_cast<size_t>(v.sample_pos));
+          target = v.snes_data->pcm[index] / 32768.0;
+          v.sample_pos += yanes::snes::kNativeRate / yanes::extra::kOkiRate;
+        } else {
+          v.sample_done = true;
+        }
+      } else {
+        const int sound = shape > 0 ? 9 + ((v.key % 3) + 3) % 3 : (((v.key - 36) % 12) + 12) % 12;
+        if (v.dpcm_position >= yanes::extra::kArcadeKitLength[static_cast<size_t>(sound)]) v.sample_done = true;
+        else target = yanes::extra::arcade_kit(sound, v.dpcm_position, v.console_lfsr, v.filt[1], v.lpc);
+        v.dpcm_position += 1.0 / yanes::extra::kOkiRate;
+      }
+      v.adpcm.encode(static_cast<int>(std::lround(std::clamp(target, -1.0, 1.0) * 2047.0)));
+      v.sample_hold = v.adpcm.signal / 2048.0;
+    }
+    if (v.sample_done) v.sample_hold = 0.0;
+    v.filt[0] += (1.0 - std::exp(-6.28318530718 * 6000.0 / p->sample_rate)) * (v.sample_hold - v.filt[0]);
+    value = static_cast<float>(v.filt[0]);
+  } else if (waveform == 72) {
+    // Atari Lynx: a 12-bit LFSR whose tap set (Shape) decides how soon it repeats, clocked by a
+    // timer that can only divide 1 MHz so finely. Noise mode switches on the integrator, which
+    // accumulates the bits instead of outputting them.
+    const size_t taps = static_cast<size_t>(std::clamp(shape, 0, 7));
+    const double rate = yanes::extra::lynx_timer_rate(frequency * yanes::extra::kLynxPeriods[taps]);
+    const bool integrate = p->params[kNoiseMode].load(std::memory_order_relaxed) >= 0.5;
+    v.noise_phase += rate / p->sample_rate;
+    while (v.noise_phase >= 1.0) {
+      bool bit = false;
+      v.lynx_state = yanes::extra::lynx_lfsr_clock(v.lynx_state, yanes::extra::kLynxTaps[taps], bit);
+      v.filt[0] = integrate ? std::clamp(v.filt[0] + (bit ? 0.25 : -0.25), -1.0, 1.0) : (bit ? 1.0 : -1.0);
+      v.noise_phase -= 1.0;
+    }
+    value = static_cast<float>(v.filt[0]);
+  } else if (waveform == 73) {
+    // GBA DirectSound: the driver steps through 8-bit samples at a fixed 13379 Hz mixing rate
+    // with no interpolation, skipping or repeating bytes to change pitch.
+    v.sample_clock += yanes::extra::kGbaMixRate / p->sample_rate;
+    while (v.sample_clock >= 1.0) {
+      v.sample_clock -= 1.0;
+      if (v.snes_data && v.snes_data->pcm.size() >= 2) {
+        const BankWindow window = bank_window(p, v.snes_data->pcm.size());
+        if (bank_wrap(p, v, window)) {
+          v.sample_hold = bank_byte(v, window);
+          v.sample_pos += yanes::snes::kNativeRate * bank_ratio(p, v, frequency) / yanes::extra::kGbaMixRate;
+        } else {
+          v.sample_hold = 0.0;
+          v.releasing = true;
+        }
+      } else {
+        const int index = static_cast<int>(v.sample_pos) & (yanes::extra::kGbaLoop - 1);
+        v.sample_hold = yanes::extra::gba_builtin(shape, index) / 128.0;
+        v.sample_pos = std::fmod(v.sample_pos + frequency * yanes::extra::kGbaLoop / yanes::extra::kGbaMixRate,
+                                 static_cast<double>(yanes::extra::kGbaLoop));
+      }
+    }
+    value = static_cast<float>(v.sample_hold);
+  } else if (waveform == 74 || waveform == 75) {
+    // Virtual Boy (6-bit) and WonderSwan (4-bit) 32-step wavetables.
+    for (int n = 0; n < 4; ++n)
+      value += yanes::extra::console_wavetable(shape, v.phase + increment * n / 4.0, waveform == 74 ? 64 : 16, waveform == 75) * 0.25f;
+  } else if (waveform == 76) {
+    // AY-3-8910 buzzer: the volume envelope run at audio rate through the log DAC. Shapes 4-7
+    // also gate it with the tone channel (in sync, an octave up, or slightly detuned).
+    const int envelope = shape_param == 7 ? 0 : (shape_param & 3);
+    double sum = 0.0;
+    for (int n = 0; n < 4; ++n) {
+      const double offset = increment * n / 4.0;
+      const double phase = std::fmod(v.phase + offset, 1.0);
+      double level = yanes::extra::kAyDac[static_cast<size_t>(yanes::extra::ay_envelope_step(envelope, phase))];
+      if (shape_param >= 4) {
+        const double tone = shape_param == 6 ? std::fmod(phase * 2.0, 1.0)
+                          : shape_param == 7 ? std::fmod(v.aux_phase + offset * 1.004, 1.0) : phase;
+        if (tone >= 0.5) level = 0.0;
+      }
+      sum += level - yanes::extra::kAyDacMean;
+    }
+    value = static_cast<float>(sum * 0.25 * 1.5);
+    v.aux_phase = std::fmod(v.aux_phase + increment * 1.004, 1.0);
+  } else if (waveform == 77) {
+    v.console_lfsr = yanes::lfsr_clock(v.console_lfsr, 1, 15);
+    value = static_cast<float>(yanes::extra::slap_bass(v.aux_phase, elapsed_samples / p->sample_rate, shape / 7.0,
+                                                       (v.console_lfsr & 1U) ? 1.0 : -1.0));
+    v.aux_phase += increment;  // Unwrapped: the string's stretched partials need the true phase.
   } else {
     const int algorithm = static_cast<int>(p->params[kGenesisAlgorithm].load(std::memory_order_relaxed));
     const double feedback = effective_param<kGenesisFeedback>(p);
@@ -1499,6 +1778,12 @@ float render_voice(Plugin* p, Voice& v) {
     const double rate = p->params[kEnvelopeRate].load(std::memory_order_relaxed);
     const double ticks = elapsed_samples * 240.0 / p->sample_rate;
     level *= std::max(0.0, 15.0 - std::floor(ticks / std::max(1.0, 16.0 - rate))) / 15.0;
+  }
+  if (selected_waveform == 73 && !custom_wave) {
+    // The GBA driver only changes a channel's volume once per video frame.
+    const double frame = p->sample_rate / yanes::extra::kGbaFrameRate;
+    if (v.held_level < 0.0 || std::fmod(elapsed_samples, frame) < 1.0) v.held_level = level;
+    level = v.held_level;
   }
   ++v.samples;
   // Brightness expression bends the voice either side of its neutral centre.
@@ -1691,6 +1976,8 @@ void plugin_reset(const clap_plugin_t* plugin) {
   p->held_sample = p->hold_phase = 0.0;
   p->hp_x = p->hp_y = p->lp_y = 0.0;
   p->hum_phase = p->chorus_phase = 0.0;
+  p->beeper_hp_x = p->beeper_hp_y = p->beeper_lp = 0.0;
+  p->beeper_ticks = 0;
   p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;
   p->output_peak_l.store(0.0f);p->output_peak_r.store(0.0f);p->output_clipped.store(false);
   p->nes_apu.reset();
@@ -1759,6 +2046,13 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
     double dpcm_dac = 0.0;
     float layer_audio = 0.0f;
     bool sounding = false;  // Any voice live this frame, even one that ends in it.
+    const int beeper = p->params[kCustomWave].load(std::memory_order_relaxed) < 0.5 &&
+        static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) >= 65 &&
+        static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) <= 67
+        ? static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) : 0;
+    bool beeper_or = false, beeper_xor = false;
+    std::array<std::pair<uint64_t, bool>, 16> beeper_voices{};
+    size_t beeper_count = 0;
     for (auto& v : p->voices) if (v.active) {
       sounding = true;
       const uint32_t channel_bit=1U<<std::clamp<int>(v.channel,0,15);
@@ -1775,6 +2069,12 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
           p->channel_volume[static_cast<size_t>(std::clamp<int>(v.channel, 0, 15))]);
       if (!v.active) emit_note_end(out_events, frame, v);
       if (muted) continue;
+      if (beeper) {
+        beeper_or = beeper_or || v.beeper_bit;
+        beeper_xor = beeper_xor != v.beeper_bit;
+        beeper_voices[beeper_count++] = {v.age, v.beeper_bit};
+        continue;
+      }
       if (!nes_stack) { sample += rendered; continue; }
       layer_audio += v.layer_sample * static_cast<float>(p->channel_volume[static_cast<size_t>(v.channel)]);
       // DPCM still rides the voice oscillator into the shared TND mix.
@@ -1786,6 +2086,34 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
             std::clamp(static_cast<double>(rendered) / render_amp, -1.0, 1.0);
         dpcm_dac += (bipolar * 0.5 + 0.5) * 127.0 * std::max(0.000001, v.env);
       }
+    }
+    if (beeper) {
+      // One pin for every voice. Spectrum pin-pulse engines OR their narrow pulses together,
+      // Apple II two-voice routines toggle the speaker for either voice (an XOR), and the PC
+      // speaker can only play one tone, so chords are arpeggiated at 60 Hz, oldest note first.
+      bool bit = beeper == 65 ? beeper_or : beeper_xor;
+      if (beeper == 66) {
+        bit = false;
+        if (beeper_count) {
+          const uint64_t step = p->beeper_ticks / static_cast<uint64_t>(std::max(1.0, p->sample_rate / 60.0));
+          const size_t turn = static_cast<size_t>(step % beeper_count);
+          for (size_t i = 0; i < beeper_count; ++i) {
+            size_t older = 0;
+            for (size_t j = 0; j < beeper_count; ++j) older += beeper_voices[j].first < beeper_voices[i].first;
+            if (older == turn) bit = beeper_voices[i].second;
+          }
+        }
+      }
+      ++p->beeper_ticks;
+      // Then the speaker: how fast its cone settles back (the highpass) and how little top end it
+      // has. The Apple II's cone relaxes within about half a millisecond of each toggle.
+      const double highpass = beeper == 65 ? 30.0 : (beeper == 66 ? 250.0 : 350.0);
+      const double lowpass = beeper == 65 ? 7000.0 : (beeper == 66 ? 5000.0 : 6500.0);
+      const double x = bit ? 1.0 : 0.0;
+      p->beeper_hp_y = std::exp(-6.28318530718 * highpass / p->sample_rate) * (p->beeper_hp_y + x - p->beeper_hp_x);
+      p->beeper_hp_x = x;
+      p->beeper_lp += (1.0 - std::exp(-6.28318530718 * lowpass / p->sample_rate)) * (p->beeper_hp_y - p->beeper_lp);
+      sample = static_cast<float>(p->beeper_lp * 1.6);
     }
     if (nes_stack) {
       const float layer_mix = p->params[kLayerMode].load() > 0 ? static_cast<float>(effective_param<kLayerMix>(p)) : 0.0f;
@@ -1811,7 +2139,8 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
     const bool custom_wave = p->params[kCustomWave].load(std::memory_order_relaxed) >= 0.5 ||
       static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 58;
     const bool sid_output = output_waveform == 38 || output_waveform == 39;
-    const double dc_coefficient = custom_wave ? custom_dc_r : (sid_output ? sid_dc_r : dc_r);
+    const bool fast_dc = custom_wave || fast_dc_waveform(output_waveform);
+    const double dc_coefficient = fast_dc ? custom_dc_r : (sid_output ? sid_dc_r : dc_r);
     const bool dc_enabled=output_dc_blocker_active(p);
     double dc_l=raw_l,dc_right=raw_r;
     if(dc_enabled){dc_l=raw_l-p->output_dc_x_l+dc_coefficient*p->output_dc_y_l;dc_right=raw_r-p->output_dc_x_r+dc_coefficient*p->output_dc_y_r;}
@@ -1822,7 +2151,7 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
     // leaky mean of the note) that would otherwise land as a click when the
     // release ends.
     if(!sounding&&raw_l==0.0&&raw_r==0.0){
-      const double fade=(custom_wave||sid_output)?dc_coefficient:dc_fade;
+      const double fade=(fast_dc||sid_output)?dc_coefficient:dc_fade;
       dc_l=fade*p->output_dc_y_l;dc_right=fade*p->output_dc_y_r;
       if(std::abs(dc_l)<1.0e-5)dc_l=0.0;  // -100 dBFS: the rest would be a denormal crawl.
       if(std::abs(dc_right)<1.0e-5)dc_right=0.0;
@@ -2108,7 +2437,7 @@ const char* kFeatures[] = {CLAP_PLUGIN_FEATURE_INSTRUMENT, CLAP_PLUGIN_FEATURE_S
                            CLAP_PLUGIN_FEATURE_STEREO, nullptr};
 const clap_plugin_descriptor_t kDescriptor{
     CLAP_VERSION_INIT, "org.yanes.native", "YANES", "YANES contributors",
-    "", "", "", "0.3.1", "Native multi-console chiptune synthesizer", kFeatures};
+    "", "", "", YANES_VERSION, "Native multi-console chiptune synthesizer", kFeatures};
 
 const clap_plugin_t* create_plugin(const clap_host_t* host) {
   auto* p = new (std::nothrow) Plugin;

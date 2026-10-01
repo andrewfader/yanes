@@ -129,6 +129,24 @@ int main() {
     assert(error / energy < 0.05 && "BRR round-trip of a sine is near-lossless");
   }
 
+  // Bright, near-full-scale content leans on the 4-bit residual rather than the
+  // predictors, so it catches a mis-scaled quantiser that a slow sine hides.
+  {
+    std::vector<int16_t> bright(1024);
+    for (size_t i = 0; i < bright.size(); ++i)
+      bright[i] = static_cast<int16_t>(std::lround(30000.0 * std::sin(6.28318530718 * i / 7.0)));
+    const auto brr = yanes::snes::brr_encode(bright.data(), bright.size(), true);
+    const auto decoded = yanes::snes::brr_decode(brr.data(), brr.size());
+    assert(decoded.pcm.size() == bright.size());
+    double energy = 0.0, error = 0.0;
+    for (size_t i = 0; i < bright.size(); ++i) {
+      energy += static_cast<double>(bright[i]) * bright[i];
+      const double e = static_cast<double>(decoded.pcm[i]) - bright[i];
+      error += e * e;
+    }
+    assert(error / energy < 0.01 && "BRR round-trips bright, loud content at full level");
+  }
+
   // A .brr file image's two-byte loop-offset header sets the loop point, instead
   // of always looping to the start.
   {

@@ -211,6 +211,40 @@ Four additional families are included because they add synthesis methods not alr
   Blaster/SAM Coupé character.
 - Atari TIA supplies two channels of deliberately coarse polynomial tones.
 
+A further set covers sample players, one-bit speakers, speech, and the later handhelds:
+
+- **Amiga Paula** plays 8-bit samples with no interpolation, each byte held for a whole period of
+  the 3.55&nbsp;MHz colour clock, through the A500's fixed 4.4&nbsp;kHz RC lowpass. **LED filter**
+  (the Noise mode switch) adds the 3.3&nbsp;kHz Butterworth. It plays the sample bank key-tracked,
+  or one of eight built-in 32-byte loops.
+- **ZX Spectrum beeper**, **PC speaker**, and **Apple II speaker** are one-bit: every voice meets
+  at a single pin. The Spectrum ORs pin-pulse engines' narrow pulses together (the pulse width is
+  its only volume, so the envelope narrows it), the Apple II toggles the speaker for either voice
+  and its cone relaxes within half a millisecond, and the PC speaker plays one PIT square at a time,
+  arpeggiating chords at 60&nbsp;Hz. Each machine's pitch is quantised to its own loop or divider.
+- **TMS5220 LPC speech** excites a ten-stage lattice with the chirp at 8&nbsp;kHz. Its reflection
+  coefficients are derived from vowel formants and quantised to the chip's 5/5/4/4/4/4/4/3/3/3
+  bits. **Vowel** sweeps oo–oh–ah–eh–ee and **Talk rate** makes it talk.
+- **OKI MSM6295 ADPCM** runs everything through 4-bit ADPCM at a fixed 7575&nbsp;Hz, so nothing
+  changes pitch: a loaded bank slot plays at its own speed, otherwise keys play a built-in arcade
+  kit (nine drums and three LPC shouts), or shouts on every key with **Kit layout** above 0. Sounds
+  play to their end like the chip's.
+- **MSX YM2413** is the real OPLL through ymfm. **OPLL instrument** picks one of the fifteen ROM
+  patches, or 0 for the user patch built from the FM controls. The **MSX-MUSIC stack** routes
+  channels 1–6 to YM2413 melody, 7–11 to its rhythm section (bass drum, snare, tom, top cymbal,
+  hi-hat), and 12–14 to the AY PSG.
+- **Atari Lynx** clocks a 12-bit LFSR whose tap set (**LFSR taps**) decides whether it loops as a
+  buzzy tone or runs as noise, from Mikey's 1&nbsp;MHz timer. **Integrator** accumulates the bits.
+- **GBA DirectSound** steps through 8-bit samples at the 13379&nbsp;Hz software-mixer rate with no
+  interpolation, and changes volume only once per video frame. It plays the bank or a built-in loop.
+- **Virtual Boy VSU** (6-bit) and **WonderSwan** (4-bit) play 32-step wavetables from their 11-bit
+  frequency registers.
+- **AY-3-8910 envelope buzzer** runs the AY's volume envelope at audio rate through its log DAC:
+  falling or rising saws and triangles, optionally gated by the tone channel (in sync, an octave up,
+  or slightly detuned).
+- **Slap bass** models a thumbed or popped electric bass string: stretched partials whose overtones
+  die long before the fundamental, plus the fret click. **Slap / pop** sets how hard it is struck.
+
 ## Original retro-digital synthesis
 
 Nine additional methods broaden the instrument without copying factory ROMs or commercial

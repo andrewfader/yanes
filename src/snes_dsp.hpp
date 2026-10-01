@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -96,9 +97,12 @@ struct BrrSample {
 };
 
 // Decode a BRR byte stream (nine-byte blocks) to 16-bit PCM, applying the four
-// predictor filters and reading the per-block loop/end flags. When the sample
-// loops, its loop point is loop_block (block-aligned); loop_block < 0 means loop
-// to the start, which is what a bare block stream implies.
+// predictor filters and reading the per-block loop/end flags. The PCM holds the
+// S-DSP's own sample-buffer values (the predictor output doubled into 16 bits),
+// which is what the hardware's Gaussian interpolator reads. When the sample
+// loops, its loop point is loop_block (block-aligned); loop_block < 0, or one
+// past the end of the stream, means loop to the start, which is what a bare
+// block stream implies.
 inline BrrSample brr_decode(const uint8_t* brr, size_t bytes, int loop_block = -1) {
   BrrSample out;
   if (!brr || bytes < static_cast<size_t>(kBrrBlockBytes)) return out;
@@ -128,13 +132,14 @@ inline BrrSample brr_decode(const uint8_t* brr, size_t bytes, int loop_block = -
       s = static_cast<int16_t>(s * 2);
       p2 = p1;
       p1 = s;
-      out.pcm.push_back(static_cast<int16_t>(s >> 1));  // store at unit scale
+      out.pcm.push_back(static_cast<int16_t>(s));
     }
     // The end block terminates the stream; its loop flag means the sample loops
     // back to its loop point rather than stopping.
     if (end) { loops = loop; break; }
   }
-  out.loop = loops ? std::max(0, loop_block) * kBrrBlockSamples : -1;
+  const size_t loop_at = static_cast<size_t>(std::max(0, loop_block)) * kBrrBlockSamples;
+  out.loop = loops ? (loop_at < out.pcm.size() ? static_cast<int>(loop_at) : 0) : -1;
   return out;
 }
 
@@ -184,18 +189,18 @@ inline std::vector<uint8_t> brr_encode(const int16_t* pcm, size_t count, bool lo
             default: break;
           }
           const int target = samples[n];
-          // Quantise (target - predict) into a 4-bit code at this shift.
-          int delta = ((target - predict) << 1) >> shift;  // undo the decoder's <<shift>>1
-          int code = std::clamp((delta + (delta < 0 ? -1 : 1)) / 2, -8, 7);
-          int s = static_cast<int16_t>((code & 0x0F) << 12) >> 12;
-          s = (s << shift) >> 1;
-          int reconstructed = clamp16(s + predict);
-          reconstructed = static_cast<int16_t>(reconstructed * 2) >> 1;
+          // Quantise the residual into a 4-bit code at this shift. The decoder adds
+          // (code << shift) >> 1 to the prediction and then doubles the sum, so the
+          // code that best reaches target is (target - 2 * predict) / 2^shift.
+          const int code = static_cast<int>(std::clamp<long>(
+              std::lround(std::ldexp(static_cast<double>(target - 2 * predict), -shift)), -8, 7));
+          const int s = (code * (1 << shift)) >> 1;
+          const int reconstructed = static_cast<int16_t>(clamp16(s + predict) * 2);
           const long long e = static_cast<long long>(reconstructed) - target;
           error += e * e;
           nibbles[n] = static_cast<uint8_t>(code & 0x0F);
           q2 = q1;
-          q1 = reconstructed * 2;
+          q1 = reconstructed;
         }
         if (best_error < 0 || error < best_error) {
           best_error = error;

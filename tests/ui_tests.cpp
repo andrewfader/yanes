@@ -446,14 +446,7 @@ void test_menus() {
   bool listed = false;
   for (const std::string& s : canvas.strings) listed = listed || s == P::kWaveNames[40];
   assert(listed);
-  // Clicking outside closes it without an edit, and the click is not passed through.
-  const double wave_before = rig.host.values[P::kWaveform];
-  const PlacedControl vibrato = rig.find(P::kVibratoDepth);  // far right, clear of the menu
-  rig.click(1, vibrato.rect.x + vibrato.rect.w / 2, vibrato.rect.y + 60);
-  assert(!rig.editor.menu_open() && rig.host.values[P::kWaveform] == wave_before && rig.host.begins == 0);
-  // Menu items are laid out in columns of menu_rows; item 17 is row 1 of column 1.
-  rig.click(1, wave.rect.x + 40, wave.rect.y + 60);
-  // Reconstruct the menu origin the same way the editor does.
+  // Reconstruct the menu rectangle the same way the editor does.
   const int count = static_cast<int>(P::kSpecs[P::kWaveform].max) + 1;
   const int columns = (count + menu_rows - 1) / menu_rows;
   Rect menu{wave.rect.x, wave.rect.bottom() + 4, columns * menu_column_width + 16, std::min(count, menu_rows) * menu_item_height + 16};
@@ -461,6 +454,18 @@ void test_menus() {
   if (menu.bottom() > content_bottom) menu.y = std::max(header_rect.bottom(), wave.rect.y - menu.h - 4);
   if (menu.bottom() > height - 4) menu.y = std::max(4, height - 4 - menu.h);
   assert(menu.x >= 0 && menu.right() <= width && menu.y >= 0 && menu.bottom() <= height);
+  // Clicking outside closes it without an edit, and the click is not passed through: on a
+  // control below the menu (the menu is as wide as the catalogue needs, so pick by position).
+  const double wave_before = rig.host.values[P::kWaveform];
+  const PlacedControl vibrato = rig.find(P::kVibratoDepth);
+  const int outside_x = vibrato.rect.x + vibrato.rect.w / 2;
+  const int outside_y = std::max(vibrato.rect.y + 60, menu.bottom() + 8);
+  assert(!(outside_x >= menu.x && outside_x < menu.right() && outside_y >= menu.y && outside_y < menu.bottom()) &&
+         outside_y < height && "the outside click really is outside the menu");
+  rig.click(1, outside_x, outside_y);
+  assert(!rig.editor.menu_open() && rig.host.values[P::kWaveform] == wave_before && rig.host.begins == 0);
+  // Menu items are laid out in columns of menu_rows; item 17 is row 1 of column 1.
+  rig.click(1, wave.rect.x + 40, wave.rect.y + 60);
   const int item = 17;
   rig.click(1, menu.x + 8 + (item / menu_rows) * menu_column_width + 30, menu.y + 8 + (item % menu_rows) * menu_item_height + 10);
   assert(!rig.editor.menu_open());
