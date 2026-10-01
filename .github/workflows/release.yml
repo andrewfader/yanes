@@ -1,10 +1,13 @@
 name: Release
 
-# Pushing a version tag (v0.3.0, ...) builds, tests, and packages the plug-in on every platform
-# and publishes the archives as a GitHub release. The builds are unsigned.
+# Pushing a version tag (v0.3.0 or 0.3.0) or publishing a release from the GitHub UI builds,
+# tests, and packages the plug-in for Linux, Windows, and macOS and attaches the archives to
+# the release. The builds are unsigned.
 on:
   push:
-    tags: ['v*']
+    tags: ['v[0-9]*', '[0-9]*']
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -13,6 +16,11 @@ on:
 
 permissions:
   contents: read
+
+# Publishing a release with a new tag fires both the tag push and the release event; build once.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   build:
