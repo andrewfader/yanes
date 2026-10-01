@@ -153,7 +153,7 @@ struct Voice {
   std::shared_ptr<const std::vector<uint8_t>> dpcm_data{};
   double sample_pos{};  // SNES sampler: fractional read position in decoded PCM
   std::shared_ptr<const yanes::snes::BrrSample> snes_data{};
-  bool beeper_bit{};         // One-bit speakers: where this voice's pin is now.
+  float beeper_bit{};        // One-bit speakers: how much of this output sample the pin is high (0..1).
   bool sample_done{};        // OKI ADPCM: the one-shot sound has played out.
   double held_level{-1.0};   // GBA: volume, latched once per video frame.
   double sample_clock{};     // Fixed-rate players (GBA mixer, OKI, TMS5220): ticks owed.
@@ -194,6 +194,8 @@ struct Plugin {
   // One-bit speakers: the bits of every voice meet at one pin, then the speaker's response.
   double beeper_hp_x{}, beeper_hp_y{}, beeper_lp{};
   uint64_t beeper_ticks{};
+  double gba_phase{};  // The GBA's 32768 Hz output DAC.
+  float gba_hold{};
   std::array<double,16> pitch_bend{};
   std::array<double,16> mod_wheel{};
   std::array<double,16> channel_volume{1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,
@@ -425,7 +427,7 @@ constexpr VoiceDefaults kVoiceDefaults[] = {
     {60, -1, -1, -1, -1, 3.5, 5, 900, 0, -1}, // Neo Geo bell: inharmonic ratio, long ring
     {61, -1, -1, -1, -1, -1, 5, -1, 0, -1},   // Arcade feedback FM: strong self-feedback
     {64, -1, 1, -1, 0, -1, -1, 0, 0, -1},     // Amiga Paula: built-in saw loop, LED filter off
-    {65, -1, -1, -1, -1, -1, -1, 0, 0, -1},   // ZX Spectrum beeper: no envelope but the pulse width
+    {65, 1, -1, -1, -1, -1, -1, 0, 0, -1},    // ZX Spectrum beeper: 64-tick pin pulse, no envelope but its width
     {66, -1, -1, -1, -1, -1, -1, 0, 0, -1},   // PC speaker: a PIT square, on or off
     {67, -1, -1, -1, -1, -1, -1, 0, 0, -1},   // Apple II speaker: toggled from software
     {68, -1, -1, -1, -1, -1, -1, 0, 0, -1},   // TMS5220 speech
@@ -434,8 +436,13 @@ constexpr VoiceDefaults kVoiceDefaults[] = {
     {71, -1, -1, -1, -1, -1, -1, -1, 0, -1, 1},  // MSX-MUSIC stack: ditto
     {72, -1, 0, -1, 0, -1, -1, 0, 0, -1},     // Atari Lynx: two-step (square) taps, integrator off
     {73, -1, 3, -1, -1, -1, -1, 0, 0, -1},    // GBA DirectSound: built-in string loop
-    {74, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // Virtual Boy VSU
-    {75, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // WonderSwan
+    {74, -1, 7, -1, -1, -1, -1, 0, 0, -1},    // Virtual Boy VSU: reset ramp
+    {75, -1, 7, -1, -1, -1, -1, 0, 0, -1},    // WonderSwan: reset ramp
+    {78, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // Virtual Boy noise: first tap (bit 14)
+    {79, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // WonderSwan noise: first tap (bit 14)
+    {80, -1, 7, -1, -1, -1, -1, 0, 0, -1},    // Virtual Boy stack: reset ramp, first noise tap
+    {81, -1, 7, -1, -1, -1, -1, 0, 0, -1},    // WonderSwan stack: ditto
+    {82, 0, -1, -1, -1, -1, -1, 0, 0, -1},    // GBA stack: the Game Boy stack's 12.5% pulses
     {76, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // AY buzzer: falling-saw envelope
     {77, -1, 4, -1, -1, -1, -1, 90, 0, -1},   // Slap bass: thumb between soft and popped
 };
@@ -632,7 +639,7 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     // Sample players, one-bit speakers, speech and the later handhelds.
     case 100: put(kWaveform, 64); put(kExpansionShape, 3); put(kVibratoDepth, 0.12); put(kGainDb, -9.0); break; // Amiga ProTracker lead (25% pulse loop)
     case 101: put(kWaveform, 64); put(kExpansionShape, 6); put(kNoiseMode, 1); put(kTranspose, -12); put(kGainDb, -7.0); break; // Amiga MOD bass (LED filter on)
-    case 102: put(kWaveform, 65); put(kReleaseMs, 80); put(kGainDb, -6.0); break; // ZX Spectrum beeper lead (release narrows the pin pulse)
+    case 102: put(kWaveform, 65); put(kDuty, 3); put(kReleaseMs, 80); put(kGainDb, -4.0); break; // ZX Spectrum beeper lead (release narrows the pin pulse)
     case 103: put(kWaveform, 66); put(kArpMode, 1); put(kArpRate, 30); put(kGainDb, -6.5); break; // PC speaker fast chord
     case 104: put(kWaveform, 67); put(kTranspose, -12); put(kGainDb, -2.5); break; // Apple II speaker bass
     case 105: put(kWaveform, 68); put(kWavetablePosition, 0.1); put(kWavetableWarp, 0.4); put(kVibratoDepth, 0.15); put(kGainDb, 2.0); break; // Talking lead
@@ -643,8 +650,13 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 110: put(kWaveform, 72); put(kExpansionShape, 4); put(kGainDb, -12.0); break; // Atari Lynx buzz lead
     case 111: put(kWaveform, 73); put(kAttackMs, 60); put(kReleaseMs, 300); put(kGainDb, -3.0); break; // GBA DirectSound strings
     case 112: put(kWaveform, 74); put(kExpansionShape, 3); put(kVibratoDepth, 0.1); put(kGainDb, -5.0); break; // Virtual Boy wave lead
-    case 113: put(kWaveform, 75); put(kGainDb, -9.0); break; // WonderSwan wave lead
+    case 113: put(kWaveform, 75); put(kExpansionShape, 4); put(kGainDb, -9.0); break; // WonderSwan wave lead (buzzy pulse table)
     case 114: put(kWaveform, 76); put(kExpansionShape, 4); put(kTranspose, -12); put(kGainDb, -4.0); break; // AY buzzer bass (envelope saw synced to the tone)
+    case 116: put(kWaveform, 78); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 9); put(kGainDb, -4.5); break; // Virtual Boy noise percussion
+    case 117: put(kWaveform, 79); put(kExpansionShape, 3); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 9); put(kGainDb, -4.5); break; // WonderSwan noise percussion (short tap: metallic)
+    case 118: put(kWaveform, 80); put(kStrictHardware, 1); put(kGainDb, -6.0); break; // Virtual Boy channel stack
+    case 119: put(kWaveform, 81); put(kStrictHardware, 1); put(kGainDb, -6.0); break; // WonderSwan channel stack
+    case 120: put(kWaveform, 82); put(kStrictHardware, 1); put(kGainDb, -9.0); break; // GBA channel stack
     case 115: put(kWaveform, 77); put(kExpansionShape, 6); put(kTranspose, -12); put(kReleaseMs, 60); put(kGainDb, 0.5); break; // Seinfeld slap bass
     default: break;
   }
@@ -780,7 +792,7 @@ void note_on(Plugin* p, int channel, int key, int note_id, double velocity, int1
   const bool stack_mode = selected == 18 || selected == 19 || selected == 20 || selected == 21 ||
                           selected == 31 || selected == 32 || selected == 33 || selected == 34 ||
                           selected == 35 || selected == 36 || selected == 41 || selected == 43 || selected == 45 ||
-                          selected == 71;
+                          selected == 71 || selected == 80 || selected == 81 || selected == 82;
   if (stack_mode && p->params[kStrictHardware].load(std::memory_order_relaxed) >= 0.5) {
     for (auto& v : p->voices) if (v.active && v.channel == channel) kill_voice(p, v, out, time);
   }
@@ -1041,7 +1053,7 @@ const double kReleaseFloorLog = std::log(kReleaseFloor);
 
 float render_voice(Plugin* p, Voice& v) {
   v.layer_sample = 0.0f;
-  v.beeper_bit = false;
+  v.beeper_bit = 0.0f;
   if (v.sample_done) { stop_hardware(p, v); v.active = false; return 0.0f; }
   const double attack = effective_param<kAttackMs>(p);
   double release = effective_param<kReleaseMs>(p);
@@ -1109,7 +1121,10 @@ float render_voice(Plugin* p, Voice& v) {
   }
   const double sweep_depth = effective_param<kSweepDepth>(p);
   const double sweep_time = effective_param<kSweepTime>(p) * 0.001;
-  sequence_pitch += sweep_depth * std::min(1.0, elapsed_samples / (p->sample_rate * sweep_time));
+  // (The WonderSwan stack's third channel sweeps its register in hardware instead; see below.)
+  const bool swan_hardware_sweep = static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 81 && v.channel == 2;
+  if (!swan_hardware_sweep)
+    sequence_pitch += sweep_depth * std::min(1.0, elapsed_samples / (p->sample_rate * sweep_time));
   sequence_pitch += voice_cents(p, v);
   // Vibrato depth waits out the delay and then starts from zero phase, like a tracker's delayed
   // vibrato; the mod wheel stays immediate so a player can always add it by hand.
@@ -1159,6 +1174,12 @@ float render_voice(Plugin* p, Voice& v) {
     waveform = 44;
   } else if (waveform == 71) { // MSX-MUSIC: six YM2413 melodic, five rhythm drums, three PSG tones.
     waveform = v.channel < 6 ? 70 : (v.channel < 11 ? 101 : 22);
+  } else if (waveform == 80) { // Virtual Boy: five wavetable channels (the fifth modulated) and noise.
+    waveform = v.channel < 5 ? 74 : 78;
+  } else if (waveform == 81) { // WonderSwan: wave, wave or PCM voice, wave with sweep, noise.
+    waveform = v.channel < 3 ? 75 : 79;
+  } else if (waveform == 82) { // GBA: the Game Boy's four PSG channels, then DirectSound A and B.
+    constexpr int map[] = {10, 10, 11, 12, 73, 73}; waveform = map[std::clamp<int>(v.channel, 0, 5)];
   }
   const bool custom_wave = p->params[kCustomWave].load(std::memory_order_relaxed) >= 0.5 ||
       static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 58;
@@ -1204,9 +1225,20 @@ float render_voice(Plugin* p, Voice& v) {
   } else if (waveform == 67) {
     frequency = yanes::extra::apple2_frequency(frequency);
   } else if (waveform == 74) {
-    frequency = yanes::extra::vsu_frequency(frequency);
+    // The stack's fifth channel adds the VSU's modulation table to its frequency register.
+    frequency = selected_waveform == 80 && v.channel == 4
+        ? yanes::extra::vsu_modulated_frequency(frequency, effective_param<kFmIndex>(p) * 8.0, elapsed_samples / p->sample_rate)
+        : yanes::extra::vsu_frequency(frequency);
   } else if (waveform == 75) {
-    frequency = yanes::extra::wonderswan_frequency(frequency);
+    // The stack's third channel sweeps its frequency register in hardware: Sweep depth is the
+    // signed amount added per step, Sweep time the step period.
+    const int amount = static_cast<int>(std::lround(effective_param<kSweepDepth>(p)));
+    if (selected_waveform == 81 && v.channel == 2 && amount != 0) {
+      const int ticks = std::clamp(static_cast<int>(std::lround(effective_param<kSweepTime>(p) * 0.375)) - 1, 0, 31);
+      frequency = yanes::extra::swan_swept_frequency(frequency, amount, ticks, elapsed_samples / p->sample_rate);
+    } else {
+      frequency = yanes::extra::wonderswan_frequency(frequency);
+    }
   } else if (waveform == 76) {
     const int envelope = shape_param == 7 ? 0 : (shape_param & 3);
     frequency = yanes::extra::ay_envelope_frequency(frequency, envelope >= 2);
@@ -1624,15 +1656,21 @@ float render_voice(Plugin* p, Voice& v) {
     value = static_cast<float>(out);
   } else if (waveform == 65 || waveform == 66 || waveform == 67) {
     // One-bit speakers: the pin is high or low, nothing in between. The mixer joins every
-    // voice's bit the way each machine's sound routines did. The Spectrum's pin-pulse engines
-    // have no volume control but the width of the pulse, so the envelope narrows it.
+    // voice's bit the way each machine's sound routines did. A Spectrum pin-pulse engine fires a
+    // short fixed pulse each period (Pulse duty sets 32, 64, 128 or 256 ticks of its 895 kHz
+    // loop; 64, about 72 us, by default) and has no volume control but that pulse's width, so the
+    // envelope narrows it. Eight sub-samples measure how much of each output sample the pin
+    // spends high, so the narrow pulse does not alias.
     double width = 0.5;
     if (waveform == 65) {
       const double velocity = p->params[kVelocity].load(std::memory_order_relaxed) >= 0.5 ? v.velocity : 1.0;
-      width = 0.25 * std::clamp(v.env * v.volume_expression * velocity, 0.02, 1.0);
+      width = std::min(0.5, yanes::extra::zx_pulse_seconds(voice_duty(p, v)) * frequency) *
+              std::clamp(v.env * v.volume_expression * velocity, 0.02, 1.0);
     }
-    v.beeper_bit = v.phase < width;
-    value = v.beeper_bit ? 1.0f : -1.0f;
+    int high = 0;
+    for (int n = 0; n < 8; ++n) high += std::fmod(v.phase + increment * n / 8.0, 1.0) < width;
+    v.beeper_bit = static_cast<float>(high) / 8.0f;
+    value = v.beeper_bit * 2.0f - 1.0f;
   } else if (waveform == 68) {
     // TMS5220-style speech: an 8 kHz chirp-excited lattice, its coefficients interpolated
     // every 25 samples. Table position is the vowel; Table warp makes it talk.
@@ -1721,10 +1759,37 @@ float render_voice(Plugin* p, Voice& v) {
       }
     }
     value = static_cast<float>(v.sample_hold);
+  } else if (waveform == 75 && selected_waveform == 81 && v.channel == 1 && v.snes_data && v.snes_data->pcm.size() >= 2) {
+    // WonderSwan channel 2 in voice mode: the CPU writes 8-bit samples straight to its DAC, here
+    // at 24 kHz from the loaded bank slot, nearest sample, no interpolation.
+    v.sample_clock += 24000.0 / p->sample_rate;
+    while (v.sample_clock >= 1.0) {
+      v.sample_clock -= 1.0;
+      const BankWindow window = bank_window(p, v.snes_data->pcm.size());
+      if (bank_wrap(p, v, window)) {
+        v.sample_hold = bank_byte(v, window);
+        v.sample_pos += yanes::snes::kNativeRate * bank_ratio(p, v, frequency) / 24000.0;
+      } else {
+        v.sample_hold = 0.0;
+        v.releasing = true;
+      }
+    }
+    value = static_cast<float>(v.sample_hold);
   } else if (waveform == 74 || waveform == 75) {
     // Virtual Boy (6-bit) and WonderSwan (4-bit) 32-step wavetables.
     for (int n = 0; n < 4; ++n)
       value += yanes::extra::console_wavetable(shape, v.phase + increment * n / 4.0, waveform == 74 ? 64 : 16, waveform == 75) * 0.25f;
+  } else if (waveform == 78 || waveform == 79) {
+    // Virtual Boy and WonderSwan noise: a 15-bit LFSR with a selectable tap (Shape), stepped
+    // from the channel's frequency register.
+    const size_t tap = static_cast<size_t>(std::clamp(shape, 0, 7));
+    v.noise_phase += (waveform == 78 ? yanes::extra::vsu_noise_rate(frequency) : yanes::extra::swan_noise_rate(frequency)) / p->sample_rate;
+    while (v.noise_phase >= 1.0) {
+      v.console_lfsr = yanes::extra::console_noise_clock(v.console_lfsr,
+          waveform == 78 ? yanes::extra::kVsuNoiseTaps[tap] : yanes::extra::kSwanNoiseTaps[tap]);
+      v.noise_phase -= 1.0;
+    }
+    value = (v.console_lfsr & 1U) ? 1.0f : -1.0f;
   } else if (waveform == 76) {
     // AY-3-8910 buzzer: the volume envelope run at audio rate through the log DAC. Shapes 4-7
     // also gate it with the tone channel (in sync, an octave up, or slightly detuned).
@@ -1978,6 +2043,8 @@ void plugin_reset(const clap_plugin_t* plugin) {
   p->hum_phase = p->chorus_phase = 0.0;
   p->beeper_hp_x = p->beeper_hp_y = p->beeper_lp = 0.0;
   p->beeper_ticks = 0;
+  p->gba_phase = 0.0;
+  p->gba_hold = 0.0f;
   p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;
   p->output_peak_l.store(0.0f);p->output_peak_r.store(0.0f);p->output_clipped.store(false);
   p->nes_apu.reset();
@@ -2050,8 +2117,8 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
         static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) >= 65 &&
         static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) <= 67
         ? static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) : 0;
-    bool beeper_or = false, beeper_xor = false;
-    std::array<std::pair<uint64_t, bool>, 16> beeper_voices{};
+    float beeper_low = 1.0f, beeper_xor = 0.0f;  // OR as the product of "low" fractions; XOR of fractions.
+    std::array<std::pair<uint64_t, float>, 16> beeper_voices{};
     size_t beeper_count = 0;
     for (auto& v : p->voices) if (v.active) {
       sounding = true;
@@ -2070,8 +2137,8 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
       if (!v.active) emit_note_end(out_events, frame, v);
       if (muted) continue;
       if (beeper) {
-        beeper_or = beeper_or || v.beeper_bit;
-        beeper_xor = beeper_xor != v.beeper_bit;
+        beeper_low *= 1.0f - v.beeper_bit;
+        beeper_xor = beeper_xor + v.beeper_bit - 2.0f * beeper_xor * v.beeper_bit;
         beeper_voices[beeper_count++] = {v.age, v.beeper_bit};
         continue;
       }
@@ -2087,13 +2154,20 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
         dpcm_dac += (bipolar * 0.5 + 0.5) * 127.0 * std::max(0.000001, v.env);
       }
     }
+    const int mixed_waveform = static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
+    if ((mixed_waveform == 73 || mixed_waveform == 82) && p->params[kCustomWave].load(std::memory_order_relaxed) < 0.5) {
+      // Everything the GBA plays leaves through its PWM DAC: 9 bits at 32768 Hz.
+      p->gba_phase += 32768.0 / p->sample_rate;
+      if (p->gba_phase >= 1.0) { p->gba_phase -= std::floor(p->gba_phase); p->gba_hold = std::round(std::clamp(sample, -1.0f, 1.0f) * 256.0f) / 256.0f; }
+      sample = p->gba_hold;
+    }
     if (beeper) {
       // One pin for every voice. Spectrum pin-pulse engines OR their narrow pulses together,
       // Apple II two-voice routines toggle the speaker for either voice (an XOR), and the PC
       // speaker can only play one tone, so chords are arpeggiated at 60 Hz, oldest note first.
-      bool bit = beeper == 65 ? beeper_or : beeper_xor;
+      float bit = beeper == 65 ? 1.0f - beeper_low : beeper_xor;
       if (beeper == 66) {
-        bit = false;
+        bit = 0.0f;
         if (beeper_count) {
           const uint64_t step = p->beeper_ticks / static_cast<uint64_t>(std::max(1.0, p->sample_rate / 60.0));
           const size_t turn = static_cast<size_t>(step % beeper_count);
@@ -2109,7 +2183,7 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
       // has. The Apple II's cone relaxes within about half a millisecond of each toggle.
       const double highpass = beeper == 65 ? 30.0 : (beeper == 66 ? 250.0 : 350.0);
       const double lowpass = beeper == 65 ? 7000.0 : (beeper == 66 ? 5000.0 : 6500.0);
-      const double x = bit ? 1.0 : 0.0;
+      const double x = bit;
       p->beeper_hp_y = std::exp(-6.28318530718 * highpass / p->sample_rate) * (p->beeper_hp_y + x - p->beeper_hp_x);
       p->beeper_hp_x = x;
       p->beeper_lp += (1.0 - std::exp(-6.28318530718 * lowpass / p->sample_rate)) * (p->beeper_hp_y - p->beeper_lp);

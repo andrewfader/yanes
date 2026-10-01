@@ -3,7 +3,9 @@
 ## ymfm
 
 YANES uses Aaron Giles' `ymfm` Yamaha FM sound cores, pinned to commit
-`81aec25ccbb98f4873a255f7551ac4dadac59b4a`.
+`81aec25ccbb98f4873a255f7551ac4dadac59b4a`, with one modification applied at fetch time:
+`third_party/ymfm-rhythm-phase-select.patch` corrects the OPL/OPLL hi-hat and top-cymbal phase
+select (see FURNACE_PARITY.md).
 
 Copyright (c) 2021, Aaron Giles. All rights reserved.
 

@@ -1513,7 +1513,7 @@ enum class Kind { kTonal, kNoise, kPercussive, kHit };
 
 Kind kind_of(int waveform) {
   switch (waveform) {
-    case 2: case 12: case 14: case 16: case 23: case 25: case 37: return Kind::kNoise;
+    case 2: case 12: case 14: case 16: case 23: case 25: case 37: case 78: case 79: return Kind::kNoise;
     case 9: case 57: case 69: case 100: return Kind::kPercussive;
     case 101: return Kind::kHit;
     default: return Kind::kTonal;
@@ -1546,7 +1546,8 @@ int stack_channels(int stack) {
   switch (stack) {
     case 18: return 5; case 19: return 4; case 20: return 4; case 21: return 10; case 31: return 6;
     case 32: return 16; case 33: return 9; case 34: return 4; case 35: return 6; case 36: return 16;
-    case 41: return 5; case 43: return 6; case 45: return 2; case 71: return 14; default: return 0;
+    case 41: return 5; case 43: return 6; case 45: return 2; case 71: return 14;
+    case 80: return 6; case 81: return 4; case 82: return 6; default: return 0;
   }
 }
 
@@ -1567,6 +1568,9 @@ int stack_voice(int stack, int channel) {
     case 43: return 42;
     case 45: return 44;
     case 71: return channel < 6 ? 70 : (channel < 11 ? 101 : 22);
+    case 80: return channel < 5 ? 74 : 78;
+    case 81: return channel < 3 ? 75 : 79;
+    case 82: return std::array<int, 6>{10, 10, 11, 12, 73, 73}[static_cast<size_t>(std::min(channel, 5))];
     default: return -1;
   }
 }
@@ -1606,6 +1610,34 @@ void register_sources() {
         expect_kind(x, kind_of(voice), fmt("%s channel %d (%s)", P::kWaveNames[stack], channel + 1, voice >= 100 ? "rhythm" : P::kWaveNames[voice]));
       }
     }
+    // Routing: each stack channel sounds like the solo voice it is documented to play, more than
+    // like any other voice that stack offers. (The kind check above cannot tell, say, an AY square
+    // from a YM2413 note; this can.) Chip-internal voices with no solo form (rhythm) are skipped.
+    for (int stack = 0; stack < kVoices; ++stack) {
+      if (stack_voice(stack, 0) < 0) continue;
+      std::vector<int> offered;
+      for (int channel = 0; channel < stack_channels(stack); ++channel) {
+        const int voice = stack_voice(stack, channel);
+        if (voice < kVoices && std::find(offered.begin(), offered.end(), voice) == offered.end()) offered.push_back(voice);
+      }
+      if (offered.size() < 2) continue;
+      std::vector<std::vector<float>> solos;
+      for (const int voice : offered) solos.push_back(render({{P::kWaveform, static_cast<double>(voice)}}, {on(0, 60), off(1.5, 60)}, 1.5).mono());
+      for (int channel = 0; channel < stack_channels(stack); ++channel) {
+        const int voice = stack_voice(stack, channel);
+        if (voice >= kVoices) continue;
+        const auto x = render({{P::kWaveform, static_cast<double>(stack)}}, {on(0, 60, channel), off(1.5, 60, channel)}, 1.5).mono();
+        size_t best = 0;
+        std::vector<double> scores;
+        for (size_t i = 0; i < solos.size(); ++i) {
+          scores.push_back(timbre_similarity(x, solos[i]));
+          if (scores[i] > scores[best]) best = i;
+        }
+        const size_t documented = static_cast<size_t>(std::find(offered.begin(), offered.end(), voice) - offered.begin());
+        expect(offered[best] == voice, fmt("%s channel %d sounds like %s (%.3f), not %s (%.3f)", P::kWaveNames[stack], channel + 1,
+                                           P::kWaveNames[voice], scores[documented], P::kWaveNames[offered[best]], scores[best]));
+      }
+    }
     // What the later voices advertise beyond their kind.
     {
       // The PC speaker plays one tone at a time: a held chord alternates, 60 times a second.
@@ -1621,7 +1653,14 @@ void register_sources() {
       const auto zx = render({{P::kWaveform, 65}}, {on(0, 60), on(0, 67), off(1.0, 60), off(1.0, 67)}, 1.0).mono();
       const Span zw(zx, 9600, 2400);
       const double zc = measure::tone_amplitude(zw, kRate, midi_hz(60)), zg = measure::tone_amplitude(zw, kRate, midi_hz(67));
-      expect(zc > 0.02 && zg > 0.02 && zc < 3 * zg && zg < 3 * zc, fmt("ZX beeper plays a chord at once (%.3f / %.3f)", zc, zg));
+      expect(zc > 1e-3 && zg > 1e-3 && zc < 3 * zg && zg < 3 * zc, fmt("ZX beeper plays a chord at once (%.4f / %.4f)", zc, zg));
+      // Pulse duty sets the pin pulse's length (32, 64, 128, 256 ticks): each step is louder.
+      double previous_level = -1e9;
+      for (int duty = 0; duty < 4; ++duty) {
+        const double level = rms_db(note({{P::kWaveform, 65}, {P::kDuty, static_cast<double>(duty)}}).mono(), 0.2, 0.5);
+        expect(level > previous_level + 2.0, fmt("ZX pulse length %d ticks is louder than the step below (%.1f dB)", 32 << duty, level));
+        previous_level = level;
+      }
       // ... and its pin pulse narrows, so it gets quieter, as the release runs out.
       const auto zr = render({{P::kWaveform, 65}, {P::kReleaseMs, 400}}, {on(0), off(0.3)}, 1.0).mono();
       const double held = rms_db(zr, 0.15, 0.1), fading = rms_db(zr, 0.55, 0.1);
@@ -1662,6 +1701,69 @@ void register_sources() {
       const double talking = centroid_range(note({{P::kWaveform, 68}, {P::kWavetableWarp, 0.5}}, 1.5, 1.5).mono());
       const double still = centroid_range(note({{P::kWaveform, 68}, {P::kWavetableWarp, 0.0}}, 1.5, 1.5).mono());
       expect(talking > 1.3 && still < 1.15, fmt("TMS5220 talks with Talk rate up (centroid range x%.2f), holds still at 0 (x%.2f)", talking, still));
+    }
+    {
+      auto pitch_swing = [](const std::vector<float>& x) {
+        const auto track = semitone_track(x, 0.005, 0.03);
+        double lo = 1e9, hi = -1e9;
+        for (size_t i = 20; i < track.size() && i < 280; ++i) if (!std::isnan(track[i])) { lo = std::min(lo, track[i]); hi = std::max(hi, track[i]); }
+        return hi > lo ? hi - lo : 0.0;
+      };
+      // Virtual Boy channel 5 runs the VSU modulation table; channel 1 does not. Depth 0 stills it.
+      const double ch5 = pitch_swing(render({{P::kWaveform, 80}}, {on(0, 60, 4), off(1.5, 60, 4)}, 1.5).mono());
+      const double ch1 = pitch_swing(render({{P::kWaveform, 80}}, {on(0, 60, 0), off(1.5, 60, 0)}, 1.5).mono());
+      const double flat = pitch_swing(render({{P::kWaveform, 80}, {P::kFmIndex, 0}}, {on(0, 60, 4), off(1.5, 60, 4)}, 1.5).mono());
+      expect(ch5 > 0.3 && ch1 < 0.1 && flat < 0.1, fmt("VB channel 5 modulates its pitch (%.2f st; channel 1 %.2f, depth 0 %.2f)", ch5, ch1, flat));
+      // WonderSwan channel 3 sweeps its frequency register upward in hardware: a rising pitch whose
+      // semitone rate grows as the register nears 2048, unlike the plain semitone sweep.
+      const auto swept = semitone_track(render({{P::kWaveform, 81}, {P::kSweepDepth, 8}, {P::kSweepTime, 10}},
+                                               {on(0, 48, 2), off(1.0, 48, 2)}, 1.0).mono(), 0.01, 0.03);
+      const double early = swept[25] - swept[5], late = swept[65] - swept[45];
+      expect(early > 0.5 && late > 1.5 * early, fmt("WonderSwan channel 3 hardware sweep accelerates (%.2f then %.2f st per 0.2 s)", early, late));
+      // The other channels keep the ordinary sweep: Sweep depth semitones over Sweep time.
+      const auto plain = semitone_track(render({{P::kWaveform, 81}, {P::kSweepDepth, 8}, {P::kSweepTime, 400}},
+                                               {on(0, 48, 0), off(1.0, 48, 0)}, 1.0).mono(), 0.01, 0.03);
+      expect(std::abs(plain[60] - plain[2] - 8.0) < 0.5, fmt("WonderSwan channel 1 keeps the semitone sweep (%.2f st)", plain[60] - plain[2]));
+      // The noise voices' Shape picks the LFSR tap: tap 7 repeats every 28 steps, tap 0 runs for
+      // 32767. At C-4 the VSU steps at 5 MHz / (10 x 597), the WonderSwan at 3.072 MHz / 367.
+      for (const auto& [voice, rate] : {std::pair{78, 5000000.0 / 5970.0}, std::pair{79, 3072000.0 / 367.0}}) {
+        const double period = 28.0 / rate;
+        const double short_tap = repeats_at(note({{P::kWaveform, static_cast<double>(voice)}, {P::kExpansionShape, 7}}).mono(), period);
+        const double long_tap = repeats_at(note({{P::kWaveform, static_cast<double>(voice)}, {P::kExpansionShape, 0}}).mono(), period);
+        expect(short_tap > 0.8 && long_tap < 0.3, fmt("%s: tap 7 repeats every 28 steps (r %.2f), tap 0 does not (r %.2f)", P::kWaveNames[voice], short_tap, long_tap));
+      }
+      // Everything the GBA plays leaves through its 9-bit DAC, so a slow fade-in can only take a few
+      // hundred output levels; the Game Boy stack's fade is continuous.
+      auto levels = [](const std::vector<float>& x) {
+        std::vector<float> v(x.begin() + 240, x.begin() + 19200);
+        std::sort(v.begin(), v.end());
+        return static_cast<size_t>(std::unique(v.begin(), v.end()) - v.begin());
+      };
+      const size_t gba = levels(render({{P::kWaveform, 82}, {P::kAttackMs, 400}}, {on(0, 60, 0), off(1.0, 60, 0)}, 1.0).left);
+      const size_t gb = levels(render({{P::kWaveform, 19}, {P::kAttackMs, 400}}, {on(0, 60, 0), off(1.0, 60, 0)}, 1.0).left);
+      expect(gba <= 512 && gb > 2000, fmt("GBA output has 9-bit levels (%zu distinct vs Game Boy %zu)", gba, gb));
+      // WonderSwan channel 2 becomes a PCM voice when its bank slot holds a sample.
+      {
+        const auto dir = std::filesystem::temp_directory_path() / "yanes-advertised-swan-voice";
+        std::filesystem::create_directories(dir);
+        const auto wav = dir / "a440.wav";
+        {
+          std::vector<int16_t> pcm(32000);
+          for (size_t i = 0; i < pcm.size(); ++i) pcm[i] = static_cast<int16_t>(std::lround(20000.0 * std::sin(6.283185307 * 440.0 * i / 32000.0)));
+          std::ofstream out(wav, std::ios::binary);
+          auto u32 = [&](uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+          auto u16 = [&](uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
+          out.write("RIFF", 4); u32(36 + 64000); out.write("WAVEfmt ", 8); u32(16); u16(1); u16(1); u32(32000); u32(64000); u16(2); u16(16);
+          out.write("data", 4); u32(64000); out.write(reinterpret_cast<const char*>(pcm.data()), 64000);
+        }
+        Banks::set_bank_list(wav.string().c_str());
+        const auto voice = render({{P::kWaveform, 81}}, {on(0, 36, 1), off(0.8, 36, 1)}, 0.8).mono();
+        const auto other = render({{P::kWaveform, 81}}, {on(0, 36, 0), off(0.8, 36, 0)}, 0.8).mono();
+        Banks::set_bank_list("");
+        std::filesystem::remove_all(dir);
+        expect_near(pitch_at(voice, 0.2, 0.3), 440.0, 4.0, "Hz", "WonderSwan channel 2 plays the loaded sample as a PCM voice");
+        expect(std::abs(pitch_at(other, 0.2, 0.3) - midi_hz(36)) < 3.0, "WonderSwan channel 1 still plays its wavetable");
+      }
     }
   });
 }
@@ -1793,6 +1895,11 @@ PresetClaim preset_claim(int id) {
       {{75}, kSustain},                 // 113 WonderSwan wave lead
       {{76}, kBass},                    // 114 AY buzzer bass
       {{77}, kBass},                    // 115 Seinfeld slap bass
+      {{78}, kNoisy | kDecay},          // 116 Virtual Boy noise percussion
+      {{79}, kNoisy | kDecay},          // 117 WonderSwan noise percussion
+      {{80}, kStack},                   // 118 Virtual Boy channel stack
+      {{81}, kStack},                   // 119 WonderSwan channel stack
+      {{82}, kStack},                   // 120 GBA channel stack
   }};
   return table[static_cast<size_t>(id)];
 }

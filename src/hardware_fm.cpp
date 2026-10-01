@@ -67,6 +67,7 @@ struct HardwareFmVoice::Impl : ymfm::ymfm_interface {
   HardwareFmVoice::Kind kind{HardwareFmVoice::Kind::Ym2612};
   double accumulator{};
   float last{};
+  float previous{};  // The chip sample before `last`: the host output interpolates between them.
   int last_pitch_a{-1}, last_pitch_b{-1};
   double last_frequency{-1};
   bool programmed{};
@@ -103,15 +104,27 @@ struct HardwareFmVoice::Impl : ymfm::ymfm_interface {
     }
     fn = std::clamp(static_cast<int>(std::round(value)), 0, 1023);
   }
-  // YM2413: f = fnum * (clock / 72) / 2^(19 - block), with a 9-bit fnum.
+  // YM2413: f = fnum * (clock / 72) / 2^(19 - block). MSX sound drivers keep a one-octave
+  // F-number table from about 172 to 343 and put the octave in the block (C-4 is block 4, 172),
+  // and so does Furnace; the extra precision a 9-bit F-number allows goes unused. Following the
+  // drivers matters for the top cymbal and hi-hat, whose metallic partials are XORs of phase
+  // bits and move a long way with a single F-number step (C-4 as block 3, 345 sounds different).
   static void opll_fnum(double frequency, int& block, int& fn) {
     double value = 0;
     block = 0;
     for (; block <= 7; ++block) {
       value = frequency * 72.0 * std::pow(2.0, 19 - block) / opll_clock;
-      if (value < 512.0 || block == 7) break;
+      if (value < 343.0 || block == 7) break;
     }
-    fn = std::clamp(static_cast<int>(std::round(value)), 0, 511);
+    fn = std::clamp(static_cast<int>(value), 0, 511);
+  }
+  static constexpr int kRhythmChannel[5] = {6, 7, 8, 8, 7};
+  int rhythm_channel{6};
+  void opll_rhythm_pitch(double frequency) {
+    int block = 0, fn = 0;
+    opll_fnum(frequency, block, fn);
+    write(*opll, static_cast<uint16_t>(0x10 + rhythm_channel), static_cast<uint8_t>(fn));
+    write(*opll, static_cast<uint16_t>(0x20 + rhythm_channel), static_cast<uint8_t>((block << 1) | (fn >> 8)));
   }
   static bool is_opll(HardwareFmVoice::Kind k) {
     return k == HardwareFmVoice::Kind::Opll || k == HardwareFmVoice::Kind::OpllRhythm;
@@ -161,7 +174,7 @@ struct HardwareFmVoice::Impl : ymfm::ymfm_interface {
     if (opm) opm->reset();
     if (opll) opll->reset();
     accumulator = 0;
-    last = 0;
+    last = previous = 0;
     last_pitch_a = last_pitch_b = -1;
     last_frequency = -1;
     programmed = keyed = false;
@@ -212,14 +225,19 @@ void HardwareFmVoice::key_on(Kind kind, double frequency, const FmControls& c) {
     return;
   }
   if (kind == Kind::OpllRhythm) {
-    // Rhythm mode turns channels 6-8 into the five drums, at the pitches the YM2413
-    // application notes give them; each drum has its own key bit in register 0x0e.
+    // Rhythm mode turns channels 6-8 into the five drums, each with its own key bit in
+    // register 0x0e. A drum's pitch is its channel's F-number: the bass drum's channel 6, the
+    // snare and hi-hat's channel 7, the tom and cymbal's channel 8. The played note sets it,
+    // so the drums tune like any other note (as Furnace plays them). Each YANES voice has a
+    // chip to itself, so the drum channels nobody is playing stay at their reset F-number of
+    // 0. That matters: the top cymbal and hi-hat mix in phase bits from both channels 7 and 8.
     auto& chip = *impl_->opll;
-    Impl::write(chip, 0x16, 0x20); Impl::write(chip, 0x26, 0x05);
-    Impl::write(chip, 0x17, 0x50); Impl::write(chip, 0x27, 0x05);
-    Impl::write(chip, 0x18, 0xc0); Impl::write(chip, 0x28, 0x01);
-    Impl::write(chip, 0x36, 0x00); Impl::write(chip, 0x37, 0x00); Impl::write(chip, 0x38, 0x00);
+    // Rhythm mode goes on first: ymfm caches each operator's patch data when its channel is
+    // written, and the drum channels only take the rhythm patches once the mode is set.
     Impl::write(chip, 0x0e, 0x20);
+    Impl::write(chip, 0x36, 0x00); Impl::write(chip, 0x37, 0x00); Impl::write(chip, 0x38, 0x00);
+    impl_->rhythm_channel = Impl::kRhythmChannel[std::clamp(c.rhythm, 0, 4)];
+    impl_->opll_rhythm_pitch(frequency);
     constexpr uint8_t keys[] = {0x10, 0x08, 0x04, 0x02, 0x01};
     impl_->last_pitch_a = keys[std::clamp(c.rhythm, 0, 4)];
     Impl::write(chip, 0x0e, static_cast<uint8_t>(0x20 | impl_->last_pitch_a));
@@ -364,7 +382,7 @@ float HardwareFmVoice::render(double host_rate, double frequency) {
   // Steady notes need no new pitch registers or repeated logarithms/divider searches.
   if (frequency != impl_->last_frequency) {
   if (impl_->kind == Kind::OpllRhythm) {
-    // The drums play at fixed pitches.
+    impl_->opll_rhythm_pitch(frequency);
   } else if (impl_->kind == Kind::Opll) {
     int block = 0, fn = 0;
     Impl::opll_fnum(frequency, block, fn);
@@ -421,8 +439,12 @@ float HardwareFmVoice::render(double host_rate, double frequency) {
   else if (Impl::is_opll(impl_->kind)) native_rate = impl_->opll->sample_rate(Impl::opll_clock);
   else native_rate = impl_->opm->sample_rate(Impl::opm_clock);
   const double full_scale = kChipFullScale[static_cast<int>(impl_->kind)];
+  // The chips run at their own rate (49716 Hz for the YM2413, for example). Holding the latest
+  // chip sample would skip one now and then, a periodic glitch that puts sidebands on every
+  // partial; interpolating between the last two chip samples does not.
   impl_->accumulator += native_rate / host_rate;
   while (impl_->accumulator >= 1.0) {
+    impl_->previous = impl_->last;
     if (impl_->kind == Kind::Ym2612) { ymfm::ym2612::output_data out{}; impl_->opn->generate(&out); impl_->last = static_cast<float>((out.data[0] + out.data[1]) / (2.0 * full_scale)); }
     else if (impl_->kind == Kind::Opn) { ymfm::ym2203::output_data out{}; impl_->opn1->generate(&out); impl_->last = static_cast<float>(out.data[0] / full_scale); }
     else if (impl_->kind == Kind::Opna) { ymfm::ym2608::output_data out{}; impl_->opna->generate(&out); impl_->last = static_cast<float>((out.data[0] + out.data[1]) / (2.0 * full_scale)); }
@@ -436,6 +458,6 @@ float HardwareFmVoice::render(double host_rate, double frequency) {
     } else { ymfm::ym2151::output_data out{}; impl_->opm->generate(&out); impl_->last = static_cast<float>((out.data[0] + out.data[1]) / (2.0 * full_scale)); }
     impl_->accumulator -= 1.0;
   }
-  return impl_->last;
+  return static_cast<float>(impl_->previous + (impl_->last - impl_->previous) * impl_->accumulator);
 }
 }

@@ -17,6 +17,31 @@ the suite locally against that commit, and regenerate the modules with
 `tools/furnace_fixture_gen.cpp`). Current Furnace sources need
 `-DCMAKE_CXX_FLAGS="-include climits -include cstring"` with recent libstdc++.
 
+To build the generator, append this to the Furnace checkout's `CMakeLists.txt` (it reuses
+Furnace's sources minus `main.cpp`; the generator file itself needs C++17 for `extra_chips.hpp`)
+and build `yanes-furnace-fixture-gen`:
+
+```cmake
+set(YANES_FIXTURE_GEN_SOURCES ${USED_SOURCES})
+list(REMOVE_ITEM YANES_FIXTURE_GEN_SOURCES src/main.cpp furnace.appdata.xml)
+list(APPEND YANES_FIXTURE_GEN_SOURCES /path/to/yanes/tools/furnace_fixture_gen.cpp)
+add_executable(yanes-furnace-fixture-gen ${YANES_FIXTURE_GEN_SOURCES})
+target_include_directories(yanes-furnace-fixture-gen SYSTEM PRIVATE ${DEPENDENCIES_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(yanes-furnace-fixture-gen PRIVATE /path/to/yanes/src)
+target_compile_options(yanes-furnace-fixture-gen PRIVATE ${DEPENDENCIES_COMPILE_OPTIONS})
+target_compile_definitions(yanes-furnace-fixture-gen PRIVATE ${DEPENDENCIES_DEFINES})
+target_link_libraries(yanes-furnace-fixture-gen PRIVATE ${DEPENDENCIES_LIBRARIES})
+target_link_directories(yanes-furnace-fixture-gen PRIVATE ${DEPENDENCIES_LIBRARY_DIRS})
+target_link_options(yanes-furnace-fixture-gen PRIVATE ${DEPENDENCIES_LINK_OPTIONS})
+target_precompile_headers(yanes-furnace-fixture-gen PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/src/pch.h>)
+set_source_files_properties(/path/to/yanes/tools/furnace_fixture_gen.cpp PROPERTIES
+  COMPILE_OPTIONS "-std=gnu++17" SKIP_PRECOMPILE_HEADERS ON)
+```
+
+Regenerating an existing fixture this way gives a byte-different module that renders the
+identical audio (checked on `nes-pulse`), so there is no need to rewrite committed modules when
+adding new ones.
+
 Every fixture uses Furnace note 108. Furnace applies its own per-chip octave
 convention on top of the note, and note 108 is the one that lands on the key each
 fixture's entry in `tests/furnace_render.cpp` plays — C-5 for the NES pulse, C-3
@@ -122,6 +147,103 @@ both gates.
 | vrc6-pulse | 0.994 | 0.995 | 0.0 | 23.2 | 1.79 | 0.12 | 1.47 | Pass |
 | vrc6-saw | 0.997 | 0.998 | 0.0 | 34.8 | 2.49 | 0.23 | 1.54 | Pass |
 | vrc7 | 0.998 | 0.932 | 0.0 | 11.6 | 2.58 | 0.23 | 0.80 | Pass |
+
+## Second wave (October 2026)
+
+Sixteen more fixtures cover the chips added in October 2026, each with octave holdouts:
+**110 registered parity tests pass** (37 primaries, 73 holdouts). Two cases are kept as files but
+not registered; see *Known gaps* below.
+
+Most of these fixtures play Furnace's default instrument untouched. Where the default instrument
+is silent or does not use the mode that defines the YANES voice, the generator
+(`tools/furnace_fixture_gen.cpp`) sets exactly what the YANES voice's own defaults select, and
+nothing else:
+
+| Fixture | Furnace system, channel | Set by the fixture | YANES voice, key |
+|---|---|---|---|
+| pc-speaker | PC Speaker | nothing | PC speaker, C-5 |
+| zx-beeper | ZX Spectrum beeper (SFX engine) | nothing | ZX Spectrum beeper, C-4 |
+| virtual-boy-wave / -noise | Virtual Boy, ch 1 / ch 6 | nothing | VSU wavetable / VB noise, C-4 |
+| wonderswan-wave / -noise | WonderSwan, ch 1 / ch 4 | noise: duty macro 1 (noise on, first tap) | WonderSwan wavetable / noise, C-5 |
+| lynx | Atari Lynx, ch 1 | duty macro 1 (the f0 tap set; no taps is a DC level) | Atari Lynx Mikey, C-4 (Furnace note 84) |
+| msx-ym2413 | YM2413, ch 1 | ROM instrument 1 (violin), the YANES default | MSX YM2413 FM, C-4 |
+| msx-bass-drum, -snare, -tom, -hihat | YM2413 drums mode, ch 7-11 | nothing | MSX-MUSIC stack rhythm channels, C-4 |
+| ay-buzzer | AY-3-8910, 2 MHz clock | wave macro 4 (envelope, no tone); effects 22 81, 23/24 = round(2 MHz / (256 f)) | AY envelope buzzer, C-4 |
+| amiga | Amiga | YANES's built-in 32-byte saw loop as the sample | Amiga Paula, C-4 |
+| gba-minmod | GBA MinMod (software mixer), 13379 Hz | YANES's built-in 64-byte string loop | GBA DirectSound, C-4 |
+| msm6295 | OKI MSM6295 | YANES's built-in arcade kick, at 7575 Hz | OKI MSM6295 ADPCM, C-4 (the kick) |
+
+Furnace's Lynx driver clamps its timer above about D#5, so Furnace note 108 (C-6) plays 347 Hz;
+the Lynx fixture is centred on C-4 instead. The AY buzzer sets the envelope period directly
+because Furnace's auto-envelope truncates the tone period (period >> 4), which lands up to a third
+of a semitone sharp; YANES picks the nearest period. Snare, cymbal and hi-hat are scored as noise.
+
+| Fixture | Envelope | Spectrum | Onset ms | Offset ms | Pitch cents | Env. shape dB | Env. local dB | End ms | Result |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|:---:|
+| pc-speaker | 1.000 | 0.982 | 0.0 | 17.4 | 0.01 | 0.14 | 0.56 | -5 | Pass |
+| zx-beeper | 0.998 | 0.997 | 0.0 | 0.0 | 5.39 | 0.11 | 0.13 | 0 | Pass |
+| virtual-boy-wave | 0.998 | 1.000 | 0.0 | 23.2 | 0.04 | 0.28 | 1.06 | -20 | Pass |
+| virtual-boy-noise | 1.000 | 0.999 | 0.0 | 5.8 | n/a | 0.07 | 0.28 | -10 | Pass |
+| wonderswan-wave | 0.999 | 0.995 | 0.0 | 23.2 | 0.06 | 0.27 | 1.07 | -25 | Pass |
+| wonderswan-noise | 1.000 | 0.991 | 0.0 | 23.2 | n/a | 0.30 | 0.58 | -25 | Pass |
+| lynx | 1.000 | 0.996 | 0.0 | 23.2 | 8.08 | 0.07 | 1.31 | 0 | Pass |
+| msx-ym2413 | 0.998 | 0.998 | 0.0 | 23.2 | 1.39 | 0.23 | 0.56 | -55 | Pass |
+| msx-bass-drum | 1.000 | 0.998 | 0.0 | 5.8 | 7.92 | 0.31 | 0.13 | 0 | Pass |
+| msx-snare | 1.000 | 0.962 | 0.0 | 0.0 | n/a | 0.14 | 0.37 | -10 | Pass |
+| msx-tom | 1.000 | 1.000 | 0.0 | 0.0 | 3.29 | 0.53 | 0.21 | -5 | Pass |
+| msx-hihat | 0.999 | 0.824 | 0.0 | 11.6 | n/a | 2.40 | 0.71 | -30 | Pass |
+| ay-buzzer | 1.000 | 1.000 | 0.0 | 5.8 | 0.06 | 0.18 | 1.36 | -5 | Pass |
+| amiga | 0.999 | 0.998 | 0.0 | 17.4 | 3.64 | 0.21 | 1.64 | -5 | Pass |
+| gba-minmod | 0.996 | 0.998 | 0.0 | 11.6 | 1.54 | 0.06 | 0.40 | 0 | Pass |
+| msm6295 | 1.000 | 1.000 | 0.0 | 0.0 | 3.73 | 0.09 | 0.11 | -5 | Pass |
+| msx-cymbal (not registered) | 0.997 | 0.995 | 0.0 | 29.0 | n/a | 1.20 | 1.12 | -65 | Fail |
+
+### What the references found
+
+- **ymfm's OPL/OPLL hi-hat and cymbal phase.** Fed identical registers, ymfm's top cymbal
+  differed from Nuked-OPLL (the die-derived core Furnace uses). ymfm built the phase select as
+  `(hh2 ^ hh7) | hh3 | (tc3 ^ tc5)`; Nuked-OPLL and Nuked-OPL3 use `(hh2 ^ hh7) | (hh3 ^ tc5) |
+  (tc3 ^ tc5)`. `third_party/ymfm-rhythm-phase-select.patch` makes that one-term change, applied
+  when CMake fetches ymfm.
+- **YM2413 F-numbers.** The cymbal and hi-hat partials are XORs of phase bits, so one F-number
+  step changes them completely: C-4 as block 3 / 345 and as block 4 / 172 sound unrelated. MSX
+  drivers and Furnace keep a one-octave table from about 172 to 343 per block; YANES now does too
+  (which also brought the melodic YM2413 from 6.6 to 1.4 cents).
+- **YM2413 drums follow the note**, written to the drum's own channel (BD ch 6, SD/HH ch 7, TOM/TC
+  ch 8), and the drum channels nobody plays stay at F-number 0, as in Furnace. Preloading the
+  MSX-BIOS values there changed the cymbal, which mixes in channel 7's phase.
+- **ymfm output resampling.** Holding the latest chip sample skipped one chip sample in every 29
+  at 48 kHz (the YM2413 runs at 49716 Hz); the hardware FM voices now interpolate between the last
+  two chip samples.
+- **ZX pin pulses.** A pin-pulse engine fires a fixed-length pulse each period (64 ticks of its
+  895 kHz loop by default), not a fraction of the period; Pulse duty now picks 32/64/128/256 ticks.
+- **Lynx LFSR.** Mikey's core in Furnace is the same model (`shift << 1 | !parity(taps)`), and the
+  loop lengths of YANES's seven tonal tap sets (2, 4, 7, 9, 15, 31, 63) are the ones Furnace's
+  `DUTY_DIVIDERS` table lists. The VSU and WonderSwan noise taps give the documented periods
+  32767, 1953, 254, 217, 73, 63, 42, 28.
+
+### Known gaps
+
+ymfm's YM2413 envelope releases about 1.25 times faster than Furnace's Nuked-OPLL for the same
+registers (the violin's carrier release: about 200 dB/s against 160; the cymbal's decay: about
+52 dB/s against 42). Both ROM tables give the violin carrier release rate 7 and both cores compute
+the same rate, 29, so the difference is in ymfm's envelope stepping; it has not been pinned to a
+line. Two cases miss the 60 ms note-end gate because of it and are not registered (CMake prints
+which): `msx-ym2413` one octave down (70 ms) and `msx-cymbal` (65 ms; its spectrum, 0.995, and
+envelope shape pass). Their modules are in `tests/furnace` and `tests/furnace_holdout`.
+
+Apple II speaker, TMS5220 speech and the slap bass have no Furnace reference (Furnace has no
+Apple II or TMS5220 chip); their behaviour is proved by `tests/extra_chips_tests.cpp` and the
+Waveform proof in `tests/advertised_tests.cpp`.
+
+### What this gate does not see
+
+The composite gate compares 24 log-spaced, phase-blind bands with a 0.8 threshold, plus pitch and
+envelope. Planted defects show its reach: a broken Lynx feedback bit fails it, but a linear AY
+DAC in place of the log one (spectrum 0.9996), a VSU noise tap off by one table entry (0.990),
+doubled OKI ADPCM step sizes (0.9996) and a 4-bit WonderSwan table reduced to 3 bits (0.995) all
+pass. Those details are pinned by the unit tests (DAC table, tap periods, the ADPCM decode rule)
+and the plug-in proofs, not by this suite.
 
 ## Untuned octave holdouts
 

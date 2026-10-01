@@ -55,6 +55,10 @@ inline int8_t paula_builtin(int shape, int index) {
 
 // ----- one-bit speakers ----------------------------------------------------------------
 
+// A pin-pulse engine's pulse: 64 ticks of a 3.58 MHz / 4 loop by default. Engines let the
+// musician set that length; YANES offers 32, 64, 128 and 256 ticks.
+inline constexpr double kZxTickSeconds = 1.0 / (3579545.0 / 4.0);
+inline double zx_pulse_seconds(int duty_index) { return (32 << std::clamp(duty_index, 0, 3)) * kZxTickSeconds; }
 // A ZX Spectrum beeper engine counts down a delay loop of `loop_tstates` Z80 cycles per step,
 // so a pitch is a whole number of loop passes at 3.5 MHz.
 inline double zx_frequency(double frequency) {
@@ -351,20 +355,68 @@ inline double wavetable_register_frequency(double frequency, double clock) {
 inline double vsu_frequency(double frequency) { return wavetable_register_frequency(frequency, 5000000.0); }
 inline double wonderswan_frequency(double frequency) { return wavetable_register_frequency(frequency, 3072000.0); }
 
-// The 32-step table for each shape, as a bipolar value quantised to `levels`.
+// The 11-bit register value that plays `frequency` (the distance below 2048 the counter reloads).
+inline int wavetable_register(double frequency, double clock) {
+  return 2048 - static_cast<int>(std::clamp(std::round(clock / (32.0 * frequency)), 1.0, 2048.0));
+}
+
+// Both consoles' noise is a 15-bit LFSR fed with NOT(bit 7 XOR one selectable tap). The VSU's
+// noise channel steps once per ten counter reloads, the WonderSwan's once per wave step, so it
+// tracks the frequency register like a tone would.
+inline constexpr std::array<int, 8> kVsuNoiseTaps{14, 10, 13, 4, 8, 6, 9, 11};
+inline constexpr std::array<int, 8> kSwanNoiseTaps{14, 10, 13, 4, 8, 6, 9, 11};
+inline uint32_t console_noise_clock(uint32_t lfsr, int tap) {
+  const uint32_t feedback = 1U ^ ((lfsr >> 7U) & 1U) ^ ((lfsr >> static_cast<unsigned>(tap)) & 1U);
+  return ((lfsr << 1U) | feedback) & 0x7fffU;
+}
+// LFSR steps per second for a note: the VSU noise counter reloads with ten times the distance.
+inline double vsu_noise_rate(double frequency) {
+  return 5000000.0 / (10.0 * (2048 - wavetable_register(frequency, 5000000.0)));
+}
+inline double swan_noise_rate(double frequency) {
+  return 3072000.0 / (2048 - wavetable_register(frequency, 3072000.0));
+}
+
+// VSU channel 5 modulation: every `interval` ticks of the 1041.67 Hz effects clock the next of
+// 32 signed table entries is added to the channel's frequency register. YANES fills the table
+// with a triangle `depth` register units deep, which on the hardware is a vibrato whose width
+// depends on the note (the same depth moves a high note's short counter much further).
+inline constexpr double kVsuEffectsClock = 5000000.0 / 4800.0;
+inline double vsu_modulated_frequency(double frequency, double depth, double seconds, int interval = 4) {
+  const int base = wavetable_register(frequency, 5000000.0);
+  const long step = static_cast<long>(std::floor(seconds * kVsuEffectsClock / interval));
+  const int position = static_cast<int>(step % 32);
+  const double tri = position < 16 ? position / 8.0 - 1.0 : 3.0 - position / 8.0;
+  const int entry = static_cast<int>(std::clamp(std::lround(tri * depth), -128L, 127L));
+  const int register_value = std::clamp(base + entry, 0, 2047);
+  return 5000000.0 / (32.0 * (2048 - register_value));
+}
+
+// WonderSwan channel 3 sweep: every 8192 * (ticks + 1) cycles the signed `amount` is added to the
+// frequency register, wrapping at 11 bits, so the pitch climbs ever faster and then wraps.
+inline double swan_swept_frequency(double frequency, int amount, int ticks, double seconds) {
+  const int base = wavetable_register(frequency, 3072000.0);
+  const long steps = static_cast<long>(std::floor(seconds * 3072000.0 / (8192.0 * (ticks + 1))));
+  const int register_value = static_cast<int>(((base + steps * amount) % 2048 + 2048) % 2048);
+  return 3072000.0 / (32.0 * (2048 - register_value));
+}
+
+// The 32-step table for each shape, as a bipolar value quantised to `levels`. Shape 7 is the
+// plain rising ramp a freshly reset wavetable holds (and the voices' default, as for the FDS,
+// N163, SCC and PC Engine); the WonderSwan's tables 0-6 come in a different order from the VSU's.
 inline float console_wavetable(int shape, double phase, int levels, bool wonderswan) {
   const double p = std::floor((phase - std::floor(phase)) * 32.0) / 32.0;
+  const int s = std::clamp(shape, 0, 7);
+  if (s == 7) return static_cast<float>(std::floor(p * levels) / (levels - 1) * 2.0 - 1.0);
   double w = 0.0;
-  // The two consoles' tables are ordered differently, so their defaults (shape 0) differ.
-  switch ((std::clamp(shape, 0, 7) + (wonderswan ? 4 : 0)) & 7) {
-    case 0: w = 0.75 * std::sin(kTau * p) + 0.25 * std::sin(2.0 * kTau * p + 0.6); break;  // VB "organ"
+  switch (wonderswan ? (s + 4) % 7 : s) {
+    case 0: w = 0.75 * std::sin(kTau * p) + 0.25 * std::sin(2.0 * kTau * p + 0.6); break;  // organ
     case 1: w = 1.0 - 4.0 * std::abs(p - 0.5); break;                                      // triangle
     case 2: w = std::sin(kTau * p); break;                                                  // sine
     case 3: w = 0.5 * std::sin(kTau * p) + 0.5 * std::sin(4.0 * kTau * p); break;           // bell
-    case 4: w = p < 0.375 ? 1.0 : -0.6; break;                                              // WS buzz pulse
-    case 5: w = 1.0 - 2.0 * p; break;                                                       // saw
-    case 6: w = std::sin(kTau * p) * (p < 0.5 ? 1.0 : 0.35); break;                         // half-rectified
-    default: w = std::tanh(3.0 * std::sin(kTau * p)) / std::tanh(3.0); break;               // clipped sine
+    case 4: w = p < 0.375 ? 1.0 : -0.6; break;                                              // buzz pulse
+    case 5: w = 1.0 - 2.0 * p; break;                                                       // falling saw
+    default: w = std::sin(kTau * p) * (p < 0.5 ? 1.0 : 0.35); break;                        // half-rectified
   }
   const double normalized = std::clamp(w * 0.5 + 0.5, 0.0, 1.0);
   return static_cast<float>(std::round(normalized * (levels - 1)) / (levels - 1) * 2.0 - 1.0);

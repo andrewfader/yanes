@@ -31,7 +31,15 @@ int main(int argc,char**argv){
     {"sid6581",38,0,1,60},{"sid8580",39,0,1,60},{"scc",40,0,150,72},
     {"saa1099",42,0,150,60},{"tia",44,0,150,60},{"vrc6-pulse",3,0,150,72},
     {"vrc6-saw",4,0,150,72},{"fds",5,0,150,72},{"n163",6,0,150,60},
-    {"vrc7",7,0,150,60}};
+    {"vrc7",7,0,150,60},
+    // Second wave. The Lynx module plays Furnace note 84 rather than 108: Furnace's Lynx driver
+    // cannot reach the C-6 that 108 asks for (see FURNACE_PARITY.md).
+    {"pc-speaker",66,0,150,72},{"zx-beeper",65,0,150,60},
+    {"msx-bass-drum",71,6,150,60},{"msx-snare",71,7,150,60},{"msx-tom",71,8,150,60},
+    {"msx-cymbal",71,9,150,60},{"msx-hihat",71,10,150,60},{"virtual-boy-wave",74,0,150,60},{"virtual-boy-noise",78,0,150,60},
+    {"wonderswan-wave",75,0,150,72},{"wonderswan-noise",79,0,150,72},{"lynx",72,0,150,60},
+    {"msx-ym2413",70,0,150,60},{"ay-buzzer",76,0,150,60},{"amiga",64,0,150,60},
+    {"gba-minmod",73,0,150,60},{"msm6295",69,0,150,60}};
   std::string requested=argv[2];int key_offset=0;
   if(requested.ends_with("-low")){requested.resize(requested.size()-4);key_offset=-12;}
   else if(requested.ends_with("-high")){requested.resize(requested.size()-5);key_offset=12;}

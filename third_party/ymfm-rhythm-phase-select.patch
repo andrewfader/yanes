@@ -1,0 +1,13 @@
+diff --git a/src/ymfm_fm.ipp b/src/ymfm_fm.ipp
+index 6754248..98dd26d 100644
+--- a/src/ymfm_fm.ipp
++++ b/src/ymfm_fm.ipp
+@@ -1346,7 +1346,7 @@ void fm_engine_base<RegisterType>::output(output_data &output, uint32_t rshift,
+ 		// precompute the operator 13+17 phase selection value
+ 		uint32_t op13phase = m_operator[13]->phase();
+ 		uint32_t op17phase = m_operator[17]->phase();
+-		uint32_t phase_select = (bitfield(op13phase, 2) ^ bitfield(op13phase, 7)) | bitfield(op13phase, 3) | (bitfield(op17phase, 5) ^ bitfield(op17phase, 3));
++		uint32_t phase_select = (bitfield(op13phase, 2) ^ bitfield(op13phase, 7)) | (bitfield(op13phase, 3) ^ bitfield(op17phase, 5)) | (bitfield(op17phase, 5) ^ bitfield(op17phase, 3));
+ 
+ 		// sum over all the desired channels
+ 		for (uint32_t chnum = 0; chnum < CHANNELS; chnum++)

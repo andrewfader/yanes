@@ -24,7 +24,11 @@ set -- \
   ay-tone pokey-tone \
   sid6581 sid8580 scc \
   saa1099 tia vrc6-pulse \
-  vrc6-saw fds n163 vrc7
+  vrc6-saw fds n163 vrc7 \
+  pc-speaker zx-beeper virtual-boy-wave virtual-boy-noise \
+  wonderswan-wave wonderswan-noise lynx msx-ym2413 \
+  msx-bass-drum msx-snare msx-tom msx-cymbal msx-hihat \
+  ay-buzzer amiga gba-minmod msm6295
 
 # The generator writes the module and then hangs in Furnace engine shutdown, so
 # wait for the file to appear and settle, then kill it. Judge the run by the
@@ -55,8 +59,12 @@ generate() {
 
 mkdir -p "$root/tests/furnace" "$root/tests/furnace_holdout"
 for name in "$@"; do
-  generate "$name" "$root/tests/furnace/$name.fur" "$note"
-  generate "$name" "$root/tests/furnace_holdout/$name-low.fur" $((note - 12))
-  generate "$name" "$root/tests/furnace_holdout/$name-high.fur" $((note + 12))
+  # Furnace's Lynx driver cannot reach C-6 (note 108): above about D#5 it clamps its timer.
+  # Its fixture plays C-4 (note 84), so both holdouts stay inside the driver's range.
+  base=$note
+  if [ "$name" = lynx ]; then base=84; fi
+  generate "$name" "$root/tests/furnace/$name.fur" "$base"
+  generate "$name" "$root/tests/furnace_holdout/$name-low.fur" $((base - 12))
+  generate "$name" "$root/tests/furnace_holdout/$name-high.fur" $((base + 12))
 done
-echo "regenerated 21 fixtures and 42 holdouts"
+echo "regenerated $# fixtures and $(( $# * 2 )) holdouts"

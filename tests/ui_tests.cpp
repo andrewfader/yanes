@@ -446,10 +446,13 @@ void test_menus() {
   bool listed = false;
   for (const std::string& s : canvas.strings) listed = listed || s == P::kWaveNames[40];
   assert(listed);
-  // Reconstruct the menu rectangle the same way the editor does.
+  // Reconstruct the menu rectangle the same way the editor does: at least menu_rows rows, and
+  // more once the catalogue would need more columns than fit across the editor.
   const int count = static_cast<int>(P::kSpecs[P::kWaveform].max) + 1;
-  const int columns = (count + menu_rows - 1) / menu_rows;
-  Rect menu{wave.rect.x, wave.rect.bottom() + 4, columns * menu_column_width + 16, std::min(count, menu_rows) * menu_item_height + 16};
+  constexpr int max_columns = (width - 2 * margin - 16) / menu_column_width;
+  const int rows = std::min(count, std::max(menu_rows, (count + max_columns - 1) / max_columns));
+  const int columns = (count + rows - 1) / rows;
+  Rect menu{wave.rect.x, wave.rect.bottom() + 4, columns * menu_column_width + 16, rows * menu_item_height + 16};
   menu.x = std::clamp(menu.x, margin, width - margin - menu.w);
   if (menu.bottom() > content_bottom) menu.y = std::max(header_rect.bottom(), wave.rect.y - menu.h - 4);
   if (menu.bottom() > height - 4) menu.y = std::max(4, height - 4 - menu.h);
@@ -464,10 +467,10 @@ void test_menus() {
          outside_y < height && "the outside click really is outside the menu");
   rig.click(1, outside_x, outside_y);
   assert(!rig.editor.menu_open() && rig.host.values[P::kWaveform] == wave_before && rig.host.begins == 0);
-  // Menu items are laid out in columns of menu_rows; item 17 is row 1 of column 1.
+  // Menu items are laid out in columns of `rows`; item 17 is in column 1 (row 17 - rows).
   rig.click(1, wave.rect.x + 40, wave.rect.y + 60);
   const int item = 17;
-  rig.click(1, menu.x + 8 + (item / menu_rows) * menu_column_width + 30, menu.y + 8 + (item % menu_rows) * menu_item_height + 10);
+  rig.click(1, menu.x + 8 + (item / rows) * menu_column_width + 30, menu.y + 8 + (item % rows) * menu_item_height + 10);
   assert(!rig.editor.menu_open());
   assert(rig.host.values[P::kWaveform] == item && rig.host.idle() && rig.host.begins == 1);
 

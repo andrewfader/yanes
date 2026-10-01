@@ -20,7 +20,8 @@ fi
 "${YANES_FIXTURE_RENDER:-build/yanes-fixture-render}" "${YANES_CLAP:-build/YANES.clap}" "$name" "$work/yanes.wav"
 # Noise LFSRs can hold one value for tens of milliseconds, which a 20 ms window
 # reads as a dropout; score noise envelopes over 80 ms.
-case "$name" in *noise*) kind=noise; window=80;; *) kind=tonal; window=20;; esac
+# The YM2413's snare, cymbal and hi-hat are noise-based drums; score them as noise too.
+case "$name" in *noise*|msx-snare*|msx-cymbal*|msx-hihat*) kind=noise; window=80;; *) kind=tonal; window=20;; esac
 status=0
 if [ "${YANES_COMPOSITE_PARITY:-1}" = 1 ]; then
   "${YANES_PARITY_COMPARE:-build/yanes-parity-compare}" "$work/furnace.wav" "$work/yanes.wav" "$kind" "$minimum" || status=1

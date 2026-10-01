@@ -1467,6 +1467,11 @@ SCENARIO(integration_every_preset_uses_the_chip_it_is_named_after) {
   // Order matters; first match wins. More-specific rules go first.
   struct PresetChipMap { const char* match; int waveform; const char* chip; };
   constexpr PresetChipMap kMap[] = {
+      {"Virtual Boy noise", 78, "Virtual Boy noise"},
+      {"Virtual Boy channel", 80, "Virtual Boy stack"},
+      {"WonderSwan noise", 79, "WonderSwan noise"},
+      {"WonderSwan channel", 81, "WonderSwan stack"},
+      {"GBA channel", 82, "GBA stack"},
       {"Amiga", 64, "Amiga Paula"},
       {"ZX Spectrum", 65, "ZX Spectrum beeper"},
       {"PC speaker", 66, "PC speaker"},
