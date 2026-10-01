@@ -51,17 +51,19 @@ constexpr uint32_t kBlock = 512;
 
 void test_attack_ramp(const Library& lib) {
   const clap_plugin_t* plugin = lib.create();
-  Runner r(plugin, kRate, kBlock);
-  r.set(find_param(plugin, "Attack"), 5.0);     // 5 ms attack
-  r.set(find_param(plugin, "Release"), 0.0);
-
   std::vector<float> peak_trace;
-  for (int b = 0; b < 5; ++b) {
-    Events ev;
-    if (b == 0) ev.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
-    r.run(ev.list().ctx ? &ev : nullptr);
-    peak_trace.push_back(r.run().peak);
-  }
+  {
+    Runner r(plugin, kRate, kBlock);
+    r.set(find_param(plugin, "Attack"), 5.0);     // 5 ms attack
+    r.set(find_param(plugin, "Release"), 0.0);
+
+    for (int b = 0; b < 5; ++b) {
+      Events ev;
+      if (b == 0) ev.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
+      r.run(ev.list().ctx ? &ev : nullptr);
+      peak_trace.push_back(r.run().peak);
+    }
+  }  // ~Runner (stop_processing + deactivate) must run before the plugin is destroyed.
   plugin->destroy(plugin);
 
   ENFORCE(peak_trace[0] > 0, "attack block 0 must already be audible");
@@ -81,6 +83,7 @@ void test_release_decay_curve(const Library& lib) {
   // waveform and chip voice is active; what matters is the *shape*.
   const int release_ms = 600;
   const clap_plugin_t* plugin = lib.create();
+  {  // ~Runner (stop_processing + deactivate) must run before the plugin is destroyed.
   Runner r(plugin, kRate, kBlock);
   r.set(find_param(plugin, "Release"), static_cast<double>(release_ms));
 
@@ -140,21 +143,23 @@ void test_release_decay_curve(const Library& lib) {
   // (d) Silent by +800ms.
   ENFORCE(probe_peaks[12] < sustain.peak * 0.001,
           "release envelope has not reached silence by +800ms");
-
+  }  // end Runner scope
   plugin->destroy(plugin);
 }
 
 void test_sustained_level_is_stable(const Library& lib) {
   const clap_plugin_t* plugin = lib.create();
-  Runner r(plugin, kRate, kBlock);
-  r.set(find_param(plugin, "Attack"), 0.0);
-  r.set(find_param(plugin, "Release"), 200.0);
-  Events on;
-  on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
-  r.run(&on);
-  for (int i = 0; i < 10; ++i) r.run();  // settle
   std::vector<double> rms_blocks;
-  for (int i = 0; i < 20; ++i) rms_blocks.push_back(r.run().rms);
+  {  // ~Runner (stop_processing + deactivate) must run before the plugin is destroyed.
+    Runner r(plugin, kRate, kBlock);
+    r.set(find_param(plugin, "Attack"), 0.0);
+    r.set(find_param(plugin, "Release"), 200.0);
+    Events on;
+    on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
+    r.run(&on);
+    for (int i = 0; i < 10; ++i) r.run();  // settle
+    for (int i = 0; i < 20; ++i) rms_blocks.push_back(r.run().rms);
+  }
   plugin->destroy(plugin);
   double mean = 0;
   for (double v : rms_blocks) mean += v;
@@ -173,22 +178,24 @@ void test_sustained_level_is_stable(const Library& lib) {
 void test_fm_attack_changes_rise_time(const Library& lib) {
   auto measure_rise_ms = [&](double fm_attack) -> double {
     const clap_plugin_t* plugin = lib.create();
-    Runner r(plugin, kRate, kBlock);
-    r.set(find_param(plugin, "Waveform"), 17.0);  // Genesis YM2612 FM
-    r.set(find_param(plugin, "FM attack"), fm_attack);
-    r.set(find_param(plugin, "FM decay"), 0.0);
-    r.set(find_param(plugin, "FM sustain level"), 15.0);
-    r.set(find_param(plugin, "FM sustain rate"), 0.0);
-    r.set(find_param(plugin, "FM release"), 15.0);
-    r.set(find_param(plugin, "Attack"), 0.0);
-    r.set(find_param(plugin, "Release"), 50.0);
-    Events on;
-    on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
-    r.run(&on);
     int64_t first_loud = -1;
-    for (int b = 0; b < 80; ++b) {
-      const Block blk = r.run();
-      if (first_loud < 0 && blk.peak > 0.05) first_loud = static_cast<int64_t>(b) * kBlock;
+    {  // ~Runner (stop_processing + deactivate) must run before the plugin is destroyed.
+      Runner r(plugin, kRate, kBlock);
+      r.set(find_param(plugin, "Waveform"), 17.0);  // Genesis YM2612 FM
+      r.set(find_param(plugin, "FM attack"), fm_attack);
+      r.set(find_param(plugin, "FM decay"), 0.0);
+      r.set(find_param(plugin, "FM sustain level"), 15.0);
+      r.set(find_param(plugin, "FM sustain rate"), 0.0);
+      r.set(find_param(plugin, "FM release"), 15.0);
+      r.set(find_param(plugin, "Attack"), 0.0);
+      r.set(find_param(plugin, "Release"), 50.0);
+      Events on;
+      on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
+      r.run(&on);
+      for (int b = 0; b < 80; ++b) {
+        const Block blk = r.run();
+        if (first_loud < 0 && blk.peak > 0.05) first_loud = static_cast<int64_t>(b) * kBlock;
+      }
     }
     plugin->destroy(plugin);
     return first_loud >= 0 ? first_loud / kRate * 1000.0 : -1.0;
@@ -206,17 +213,19 @@ void test_fm_attack_changes_rise_time(const Library& lib) {
 
 void test_hardware_envelope_is_stepped(const Library& lib) {
   const clap_plugin_t* plugin = lib.create();
-  Runner r(plugin, kRate, kBlock);
-  r.set(find_param(plugin, "Waveform"), 0.0);   // NES pulse (only NES source with hw env)
-  r.set(find_param(plugin, "Hardware envelope"), 1.0);
-  r.set(find_param(plugin, "Envelope rate"), 1.0);
-  r.set(find_param(plugin, "Attack"), 0.0);
-  r.set(find_param(plugin, "Release"), 50.0);
-  Events on;
-  on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
-  r.run(&on);
   std::vector<float> peaks;
-  for (int b = 0; b < 10; ++b) peaks.push_back(r.run().peak);
+  {  // ~Runner (stop_processing + deactivate) must run before the plugin is destroyed.
+    Runner r(plugin, kRate, kBlock);
+    r.set(find_param(plugin, "Waveform"), 0.0);   // NES pulse (only NES source with hw env)
+    r.set(find_param(plugin, "Hardware envelope"), 1.0);
+    r.set(find_param(plugin, "Envelope rate"), 1.0);
+    r.set(find_param(plugin, "Attack"), 0.0);
+    r.set(find_param(plugin, "Release"), 50.0);
+    Events on;
+    on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
+    r.run(&on);
+    for (int b = 0; b < 10; ++b) peaks.push_back(r.run().peak);
+  }
   plugin->destroy(plugin);
 
   // The NES pulse hardware envelope runs at a fixed clock (NTSC frame rate scaled by
@@ -230,6 +239,8 @@ void test_hardware_envelope_is_stepped(const Library& lib) {
 
 void test_vibrato_delay_suppresses_initial_lfo(const Library& lib) {
   const clap_plugin_t* plugin = lib.create();
+  std::vector<int> zc_pre, zc_post;
+  {  // ~Runner (stop_processing + deactivate) must run before the plugin is destroyed.
   Runner r(plugin, kRate, kBlock);
   r.set(find_param(plugin, "Waveform"), 1.0);
   r.set(find_param(plugin, "Vibrato depth"), 1.0);
@@ -248,7 +259,6 @@ void test_vibrato_delay_suppresses_initial_lfo(const Library& lib) {
   // If the delay knob is broken or the LFO doesn't engage, both windows show the
   // same variation. If the LFO engages too early, the pre-window already shows
   // modulation. We expect a clear difference between the two.
-  std::vector<int> zc_pre, zc_post;
   int prev_zc = -1;
   for (int b = 0; b < 70; ++b) {
     r.run();
@@ -264,6 +274,7 @@ void test_vibrato_delay_suppresses_initial_lfo(const Library& lib) {
       }
     }
   }
+  }  // end Runner scope
   plugin->destroy(plugin);
 
   if (zc_pre.size() < 16 || zc_post.size() < 16) return;  // not enough data
@@ -287,14 +298,16 @@ void test_vibrato_delay_suppresses_initial_lfo(const Library& lib) {
 void test_render_is_deterministic(const Library& lib) {
   auto render = [&]() {
     const clap_plugin_t* plugin = lib.create();
-    Runner r(plugin, kRate, kBlock);
-    Events on;
-    on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
-    r.run(&on);
     std::vector<float> trace;
-    for (int b = 0; b < 50; ++b) {
-      r.run();
-      for (float v : r.left()) trace.push_back(v);
+    {  // ~Runner (stop_processing + deactivate) must run before the plugin is destroyed.
+      Runner r(plugin, kRate, kBlock);
+      Events on;
+      on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
+      r.run(&on);
+      for (int b = 0; b < 50; ++b) {
+        r.run();
+        for (float v : r.left()) trace.push_back(v);
+      }
     }
     plugin->destroy(plugin);
     return trace;

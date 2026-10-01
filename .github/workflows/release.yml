@@ -31,7 +31,7 @@ jobs:
               -DCMAKE_C_COMPILER=gcc-12 -DCMAKE_CXX_COMPILER=g++-12
               "-DCMAKE_MODULE_LINKER_FLAGS=-static-libstdc++ -static-libgcc"
           - name: Windows x64
-            os: windows-2022
+            os: windows-2025
             package: windows-x64
             configure: ''
           # One universal bundle for Apple Silicon and Intel.
@@ -43,7 +43,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
 
@@ -90,7 +90,7 @@ jobs:
           esac
 
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: package-${{ matrix.package }}
           path: |
@@ -106,7 +106,7 @@ jobs:
       contents: write
     steps:
       - name: Download packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: package-*
           path: dist

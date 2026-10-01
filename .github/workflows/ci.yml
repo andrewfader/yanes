@@ -29,7 +29,7 @@ jobs:
             os: ubuntu-24.04
             artifact: linux-x64
           - name: Windows x64
-            os: windows-2022
+            os: windows-2025
             artifact: windows-x64
           - name: macOS Apple Silicon
             os: macos-15
@@ -40,7 +40,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -55,7 +55,7 @@ jobs:
       - name: Restore Furnace
         id: furnace-cache
         if: runner.os == 'Linux'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/furnace-bin
           key: furnace-${{ runner.os }}-${{ env.FURNACE_REF }}-v1
@@ -116,7 +116,7 @@ jobs:
         run: cmake --install build-ci --config Release
 
       - name: Upload unsigned build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: YANES-${{ matrix.artifact }}
           path: stage/
