@@ -1,0 +1,47 @@
+diff --git a/core/sound/psg.c b/core/sound/psg.c
+index ca4d422..1f2a940 100644
+--- a/core/sound/psg.c
++++ b/core/sound/psg.c
+@@ -42,6 +42,10 @@
+ 
+ #include "shared.h"
+ #include "blip_buf.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <fcntl.h>
++#include <unistd.h>
+ 
+ /* internal clock = input clock : 16 = (master clock : 15) : 16 */
+ #define PSG_MCYCLES_RATIO (15*16)
+@@ -222,10 +226,31 @@ int psg_context_load(uint8 *state)
+   return bufferptr;
+ }
+ 
++/* YANES oracle hook. The frontend publishes YANES_FRAME_INDEX immediately before
++ * retro_run(); combined with the core's frame-local master-clock timestamp it
++ * gives an unambiguous timeline without changing the libretro ABI. One raw
++ * SN76489 data byte is logged per write; the replay reconstructs the latch/data
++ * protocol. Master clock is NTSC 53693175 Hz, 896040 M-cycles/frame. Raw POSIX
++ * I/O is used because the core remaps stdio FILE/fopen onto its own VFS. */
++static int yanes_psg_fd = -2;
++
+ void psg_write(unsigned int clocks, unsigned int data)
+ {
+   int index;
+ 
++  if (yanes_psg_fd == -2)
++  {
++    const char *path = getenv("YANES_PSG_LOG");
++    yanes_psg_fd = path ? open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644) : -1;
++  }
++  if (yanes_psg_fd >= 0)
++  {
++    const char *frame = getenv("YANES_FRAME_INDEX");
++    char line[64];
++    int n = snprintf(line, sizeof(line), "%s %u %02x\n", frame ? frame : "0", clocks, data & 0xff);
++    if (n > 0) { ssize_t w = write(yanes_psg_fd, line, (size_t)n); (void)w; }
++  }
++
+   /* PSG chip synchronization */
+   if (clocks > psg.clocks)
+   {

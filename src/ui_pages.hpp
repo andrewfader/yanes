@@ -21,7 +21,7 @@ inline std::vector<PageSpec> yanes_pages() {
     return ControlSpec{W::Lane, first, 1, steps, length, caption};
   };
   return {
-      {"VOICE", "Pick a sound source and shape how it plays  •  hover any control for help", theme::cyan, 3, 112,
+      {"VOICE", "Pick a sound source and shape how it plays  •  hover any control for help", theme::cyan, 3, 168,
        {{"Sound source", 0,
          {menu(kWaveform, 3), segments(kDuty, 3), knob(kExpansionShape), knob(kNoisePeriod), toggle(kNoiseMode),
           knob(kFmRatio), knob(kFmIndex)}},
@@ -36,7 +36,7 @@ inline std::vector<PageSpec> yanes_pages() {
         {"Timing", 1, {toggle(kTempoSync), knob(kSyncDivision)}},
         {"Cents steps", 1, {segments(kCentsSeqMode, 2), knob(kCentsSeqRate), knob(kCentsSeqLength), lane(kCentsStep1, 8, kCentsSeqLength, "Cents per step")}},
         {"Pitch sweep", 1, {knob(kSweepDepth), knob(kSweepTime)}}}},
-      {"SYNTH", "Original digital tones: wavetables, additive partials, the chip filter, and layers", theme::green, 3, 112,
+      {"SYNTH", "Original digital tones: wavetables, additive partials, the chip filter, and layers", theme::green, 3, 168,
        {{"Wavetable", 0, {knob(kWavetablePosition), knob(kWavetableWarp), knob(kAdditiveTilt)}},
         {"Chip filter", 1, {knob(kChipCutoff), knob(kChipResonance)}},
         {"Layer", 2, {menu(kLayerMode, 2), knob(kLayerMix)}}}},

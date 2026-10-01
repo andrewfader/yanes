@@ -1613,7 +1613,7 @@ struct PresetClaim { std::vector<int> voices; unsigned claims; };
 
 // What each preset's name says, as the voice it must select and the character it must have.
 PresetClaim preset_claim(int id) {
-  static const std::array<PresetClaim, 82> table = {{
+  static const std::array<PresetClaim, 100> table = {{
       {{}, 0},                          // 0 Manual
       {{0}, kSustain},                  // Clean NES lead
       {{0}, kSustain | kArp},           // NES chord lead
@@ -1696,6 +1696,24 @@ PresetClaim preset_claim(int id) {
       {{43}, kStack},                   // SAA1099 channel stack
       {{44}, kBass},                    // TIA pulse bass
       {{45}, kStack},                   // TIA channel stack
+      {{56}, kBass},                    // 82 Moog ladder bass
+      {{52}, kBass},                    // 83 Oberheim SEM bass
+      {{56}, kBass},                    // 84 Korg resonant bass
+      {{59}, kBass},                    // 85 SNES soft bass
+      {{59}, kSustain},                 // 86 SNES bright sample
+      {{60}, kSustain},                 // 87 Neo Geo FM bell
+      {{61}, kSustain},                 // 88 Arcade spike lead
+      {{62}, kSustain | kChorus},       // 89 Vowel formant pad
+      {{63}, kSustain},                 // 90 SNES sampler
+      {{49}, kBass},                    // 91 DX slap bass
+      {{56}, kSustain},                 // 92 Moog lead
+      {{52}, kSustain | kChorus},       // 93 Juno chorus strings
+      {{52}, kSustain},                 // 94 Prophet sync lead
+      {{4}, kSustain | kChorus},        // 95 Hoover rave stab
+      {{39}, kArp},                     // 96 SID PWM arp lead
+      {{53}, kSustain},                 // 97 CS-80 brass swell
+      {{7}, 0},                         // 98 Master System FM (OPLL)
+      {{63}, kSustain | kChorus},       // 99 SNES orchestra pad (S-DSP echo)
   }};
   return table[static_cast<size_t>(id)];
 }

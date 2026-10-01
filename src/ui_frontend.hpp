@@ -40,7 +40,8 @@ bool gui_param_relevant(const Plugin* p, clap_id id) {
     if (waveform == 31 && (id == kFmLfoRate || id == kFmAmDepth || id == kFmPmDepth)) return false;
     return hardware_fm_waveform(waveform);
   }
-  if (id >= kDpcmBaseKey && id <= kDpcmTrimEnd) return dpcm_waveform(waveform);
+  if (id == kDpcmInitialLevel) return dpcm_waveform(waveform);  // DPCM DAC start only
+  if (id >= kDpcmBaseKey && id <= kDpcmTrimEnd) return dpcm_waveform(waveform) || waveform == 63;
   switch(id){
     case kDuty:case kDutySeqMode:return duty_waveform(waveform);
     case kDutySeqLength:case kDutySeqRate:return duty_waveform(waveform) && value(kDutySeqMode) >= 0.5;
@@ -57,26 +58,80 @@ bool gui_param_relevant(const Plugin* p, clap_id id) {
                            waveform==20||waveform==21||waveform==24||waveform==25||waveform==34||waveform==42||waveform==43;
     case kExpansionShape:return waveform==3||waveform==4||waveform==5||waveform==6||waveform==11||waveform==19||waveform==24||waveform==25||
                                 waveform==26||waveform==34||waveform==35||waveform==38||waveform==39||waveform==40||
-                                waveform==41||waveform==44||waveform==45||waveform==52||waveform==53||waveform==57;
-    case kFmRatio:return waveform==7||waveform==51;
-    case kFmIndex:return waveform==7||waveform==49||waveform==51||waveform==55;
+                                waveform==41||waveform==44||waveform==45||waveform==52||waveform==53||waveform==57||waveform==59;
+    case kFmRatio:return waveform==7||waveform==51||waveform==60;
+    case kFmIndex:return waveform==7||waveform==49||waveform==51||waveform==55||waveform==60||waveform==61;
     case kDpcmRate:return dpcm_waveform(waveform);
     case kGenesisAlgorithm:return waveform==49||hardware_fm_waveform(waveform);
     case kGenesisFeedback:return hardware_fm_waveform(waveform);
     case kChipCutoff:case kChipResonance:return waveform==38||waveform==39||waveform==52||waveform==53||waveform==56;
-    case kWavetablePosition:return waveform==46||waveform==47||waveform==48||waveform==50||waveform==54;
-    case kWavetableWarp:return waveform==46||waveform==47;
+    case kWavetablePosition:return waveform==46||waveform==47||waveform==48||waveform==50||waveform==54||waveform==62;
+    case kWavetableWarp:return waveform==46||waveform==47||waveform==62;
     case kAdditiveTilt:return waveform==48;
-    case kFmBrightness:return waveform==49||waveform==51||waveform==55||hardware_fm_waveform(waveform);
+    case kFmBrightness:return waveform==49||waveform==51||waveform==55||waveform==61||hardware_fm_waveform(waveform);
     default:return true;
   }
 }
 const char* gui_param_name(clap_id id,int waveform){
   if(id!=kExpansionShape)return kSpecs[static_cast<size_t>(id)].name;
   if(waveform==57)return "Drum character";
+  if(waveform==59)return "Sample tone";
   if(waveform==46||waveform==47||waveform==48||waveform==50||waveform==54)return "Table shape";
   if(waveform==7||waveform==49||waveform==51||waveform==55)return "FM character";
   return "Chip shape";
+}
+
+// One cycle of the currently selected source oscillator, in roughly [-1, 1], for
+// the editor's waveform preview. Covers the tonal single-oscillator voices so
+// their shapes (triangle, square, saw, wavetable, FM, vowel, ...) read at a
+// glance; noise voices draw a deterministic jagged trace and multi-channel
+// stacks fall back to a representative FM cycle.
+inline float ui_source_sample(Plugin* p, double phase) {
+  const auto v = [p](clap_id id) { return p->params[id].load(std::memory_order_relaxed); };
+  const int waveform = static_cast<int>(v(kWaveform));
+  const int shape = std::clamp(static_cast<int>(v(kExpansionShape)), 0, 7);
+  if (v(kCustomWave) >= 0.5 || waveform == 58) {
+    const int i = std::clamp(static_cast<int>(phase * 32.0), 0, 31);
+    return static_cast<float>(v(kWaveSample1 + i) / 7.5 - 1.0);
+  }
+  switch (waveform) {
+    case 0: case 10: case 18: case 19:
+      return yanes::pulse_raw(phase, kDuties[std::clamp(static_cast<int>(v(kDuty)), 0, 3)]);
+    case 8: case 13: case 15: case 22: case 23: case 24: case 42: case 44:
+      return yanes::pulse_raw(phase, 0.5);
+    case 1: return yanes::nes_triangle(phase);
+    case 3: return yanes::pulse_raw(phase, (shape + 1) / 16.0);
+    case 4: return yanes::vrc6_saw(phase, 42);
+    case 5: return yanes::fds_wave(phase, shape);
+    case 6: case 11: return yanes::n163_wave(phase, shape);
+    case 7: return yanes::vrc7_fm(phase, v(kFmRatio), v(kFmIndex));
+    case 26: case 35: return yanes::pce_wave(phase, shape);
+    case 38: case 39: return static_cast<float>(2.0 * phase - 1.0);  // SID default saw
+    case 40: case 41: return yanes::scc_wave(phase, shape);
+    case 46: return yanes::morph_wavetable(phase, v(kWavetablePosition), v(kWavetableWarp));
+    case 47: return yanes::phase_distortion(phase, v(kWavetablePosition), v(kWavetableWarp));
+    case 48: return yanes::additive(phase, v(kAdditiveTilt), v(kWavetablePosition));
+    case 49: return yanes::six_operator_fm(phase, static_cast<int>(v(kGenesisAlgorithm)), v(kFmIndex), v(kFmBrightness));
+    case 50: return yanes::morph_wavetable(phase, v(kWavetablePosition), 0.5);
+    case 51: return yanes::porta_fm(phase, v(kFmRatio), v(kFmIndex), v(kFmBrightness));
+    case 52: case 53: return yanes::analog_poly(phase, std::fmod(phase * 1.01, 1.0), shape / 7.0);
+    case 54: return yanes::digital_ensemble(phase, v(kWavetablePosition));
+    case 55: return yanes::tine_piano(phase, v(kFmIndex), v(kFmBrightness), 0.0);
+    case 56: {
+      const double saw = phase * 2.0 - 1.0, sub = std::fmod(phase * 0.5, 1.0) < 0.5 ? 1.0 : -1.0;
+      return static_cast<float>(std::tanh((saw * 0.78 + sub * 0.22) * 1.4));
+    }
+    case 59: case 63: return yanes::snes_wave(phase, shape);
+    case 60: return yanes::bell_fm(phase, v(kFmRatio), v(kFmIndex), 0.0);
+    case 61: return yanes::feedback_fm(phase, v(kFmIndex), v(kFmBrightness));
+    case 62: return yanes::formant_wave(phase, v(kWavetablePosition), v(kWavetableWarp));
+    default: break;
+  }
+  if (waveform == 2 || waveform == 12 || waveform == 14 || waveform == 16 || waveform == 37) {
+    const uint32_t s = static_cast<uint32_t>(phase * 64.0) * 2654435761u;
+    return static_cast<float>(((s >> 8) & 0xffu) / 127.5 - 1.0);
+  }
+  return yanes::genesis_fm(phase, static_cast<int>(v(kGenesisAlgorithm)), v(kGenesisFeedback));
 }
 const char* gui_help(clap_id id) {
   switch(id) {
@@ -238,16 +293,32 @@ class PluginEditorHost final : public yanes::ui::EditorHost {
       const uint32_t write = p_->scope_write.load(std::memory_order_acquire);
       for (size_t i = 0; i < snapshot.size(); ++i)
         snapshot[i] = p_->scope_samples[(write + static_cast<uint32_t>(i)) & 255U].load(std::memory_order_relaxed);
-      const int scope_x = r.x + 20, scope_w = 780, mid = r.y + r.h / 2 + 8;
+      // The taller strip lets the traces swing wider, so a triangle, square or saw
+      // is easy to tell apart at a glance.
+      const int mid = r.y + r.h / 2 + 10, amp = 52;
+      // Source: one cycle of the selected oscillator, drawn bold so its shape reads
+      // even before a note is played.
+      const int src_x = r.x + 20, src_w = 380;
+      g.text(src_x, r.y + 24, "SOURCE WAVE", muted, 200, TextSize::Small);
+      g.line(src_x, mid, src_x + src_w, mid, border);
+      std::vector<Point> source;
+      for (int i = 0; i < 160; ++i) {
+        const double phase = i / 159.0;
+        source.push_back({src_x + i * src_w / 159,
+                          mid - static_cast<int>(std::clamp(ui_source_sample(p_, phase), -1.15f, 1.15f) * amp)});
+      }
+      g.polyline(source, cyan, 3);
+      // Live output scope.
+      const int scope_x = r.x + 430, scope_w = 380;
       g.text(scope_x, r.y + 24, "OUTPUT SCOPE", muted, 200, TextSize::Small);
       g.line(scope_x, mid, scope_x + scope_w, mid, border);
       std::vector<Point> scope;
       for (int i = 0; i < 128; ++i) {
         const float sample = (snapshot[static_cast<size_t>(i * 2)] + snapshot[static_cast<size_t>(i * 2 + 1)]) * 0.5f;
-        scope.push_back({scope_x + i * scope_w / 127, mid - static_cast<int>(std::clamp(sample, -1.0f, 1.0f) * 36.0f)});
+        scope.push_back({scope_x + i * scope_w / 127, mid - static_cast<int>(std::clamp(sample, -1.0f, 1.0f) * static_cast<float>(amp))});
       }
-      g.polyline(scope, cyan, 2);
-      const int spectrum_x = r.x + 850, base = r.bottom() - 14;
+      g.polyline(scope, green, 2);
+      const int spectrum_x = r.x + 840, base = r.bottom() - 16;
       g.text(spectrum_x, r.y + 24, "SPECTRUM", muted, 180, TextSize::Small);
       constexpr double tau = 6.2831853071795864769;
       for (int band = 0; band < 32; ++band) {
@@ -259,28 +330,29 @@ class PluginEditorHost final : public yanes::ui::EditorHost {
           imag -= snapshot[static_cast<size_t>(n)] * window * std::sin(angle);
         }
         const double magnitude = std::sqrt(real * real + imag * imag) / 64.0;
-        const int h = std::clamp(static_cast<int>(std::log1p(magnitude * 7.0) * 26.0), 2, 60);
-        g.rect(spectrum_x + band * 20, base - h, 14, h, band < 22 ? green : amber);
+        const int h = std::clamp(static_cast<int>(std::log1p(magnitude * 7.0) * 34.0), 2, 92);
+        g.rect(spectrum_x + band * 15, base - h, 10, h, band < 22 ? green : amber);
       }
       // Envelope sketch: attack ramp, sustain, release.
       const double attack = value(kAttackMs), release = value(kReleaseMs);
-      const int ex = r.x + 1520 - 170, top = r.y + 40, bottom = r.bottom() - 16;
+      const int ex = r.x + 1340, top = r.y + 42, bottom = r.bottom() - 18;
       g.text(ex, r.y + 24, "ENVELOPE", muted, 150, TextSize::Small);
-      const int ax = ex + static_cast<int>(std::clamp(attack / 500.0, 0.0, 1.0) * 50.0);
-      const int sx = ex + 100, rx = sx + static_cast<int>(std::clamp(release / 2000.0, 0.0, 1.0) * 60.0) + 4;
+      const int ax = ex + static_cast<int>(std::clamp(attack / 500.0, 0.0, 1.0) * 60.0);
+      const int sx = ex + 110, rx = sx + static_cast<int>(std::clamp(release / 2000.0, 0.0, 1.0) * 70.0) + 4;
       g.polyline({{ex, bottom}, {ax, top}, {sx, top}, {rx, bottom}}, green, 2);
     } else if (page == 2) {
-      const int wx = r.x + 20, ww = 900, mid = r.y + r.h / 2 + 10;
-      g.text(wx, r.y + 24, "WAVETABLE", muted, 200, TextSize::Small);
+      // A wide, tall single-cycle view of whatever source oscillator is selected.
+      const int wx = r.x + 20, ww = 900, mid = r.y + r.h / 2 + 10, amp = 56;
+      g.text(wx, r.y + 24, "SOURCE WAVE", muted, 200, TextSize::Small);
       g.line(wx, mid, wx + ww, mid, border);
       std::vector<Point> points;
-      for (int i = 0; i < 160; ++i) {
-        const double phase = i / 159.0;
-        points.push_back({wx + i * ww / 159,
-                          mid - static_cast<int>(yanes::morph_wavetable(phase, value(kWavetablePosition), value(kWavetableWarp)) * 34)});
+      for (int i = 0; i < 200; ++i) {
+        const double phase = i / 199.0;
+        points.push_back({wx + i * ww / 199,
+                          mid - static_cast<int>(std::clamp(ui_source_sample(p_, phase), -1.2f, 1.2f) * amp)});
       }
-      g.polyline(points, green, 2);
-      const int fx = r.x + 980, fw = 520, base = r.bottom() - 14;
+      g.polyline(points, green, 3);
+      const int fx = r.x + 980, fw = 520, base = r.bottom() - 16;
       g.text(fx, r.y + 24, "FILTER RESPONSE", muted, 240, TextSize::Small);
       const double cutoff = value(kChipCutoff), res = value(kChipResonance);
       std::vector<Point> response;
@@ -288,7 +360,7 @@ class PluginEditorHost final : public yanes::ui::EditorHost {
         const double hz = 40.0 * std::pow(400.0, i / 119.0), ratio = hz / std::max(40.0, cutoff);
         const double gain = 1.0 / std::sqrt(1.0 + std::pow(ratio, 4.0)) *
             std::max(0.25, 1.0 + res * 1.4 * std::exp(-std::pow(std::log(std::max(0.001, ratio)) / 0.28, 2.0)));
-        response.push_back({fx + i * fw / 119, base - static_cast<int>(std::clamp(gain, 0.0, 2.0) * 30.0)});
+        response.push_back({fx + i * fw / 119, base - static_cast<int>(std::clamp(gain, 0.0, 2.0) * 40.0)});
       }
       g.polyline(response, amber, 2);
     } else if (page == 3) {
@@ -346,7 +418,7 @@ class PluginEditorHost final : public yanes::ui::EditorHost {
       }
       if (strip::bank_tile(r, i).contains(x, y)) {
         if (button == 2) { if (gui_choose_sample(p_, i)) gui_mark_state(p_); return true; }
-        if (button == 3) { install_dpcm_bank(p_, static_cast<size_t>(i), {}); gui_mark_state(p_); return true; }
+        if (button == 3) { install_dpcm_bank(p_, static_cast<size_t>(i), {}); install_snes_bank(p_, static_cast<size_t>(i), {}); gui_mark_state(p_); return true; }
         if (button == 1) {
           const uint32_t old = static_cast<uint32_t>(value(kDpcmLoopMask));
           click(kDpcmLoopMask, static_cast<double>(old ^ (1U << i)));

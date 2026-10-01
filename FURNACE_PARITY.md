@@ -248,3 +248,49 @@ The comparator rejects silent tonal/noise fixtures and silent `rom-mix` excerpts
 isolated channels are still allowed. The generated-score NES gate has a wrong-oscillator
 negative control and no longer requires a private ROM directory. It compares two local
 models, so it is not a substitute for the optional emulator-based ROM oracle.
+
+## SNES S-DSP parity (hardware reference, more accurate than Furnace)
+
+The SNES sample-bank voice is a sampler, not an SPC700 song player, so it cannot join the
+default-voice Furnace suite (that suite's contract is "pick a voice, play a note", and the SNES
+has no default sample). Instead `snes_dsp_parity` pins the voice directly to the hardware
+reference: blargg's `SPC_DSP` (the cycle-accurate S-DSP used by accurate SNES emulators, and the
+same core Furnace's SNES chip builds on). The test feeds an identical BRR sample to both engines
+at matched pitches and requires >0.9 correlation; in practice a synthetic sine matches at 0.9998
+and real Donkey Kong Country cartridge samples at 0.988–0.9998.
+
+Enable it by pointing at the reference sources (a Furnace checkout's
+`src/engine/platform/sound/snes`, which holds `SPC_DSP.cpp`):
+
+```sh
+cmake -S . -B build -DYANES_SNES_DSP_REFERENCE=/path/to/furnace/src/engine/platform/sound/snes
+```
+
+The reference is test-only and never linked into the product. Set `YANES_SNES_SAMPLES` (a path
+list of `.brr` files) to also pin the voice to real cartridge samples; it is skipped when unset.
+
+## SMS SN76489 real-ROM parity (more accurate than Furnace)
+
+Where a real game can be run on a hardware-accurate emulator, that beats a chip-model comparison
+against Furnace. `tools/test_sms_rom_parity.sh` renders a real Master System ROM through Genesis
+Plus GX, patched to log its SN76489 register writes
+(`third_party/genesis-plus-gx-psg-register-log.patch`), then replays that register stream
+independently through the plug-in's own PSG primitives (`tools/yanes_sms_replay.cpp`) and scores
+the two audios. Pure-PSG titles (Alex Kidd in Miracle World / Shinobi World, Sonic the Hedgehog 2)
+match the real game at envelope 0.8–0.999 and spectrum 0.76–0.95; FM-add-on games are excluded
+because their audio is the YM2413, not the PSG. Enable with
+`-DYANES_SMS_ROM=/path/to/game.sms` (the patched core defaults to
+`../yanes-oracles/genesis-plus-gx/genesis_plus_gx_libretro.so`); `tools/test_real_roms.sh` runs
+the SMS set alongside the NES, Game Boy and PC Engine lanes.
+
+## SID reference parity (reSIDfp)
+
+The SID voice is benchmarked against reSIDfp — the reference MOS6581/8580 emulation used by accurate
+SID players — rather than against Furnace. `sid_resid_parity` drives the same note and waveform
+through both reSIDfp and the plug-in and cross-correlates the DC-removed steady-state waveform (the
+DC offset the 8580 carries is discarded by the real console's output capacitor and the plug-in's DC
+blocker alike). The pure oscillator waveforms track the reference closely: 6581 saw/triangle/pulse
+at 0.96/0.97/0.99 and 8580 at 0.89/0.91/0.96, all above the 0.80 gate. It auto-enables when the
+system libresidfp is installed and is test-only, never linked into the product. YANES's SID is an
+original musical model, not a reSID clone, so this is a closeness benchmark (the filter and
+combined waveforms are deliberately left out of the gate).

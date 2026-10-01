@@ -75,9 +75,7 @@ void gui_poll_picker(Plugin* p) {
   gui_close_picker(p);
   if (const size_t end = path.find_first_of("\r\n"); end != std::string::npos) path.resize(end);
   if (path.empty() || slot < 0 || slot >= 16) return;
-  auto bank = load_dpcm_file(path);
-  if (!bank) return;
-  install_dpcm_bank(p, static_cast<size_t>(slot), std::move(bank));
+  if (!load_and_install_sample(p, static_cast<size_t>(slot), path)) return;
   gui_mark_state(p);
   gui_paint(p);
 }
@@ -318,11 +316,7 @@ bool gui_choose_sample(Plugin* p, int slot) {
   ofn.lpstrFilter = "Audio (*.wav, *.ydmc)\0*.wav;*.WAV;*.ydmc\0All\0*.*\0";
   ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
   if (!GetOpenFileNameA(&ofn)) return false;
-  if (auto bank = load_dpcm_file(path)) {
-    install_dpcm_bank(p, static_cast<size_t>(slot), std::move(bank));
-    return true;
-  }
-  return false;
+  return load_and_install_sample(p, static_cast<size_t>(slot), path);
 }
 
 void gui_paint(Plugin* p) {
@@ -522,11 +516,7 @@ bool gui_choose_sample(Plugin* p, int slot) {
   if (!url) return false;
   const char* path = [[url path] UTF8String];
   if (!path) return false;
-  if (auto bank = load_dpcm_file(path)) {
-    install_dpcm_bank(p, static_cast<size_t>(slot), std::move(bank));
-    return true;
-  }
-  return false;
+  return load_and_install_sample(p, static_cast<size_t>(slot), path);
 }
 
 void gui_paint(Plugin* p) {

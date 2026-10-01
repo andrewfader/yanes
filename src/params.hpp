@@ -53,7 +53,7 @@ struct ParamSpec {
 };
 
 constexpr std::array<ParamSpec, kParamCount> kSpecs{{
-    {"Waveform", "Oscillator", 0, 58, 0, true},
+    {"Waveform", "Oscillator", 0, 63, 0, true},
     {"Pulse duty", "Oscillator", 0, 3, 1, true},
     {"Noise period", "Oscillator/Noise", 0, 15, 8, true},
     {"Noise mode", "Oscillator/Noise", 0, 1, 0, true},
@@ -131,7 +131,7 @@ constexpr std::array<ParamSpec, kParamCount> kSpecs{{
     {"DPCM trim end", "NES/DPCM bank", 0.05, 1, 1, false},
     {"Channel mute mask", "Hardware/Stack mixer", 0, 65535, 0, true},
     {"Channel solo mask", "Hardware/Stack mixer", 0, 65535, 0, true},
-    {"Preset", "Presets", 0, 81, 0, true},
+    {"Preset", "Presets", 0, 99, 0, true},
     {"Pitch bend range", "Performance", 0, 48, 2, true},
     {"Duty sequence", "Sequences/Duty", 0, 2, 0, true},
     {"Duty length", "Sequences/Duty", 1, 8, 4, true},
@@ -208,7 +208,9 @@ constexpr const char* kWaveNames[] = {
     "Atari TIA polynomial tone", "Atari TIA two-channel stack", "Morphing wavetable",
     "Phase distortion", "Harmonic additive", "Six-operator FM", "Digital partial pair",
     "Porta FM keyboard", "Vintage analog poly", "Matrix brass poly", "Early digital ensemble",
-    "Electromechanical tine", "Ladder mono synth", "Retro chip drum kit", "Custom wavetable"};
+    "Electromechanical tine", "Ladder mono synth", "Retro chip drum kit", "Custom wavetable",
+    "SNES Gaussian sample", "Neo Geo FM bell", "Arcade feedback FM", "Vowel formant wavetable",
+    "SNES sample bank"};
 constexpr const char* kArpNames[] = {"Off", "Major", "Minor", "Octaves", "NES chord", "User steps"};
 constexpr const char* kLayerNames[] = {"Off", "Octave", "Fifth", "Sub octave", "Triangle", "Noise"};
 constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord lead",
@@ -253,7 +255,25 @@ constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord l
     "SCC channel stack",
     "SAA1099 channel stack",
     "TIA pulse bass",
-    "TIA channel stack"};
+    "TIA channel stack",
+    "Moog ladder bass",
+    "Oberheim SEM bass",
+    "Korg resonant bass",
+    "SNES soft bass",
+    "SNES bright sample",
+    "Neo Geo FM bell",
+    "Arcade spike lead",
+    "Vowel formant pad",
+    "SNES sampler",
+    "DX slap bass",
+    "Moog lead",
+    "Juno chorus strings",
+    "Prophet sync lead",
+    "Hoover rave stab",
+    "SID PWM arp lead",
+    "CS-80 brass swell",
+    "Master System FM",
+    "SNES orchestra pad"};
 static_assert(std::size(kWaveNames) == static_cast<size_t>(kSpecs[kWaveform].max) + 1);
 static_assert(std::size(kPresetNames) == static_cast<size_t>(kSpecs[kPreset].max) + 1);
 

@@ -281,7 +281,8 @@ void test_matches_command_line_tool(const Library& library) {
 
     StateMemory saved;
     assert(save_state(plugin, &saved));
-    const size_t payload_at = 8 + params_of(plugin)->count(plugin) * sizeof(double) + 16 * sizeof(uint32_t) + 2 * sizeof(uint32_t);
+    // v17 state: values, sixteen DPCM sizes, sixteen BRR sizes, editor size, then payloads.
+    const size_t payload_at = 8 + params_of(plugin)->count(plugin) * sizeof(double) + 2 * 16 * sizeof(uint32_t) + 2 * sizeof(uint32_t);
     // Slot 0 (encoded by the plug-in) must byte-match slot 1 (encoded by the tool).
     assert(std::equal(from_tool.begin(), from_tool.end(), saved.bytes.begin() + static_cast<long>(payload_at)));
     assert(std::equal(from_tool.begin(), from_tool.end(),
@@ -383,6 +384,120 @@ void test_generated_fallback(const Library& library) {
 
 // Replacing a bank while a voice is sounding must not disturb it: the plug-in documents
 // immutable snapshots for exactly this case.
+// The SNES sampler voice (waveform 63) plays the loaded bank back as a pitched,
+// Gaussian-interpolated PCM sample: a short one ends (and the voice releases)
+// while the key is still held, a looped one keeps sounding, and an empty slot
+// falls back to the built-in tone that sustains.
+void test_snes_sampler(const Library& library) {
+  const std::string sample = write_file("snes.wav", make_wav({1, 1, 44100, 16, 1200, false, false, false}));
+  const clap_plugin_t* plugin = create_with_bank(library, sample);  // slot 0 only
+  {
+    Runner runner(plugin, 48000.0, 512);
+    const clap_id waveform = find_param(plugin, "Waveform");
+    const clap_id base_key = find_param(plugin, "DPCM base key");
+    const clap_id loop_mask = find_param(plugin, "DPCM loop mask");
+    runner.set(waveform, 63);
+    runner.set(base_key, 60);  // key 60 -> slot 0 at native pitch
+
+    // A short, non-looping sample sounds, then ends and releases while still held.
+    Events on;
+    on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
+    const Block first = runner.run(&on);
+    assert(first.finite && first.peak > 0.0f && "a loaded sample is audible");
+    Block held{};
+    for (int i = 0; i < 60; ++i) { held = runner.run(); assert(held.finite); }
+    assert(held.peak == 0.0f && "a short, unlooped sample ends while the key is held");
+    plugin->reset(plugin);
+
+    // The same sample on a loop keeps sounding for as long as the key is held.
+    runner.set(loop_mask, 1);  // slot 0 loops
+    Events loop_on;
+    loop_on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
+    assert(runner.run(&loop_on).finite);
+    Block looping{};
+    for (int i = 0; i < 60; ++i) { looping = runner.run(); assert(looping.finite); }
+    assert(looping.peak > 0.0f && "a looped sample keeps sounding while held");
+    plugin->reset(plugin);
+    runner.set(loop_mask, 0);
+
+    // Pitch tracks the key: an octave up reads the sample about twice as fast,
+    // so its looped tone crosses zero markedly more often over the same window.
+    runner.set(loop_mask, 1);  // loop so there is a steady tone to count
+    auto crossings = [&](int16_t key) {
+      plugin->reset(plugin);
+      Events note;
+      note.push(note_event(CLAP_EVENT_NOTE_ON, 0, key, 1, 1.0));
+      runner.run(&note);
+      int zc = 0;
+      for (int block = 0; block < 8; ++block) {
+        assert(runner.run().finite);
+        const auto& x = runner.left();
+        for (size_t i = 1; i < x.size(); ++i) if ((x[i - 1] <= 0.0f) != (x[i] <= 0.0f)) ++zc;
+      }
+      return zc;
+    };
+    const int low = crossings(48), high = crossings(60);  // an octave apart (slot clamps to 0)
+    assert(high > low && "a higher key plays the sample back at a higher pitch");
+    runner.set(loop_mask, 0);
+
+    // An empty slot falls back to the built-in tone, which sustains while held.
+    plugin->reset(plugin);
+    Events empty;
+    empty.push(note_event(CLAP_EVENT_NOTE_ON, 0, 100, 1, 1.0));  // slot clamps to 15 (unloaded)
+    assert(runner.run(&empty).finite);
+    Block fallback{};
+    for (int i = 0; i < 60; ++i) { fallback = runner.run(); assert(fallback.finite); }
+    assert(fallback.peak > 0.0f && "an empty slot sustains the built-in fallback tone");
+  }
+  plugin->destroy(plugin);
+}
+
+// Real BRR samples (e.g. ripped, legally, from a user's own SNES cartridge) are
+// injected through the YANES_SNES_SAMPLES environment variable — a platform path
+// list of .brr files — so they drive the test without being committed. Each must
+// import and play through the SNES voice as finite, audible sound. The check is
+// skipped when the variable is unset, so CI and other machines stay green.
+void test_external_brr_samples(const Library& library) {
+  const char* env = std::getenv("YANES_SNES_SAMPLES");
+  if (!env || !*env) {
+    std::fprintf(stderr, "YANES_SNES_SAMPLES not set, skipping the external BRR sample check\n");
+    return;
+  }
+  const std::string list = env;
+  const char separator = test_platform::path_list_separator();
+  int verified = 0;
+  for (size_t start = 0; start <= list.size();) {
+    const size_t end = list.find(separator, start);
+    const std::string path = list.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    start = end == std::string::npos ? list.size() + 1 : end + 1;
+    if (path.empty()) continue;
+    const clap_plugin_t* plugin = create_with_bank(library, path);  // slot 0
+    {
+      Runner runner(plugin, 48000.0, 512);
+      runner.set(find_param(plugin, "Waveform"), 63);
+      runner.set(find_param(plugin, "DPCM base key"), 60);
+      runner.set(find_param(plugin, "DPCM loop mask"), 1);  // hold a steady tone
+      double peak = 0.0;
+      bool finite = true;
+      for (const int16_t key : {int16_t{48}, int16_t{60}, int16_t{72}}) {
+        plugin->reset(plugin);
+        Events on;
+        on.push(note_event(CLAP_EVENT_NOTE_ON, 0, key, 1, 1.0));
+        Block b = runner.run(&on);
+        peak = std::max(peak, static_cast<double>(b.peak));
+        finite = finite && b.finite;
+        for (int i = 0; i < 12; ++i) { b = runner.run(); finite = finite && b.finite; peak = std::max(peak, static_cast<double>(b.peak)); }
+      }
+      if (peak <= 0.0) { std::fprintf(stderr, "no audio from BRR sample: %s\n", path.c_str()); assert(false); }
+      assert(finite && "an imported BRR sample renders finite audio");
+    }
+    plugin->destroy(plugin);
+    ++verified;
+  }
+  assert(verified > 0 && "YANES_SNES_SAMPLES listed no usable .brr files");
+  std::fprintf(stderr, "verified %d external BRR sample(s) through the SNES voice\n", verified);
+}
+
 void test_bank_replacement_during_playback(const Library& library) {
   std::vector<uint8_t> first(512, 0xaa);
   const std::string path = write_file("swap.ydmc", first);
@@ -429,6 +544,8 @@ int main(int argc, char** argv) {
     test_matches_command_line_tool(library);
     test_bank_playback(library);
     test_generated_fallback(library);
+    test_snes_sampler(library);
+    test_external_brr_samples(library);
     test_bank_replacement_during_playback(library);
   }
 

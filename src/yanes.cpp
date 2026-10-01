@@ -26,6 +26,7 @@ extern char** environ;
 #endif
 
 #include "dsp.hpp"
+#include "snes_dsp.hpp"
 #include "hardware_fm.hpp"
 #include "nes_apu.hpp"
 #include "params.hpp"
@@ -149,6 +150,8 @@ struct Voice {
   int hardware_signature{-1};
   int16_t port_index{};
   std::shared_ptr<const std::vector<uint8_t>> dpcm_data{};
+  double sample_pos{};  // SNES sampler: fractional read position in decoded PCM
+  std::shared_ptr<const yanes::snes::BrrSample> snes_data{};
 };
 
 struct Plugin {
@@ -189,6 +192,13 @@ struct Plugin {
   std::atomic<double> tempo{120.0};
   std::array<AtomicSharedPtr<const std::vector<uint8_t>>, 16> dpcm_banks{};
   std::vector<std::shared_ptr<const std::vector<uint8_t>>> retired_dpcm_banks{};
+  // The SNES sampler voice: BRR sample bytes persisted in project state, plus the
+  // decoded 16-bit PCM cache (derived, not serialised) the voice reads back
+  // pitched through the S-DSP's Gaussian interpolator.
+  std::array<AtomicSharedPtr<const std::vector<uint8_t>>, 16> snes_brr{};
+  std::vector<std::shared_ptr<const std::vector<uint8_t>>> retired_snes_brr{};
+  std::array<AtomicSharedPtr<const yanes::snes::BrrSample>, 16> snes_pcm{};
+  std::vector<std::shared_ptr<const yanes::snes::BrrSample>> retired_snes_pcm{};
   std::array<std::atomic<float>,256> scope_samples{};
   std::atomic<uint32_t> scope_write{};
   std::atomic<uint64_t> scope_revision{};
@@ -252,34 +262,101 @@ struct Plugin {
 };
 
 Plugin* self(const clap_plugin_t* plugin) { return static_cast<Plugin*>(plugin->plugin_data); }
+// Decode a slot's 1-bit DPCM stream back to the stepped bipolar levels the DAC
+// would produce, so the SNES sampler can replay it as a pitched PCM sample. The
+// DPCM bytes are the single persisted source of truth, so reconstructing here
+// keeps a freshly loaded sample and one restored from project state identical.
 void install_dpcm_bank(Plugin* p,size_t slot,std::shared_ptr<const std::vector<uint8_t>> bank){
   p->retired_dpcm_banks.erase(std::remove_if(p->retired_dpcm_banks.begin(),p->retired_dpcm_banks.end(),
     [](const auto& owner){return owner.use_count()==1;}),p->retired_dpcm_banks.end());
   auto old=p->dpcm_banks[slot].exchange(std::move(bank),std::memory_order_acq_rel);if(old)p->retired_dpcm_banks.push_back(std::move(old));
 }
-std::shared_ptr<const std::vector<uint8_t>> load_dpcm_file(const std::string& path){
+// Install a slot's BRR sample (persisted in project state) together with its
+// decoded 16-bit PCM cache. The BRR bytes are the source of truth, so a freshly
+// imported sample and one restored from a saved project decode identically.
+void install_snes_bank(Plugin* p,size_t slot,std::shared_ptr<const std::vector<uint8_t>> brr){
+  p->retired_snes_brr.erase(std::remove_if(p->retired_snes_brr.begin(),p->retired_snes_brr.end(),
+    [](const auto& owner){return owner.use_count()==1;}),p->retired_snes_brr.end());
+  p->retired_snes_pcm.erase(std::remove_if(p->retired_snes_pcm.begin(),p->retired_snes_pcm.end(),
+    [](const auto& owner){return owner.use_count()==1;}),p->retired_snes_pcm.end());
+  std::shared_ptr<const yanes::snes::BrrSample> pcm;
+  if(brr&&brr->size()>=static_cast<size_t>(yanes::snes::kBrrBlockBytes))
+    pcm=std::make_shared<const yanes::snes::BrrSample>(yanes::snes::brr_decode_file(brr->data(),brr->size()));
+  auto old_pcm=p->snes_pcm[slot].exchange(std::move(pcm),std::memory_order_acq_rel);if(old_pcm)p->retired_snes_pcm.push_back(std::move(old_pcm));
+  auto old=p->snes_brr[slot].exchange(std::move(brr),std::memory_order_acq_rel);if(old)p->retired_snes_brr.push_back(std::move(old));
+}
+
+struct LoadedSample { std::shared_ptr<const std::vector<uint8_t>> dpcm, brr; };
+
+// Resample a 16-bit mono/stereo PCM WAV to mono int16 at target_rate. Empty when
+// the WAV is malformed or an unsupported format.
+std::vector<int16_t> wav_to_mono(const std::vector<uint8_t>& bytes, double target_rate) {
+  if(bytes.size()<44||std::memcmp(bytes.data(),"RIFF",4)||std::memcmp(bytes.data()+8,"WAVE",4))return {};
+  auto u16=[&](size_t q){return static_cast<uint16_t>(bytes[q]|(bytes[q+1]<<8U));};
+  auto u32=[&](size_t q){return static_cast<uint32_t>(u16(q)|(static_cast<uint32_t>(u16(q+2))<<16U));};
+  uint16_t format=0,channels=0,bits=0;uint32_t rate=0;size_t at=0,size=0;
+  for(size_t q=12;q+8<=bytes.size();){const uint32_t n=u32(q+4);if(q+8U+n>bytes.size())break;if(!std::memcmp(bytes.data()+q,"fmt ",4)&&n>=16){format=u16(q+8);channels=u16(q+10);rate=u32(q+12);bits=u16(q+22);}else if(!std::memcmp(bytes.data()+q,"data",4)){at=q+8;size=n;}q+=8U+n+(n&1U);}
+  if(format!=1||channels<1||channels>2||bits!=16||!rate||size<2U*channels)return {};
+  const size_t frames=size/(2U*channels);
+  const size_t out=static_cast<size_t>(static_cast<double>(frames)*target_rate/rate);
+  if(!out||out>4U*1024U*1024U)return {};
+  std::vector<int16_t> pcm(out);
+  for(size_t i=0;i<out;++i){const size_t frame=std::min(frames-1U,static_cast<size_t>(static_cast<double>(i)*rate/target_rate));int sum=0;for(uint16_t ch=0;ch<channels;++ch){const size_t q=at+(frame*channels+ch)*2U;sum+=static_cast<int16_t>(u16(q));}pcm[i]=static_cast<int16_t>(std::clamp(sum/channels,-32768,32767));}
+  return pcm;
+}
+
+// Load a sample file into both representations the bank serves: a WAV feeds the
+// NES voice's 1-bit DPCM (at 16744 Hz) and the SNES voice's BRR (at the S-DSP's
+// 32000 Hz, whole-sample loop); a raw .brr loads as a SNES sample; any other raw
+// payload is treated as pre-encoded DPCM (.ydmc).
+LoadedSample load_sample_file(const std::string& path){
   std::ifstream input(path, std::ios::binary | std::ios::ate);
-  if (!input) return {};
-  const auto length = input.tellg();
-  if (length <= 0 || length > 1024 * 1024) return {};
+  if(!input)return {};
+  const auto length=input.tellg();
+  if(length<=0||length>1024*1024)return {};
   std::vector<uint8_t> bytes(static_cast<size_t>(length));
   input.seekg(0);
-  if (!input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) return {};
+  if(!input.read(reinterpret_cast<char*>(bytes.data()),static_cast<std::streamsize>(bytes.size())))return {};
+  LoadedSample loaded;
   const bool riff=bytes.size()>=4&&!std::memcmp(bytes.data(),"RIFF",4);
+  const bool is_brr=path.size()>=4&&(path.compare(path.size()-4,4,".brr")==0||path.compare(path.size()-4,4,".BRR")==0);
   if(!riff){
-    return std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
+    if(is_brr){
+      // Keep the file image verbatim: a two-byte little-endian loop-offset header
+      // (BRRtools / snesbrr) carries the sample's real loop point, or a bare
+      // 9-byte-block stream loops to the start. brr_decode_file reads either.
+      if((bytes.size()>=11U&&(bytes.size()-2U)%yanes::snes::kBrrBlockBytes==0U)||
+         (bytes.size()>=9U&&bytes.size()%yanes::snes::kBrrBlockBytes==0U))
+        loaded.brr=std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
+    }
+    else loaded.dpcm=std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
+    return loaded;
   }
-  if(bytes.size()<44||std::memcmp(bytes.data()+8,"WAVE",4))return {};
-  auto u16=[&](size_t p){return static_cast<uint16_t>(bytes[p]|(bytes[p+1]<<8U));};
-  auto u32=[&](size_t p){return static_cast<uint32_t>(u16(p)|(static_cast<uint32_t>(u16(p+2))<<16U));};
-  uint16_t format=0,channels=0,bits=0;uint32_t rate=0;size_t at=0,size=0;
-  for(size_t p=12;p+8<=bytes.size();){const uint32_t n=u32(p+4);if(p+8U+n>bytes.size())break;if(!std::memcmp(bytes.data()+p,"fmt ",4)&&n>=16){format=u16(p+8);channels=u16(p+10);rate=u32(p+12);bits=u16(p+22);}else if(!std::memcmp(bytes.data()+p,"data",4)){at=p+8;size=n;}p+=8U+n+(n&1U);}
-  if(format!=1||channels<1||channels>2||bits!=16||!rate||size<2U*channels)return {};
-  constexpr double target_rate=16744.0;const size_t frames=size/(2U*channels),out_bits=static_cast<size_t>(static_cast<double>(frames)*target_rate/rate);
-  if(!out_bits||out_bits>8U*1024U*1024U)return {};
-  std::vector<uint8_t> encoded((out_bits+7U)/8U);int level=64;
-  for(size_t i=0;i<out_bits;++i){const size_t frame=std::min(frames-1U,static_cast<size_t>(static_cast<double>(i)*rate/target_rate));int sum=0;for(uint16_t ch=0;ch<channels;++ch){const size_t q=at+(frame*channels+ch)*2U;sum+=static_cast<int16_t>(u16(q));}const int target=std::clamp(64+(sum/channels)*60/32768,0,127);const bool up=target>=level;level=std::clamp(level+(up?2:-2),0,127);if(up)encoded[i>>3U]|=static_cast<uint8_t>(1U<<(i&7U));}
-  return std::make_shared<const std::vector<uint8_t>>(std::move(encoded));
+  if(auto dp=wav_to_mono(bytes,16744.0); !dp.empty()){
+    std::vector<uint8_t> encoded((dp.size()+7U)/8U);int level=64;
+    for(size_t i=0;i<dp.size();++i){const int target=std::clamp(64+dp[i]*60/32768,0,127);const bool up=target>=level;level=std::clamp(level+(up?2:-2),0,127);if(up)encoded[i>>3U]|=static_cast<uint8_t>(1U<<(i&7U));}
+    loaded.dpcm=std::make_shared<const std::vector<uint8_t>>(std::move(encoded));
+  }
+  if(auto pcm=wav_to_mono(bytes,static_cast<double>(yanes::snes::kNativeRate)); !pcm.empty()){
+    auto blocks=yanes::snes::brr_encode(pcm.data(),pcm.size(),true);
+    if(!blocks.empty()){
+      // Store in .brr file form: a two-byte loop-offset header (0 = whole-sample
+      // loop) followed by the block stream, so decoding matches an imported .brr.
+      std::vector<uint8_t> file; file.reserve(blocks.size()+2U);
+      file.push_back(0); file.push_back(0);
+      file.insert(file.end(),blocks.begin(),blocks.end());
+      loaded.brr=std::make_shared<const std::vector<uint8_t>>(std::move(file));
+    }
+  }
+  return loaded;
+}
+
+bool load_and_install_sample(Plugin* p,size_t slot,const std::string& path){
+  LoadedSample s=load_sample_file(path);
+  if(!s.dpcm&&!s.brr)return false;
+  install_dpcm_bank(p,slot,std::move(s.dpcm));
+  install_snes_bank(p,slot,std::move(s.brr));
+  return true;
 }
 double db_gain(double db) { return std::exp(db * std::log(10.0) / 20.0); }
 
@@ -333,6 +410,9 @@ constexpr VoiceDefaults kVoiceDefaults[] = {
     {40, -1, 7, -1, -1, -1, -1, 0, 0, -1},    // Konami SCC: reset ramp
     {42, -1, -1, -1, -1, -1, -1, 0, 0, -1},   // Philips SAA1099 tone
     {44, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // TIA: pure tone
+    {59, -1, 4, -1, -1, -1, -1, -1, 0, -1},   // SNES: mid Gaussian brightness
+    {60, -1, -1, -1, -1, 3.5, 5, 900, 0, -1}, // Neo Geo bell: inharmonic ratio, long ring
+    {61, -1, -1, -1, -1, -1, 5, -1, 0, -1},   // Arcade feedback FM: strong self-feedback
 };
 
 void set_param(Plugin* p, clap_id id, double value, bool apply_preset);
@@ -503,6 +583,27 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 79: put(kWaveform, 43); put(kStrictHardware, 1); put(kGainDb, -10.0); break;
     case 80: put(kWaveform, 44); put(kExpansionShape, 0); put(kTranspose, -12); put(kGainDb, -10.0); break;
     case 81: put(kWaveform, 45); put(kStrictHardware, 1); put(kExpansionShape, 0); put(kGainDb, -10.0); break;
+    // Deep bass on the analog-model voices.
+    case 82: put(kWaveform, 56); put(kChipCutoff, 620); put(kChipResonance, 0.55); put(kTranspose, -12); put(kAttackMs, 2); put(kReleaseMs, 120); put(kDrive, 0.30); put(kGainDb, -15.5); break; // Moog ladder bass
+    case 83: put(kWaveform, 52); put(kExpansionShape, 2); put(kChipCutoff, 900); put(kChipResonance, 0.42); put(kTranspose, -12); put(kAttackMs, 4); put(kReleaseMs, 160); put(kChorusMix, 0.14); put(kDrive, 0.16); put(kGainDb, -7.0); break; // Oberheim SEM bass
+    case 84: put(kWaveform, 56); put(kChipCutoff, 480); put(kChipResonance, 0.72); put(kTranspose, -12); put(kAttackMs, 1); put(kReleaseMs, 90); put(kDrive, 0.36); put(kGainDb, -15.5); break; // Korg resonant bass
+    // SNES / arcade / vowel new voices.
+    case 85: put(kWaveform, 59); put(kExpansionShape, 2); put(kTranspose, -12); put(kAttackMs, 4); put(kReleaseMs, 220); put(kGainDb, -3.0); break; // SNES soft bass
+    case 86: put(kWaveform, 59); put(kExpansionShape, 6); put(kAttackMs, 2); put(kReleaseMs, 320); put(kChorusMix, 0.14); put(kGainDb, -2.0); break; // SNES bright sample
+    case 87: put(kWaveform, 60); put(kFmRatio, 3.5); put(kFmIndex, 5.0); put(kAttackMs, 0); put(kReleaseMs, 900); put(kChorusMix, 0.16); put(kGainDb, -5.5); break; // Neo Geo FM bell
+    case 88: put(kWaveform, 61); put(kFmIndex, 6.0); put(kFmBrightness, 0.72); put(kAttackMs, 1); put(kReleaseMs, 130); put(kDrive, 0.12); put(kGainDb, -10.0); break; // Arcade spike lead
+    case 89: put(kWaveform, 62); put(kWavetablePosition, 0.4); put(kWavetableWarp, 0.5); put(kAttackMs, 30); put(kReleaseMs, 900); put(kChorusMix, 0.22); put(kChorusRate, 0.3); put(kGainDb, -1.0); break; // Vowel formant pad
+    // SNES sampler and 1980s synth families.
+    case 90: put(kWaveform, 63); put(kExpansionShape, 3); put(kAttackMs, 20); put(kReleaseMs, 400); put(kChorusMix, 0.20); put(kChorusRate, 0.3); put(kGainDb, -2.5); break; // SNES sampler (plays loaded bank; soft tone until one is loaded)
+    case 91: put(kWaveform, 49); put(kGenesisAlgorithm, 20); put(kFmIndex, 3.4); put(kFmBrightness, 0.70); put(kTranspose, -12); put(kAttackMs, 0); put(kReleaseMs, 200); put(kDrive, 0.12); put(kGainDb, -6.0); break; // DX slap bass
+    case 92: put(kWaveform, 56); put(kChipCutoff, 1400); put(kChipResonance, 0.50); put(kPortamentoMs, 40); put(kAttackMs, 2); put(kReleaseMs, 200); put(kDrive, 0.20); put(kGainDb, -15.5); break; // Moog lead
+    case 93: put(kWaveform, 52); put(kExpansionShape, 3); put(kChipCutoff, 2600); put(kChipResonance, 0.30); put(kAttackMs, 120); put(kReleaseMs, 1200); put(kChorusMix, 0.50); put(kChorusRate, 0.28); put(kGainDb, 1.5); break; // Juno chorus strings
+    case 94: put(kWaveform, 52); put(kExpansionShape, 4); put(kChipCutoff, 3200); put(kChipResonance, 0.52); put(kAttackMs, 4); put(kReleaseMs, 220); put(kDrive, 0.20); put(kGainDb, -7.0); break; // Prophet sync lead
+    case 95: put(kWaveform, 4); put(kExpansionShape, 7); put(kLayerMode, 2); put(kLayerMix, 0.30); put(kChorusMix, 0.34); put(kChorusRate, 0.30); put(kAttackMs, 2); put(kReleaseMs, 260); put(kDrive, 0.24); put(kGainDb, -8.0); break; // Hoover rave stab
+    case 96: put(kWaveform, 39); put(kExpansionShape, 2); put(kDuty, 1); put(kArpMode, 1); put(kArpRate, 16); put(kReleaseMs, 400); put(kGainDb, -6.0); break; // SID PWM arp lead
+    case 97: put(kWaveform, 53); put(kExpansionShape, 4); put(kAttackMs, 80); put(kReleaseMs, 900); put(kVibratoDepth, 0.15); put(kChorusMix, 0.20); put(kGainDb, -1.0); break; // CS-80 brass swell
+    case 98: put(kWaveform, 7); put(kFmRatio, 2); put(kFmIndex, 3.2); put(kReleaseMs, 220); put(kChorusMix, 0.12); put(kGainDb, -6.0); put(kFmSustainRate, 0); break; // Master System FM (YM2413/OPLL add-on, via the OPLL-core VRC7 voice)
+    case 99: put(kWaveform, 63); put(kExpansionShape, 7); put(kAttackMs, 70); put(kReleaseMs, 1100); put(kChorusMix, 0.24); put(kChorusRate, 0.26); put(kEchoMix, 0.26); put(kEchoTime, 140); put(kEchoFeedback, 0.42); put(kGainDb, 2.0); break; // SNES orchestra pad (S-DSP echo on the sampler voice)
     default: break;
   }
 }
@@ -652,6 +753,8 @@ void note_on(Plugin* p, int channel, int key, int note_id, double velocity, int1
   voice->dpcm_data = p->dpcm_banks[voice->dpcm_slot].load(std::memory_order_acquire);
   if(voice->dpcm_data)voice->dpcm_bit=static_cast<size_t>(static_cast<double>(voice->dpcm_data->size()*8U)*effective_param<kDpcmTrimStart>(p));
   voice->dpcm_level = static_cast<int>(p->params[kDpcmInitialLevel].load());
+  voice->snes_data = p->snes_pcm[voice->dpcm_slot].load(std::memory_order_acquire);
+  voice->sample_pos = voice->snes_data ? static_cast<double>(voice->snes_data->pcm.size()) * effective_param<kDpcmTrimStart>(p) : 0.0;
   const size_t voice_index = static_cast<size_t>(voice - p->voices.data());
   const int selected_waveform = static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
   int fm_waveform = selected_waveform;
@@ -1319,6 +1422,53 @@ float render_voice(Plugin* p, Voice& v) {
     }
     value=static_cast<float>(std::tanh(drum_value*1.35));
     if(t>duration)v.releasing=true;
+  } else if (waveform == 59) {
+    value = yanes::snes_wave(v.phase, shape);
+  } else if (waveform == 60) {
+    value = yanes::bell_fm(v.phase, effective_param<kFmRatio>(p), effective_param<kFmIndex>(p),
+                           elapsed_samples / p->sample_rate);
+  } else if (waveform == 61) {
+    value = yanes::feedback_fm(v.phase, effective_param<kFmIndex>(p), effective_param<kFmBrightness>(p));
+  } else if (waveform == 62) {
+    value = yanes::formant_wave(v.phase, effective_param<kWavetablePosition>(p),
+                                effective_param<kWavetableWarp>(p));
+  } else if (waveform == 63) {
+    // SNES sampler: pitch-tracked replay of the loaded BRR slot through the
+    // S-DSP's 4-point Gaussian interpolator, at its native 32000 Hz. With no
+    // sample loaded it falls back to the built-in SNES tone so the voice is
+    // always playable (as the DPCM voice falls back to drums).
+    const auto& sample = v.snes_data;
+    if (sample && sample->pcm.size() >= 2) {
+      const auto& pcm = sample->pcm;
+      const size_t n = pcm.size();
+      const int base_key = std::clamp(static_cast<int>(p->params[kDpcmBaseKey].load(std::memory_order_relaxed)) + v.dpcm_slot, 0, 127);
+      const double ratio = frequency / std::max(1.0, yanes::midi_frequency(static_cast<double>(base_key)));
+      const double advance = static_cast<double>(yanes::snes::kNativeRate) * ratio / p->sample_rate;
+      const size_t trim_start = std::min(n - 1, static_cast<size_t>(static_cast<double>(n) * effective_param<kDpcmTrimStart>(p)));
+      const double trim_end_f = effective_param<kDpcmTrimEnd>(p);
+      const size_t trim_end = trim_end_f > 0.0 ? std::min(n, static_cast<size_t>(static_cast<double>(n) * trim_end_f)) : n;
+      const size_t end = std::max(trim_start + 1, trim_end);
+      if (v.sample_pos >= static_cast<double>(end)) {
+        const uint32_t loop_mask = static_cast<uint32_t>(p->params[kDpcmLoopMask].load(std::memory_order_relaxed));
+        if (loop_mask & (1U << v.dpcm_slot)) {
+          const double loop_point = std::max(static_cast<double>(trim_start),
+                                             sample->loop >= 0 ? static_cast<double>(sample->loop) : static_cast<double>(trim_start));
+          const double span = static_cast<double>(end) - loop_point;
+          if (span > 0.0) v.sample_pos = loop_point + std::fmod(v.sample_pos - loop_point, span);
+          else v.sample_pos = loop_point;
+        } else {
+          v.releasing = true;
+        }
+      }
+      const double clamped = std::min(v.sample_pos, static_cast<double>(end) - 1.0);
+      const long index = static_cast<long>(std::floor(clamped));
+      const int frac12 = static_cast<int>((clamped - std::floor(clamped)) * 4096.0) & 0xFFF;
+      auto at = [&](long i) { return static_cast<int>(pcm[static_cast<size_t>(std::clamp<long>(i, 0, static_cast<long>(end) - 1))]); };
+      value = static_cast<float>(yanes::snes::interpolate(at(index - 1), at(index), at(index + 1), at(index + 2), frac12)) / 32768.0f;
+      v.sample_pos += advance;
+    } else {
+      value = yanes::snes_wave(v.phase, shape);
+    }
   } else {
     const int algorithm = static_cast<int>(p->params[kGenesisAlgorithm].load(std::memory_order_relaxed));
     const double feedback = effective_param<kGenesisFeedback>(p);
@@ -1424,7 +1574,19 @@ StereoSample process_rack(Plugin* p, float input) {
   if (p->delay_buffer.empty()) return {driven, driven};
   const size_t size = p->delay_buffer.size();
   const size_t echo_samples = echo_delay_samples(p);
-  const float delayed = p->delay_buffer[(p->delay_write + size - echo_samples) % size];
+  // The SNES sampler voice routes its echo through the S-DSP's 8-tap FIR, the
+  // soft, high-rolled-off colour of the console's signature reverb; every other
+  // voice uses the plain tap. It reuses Echo time/feedback/mix, so no extra knob.
+  float delayed;
+  if (static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 63) {
+    static constexpr float fir[8] = {0.30f, 0.24f, 0.18f, 0.12f, 0.08f, 0.04f, 0.02f, 0.02f};
+    float filtered = 0.0f;
+    for (int t = 0; t < 8; ++t)
+      filtered += fir[t] * p->delay_buffer[(p->delay_write + 2 * size - echo_samples - static_cast<size_t>(t)) % size];
+    delayed = filtered;
+  } else {
+    delayed = p->delay_buffer[(p->delay_write + size - echo_samples) % size];
+  }
   const float feedback = static_cast<float>(effective_param<kEchoFeedback>(p));
   p->delay_buffer[p->delay_write] = driven + delayed * feedback;
 
@@ -1477,7 +1639,7 @@ bool plugin_init(const clap_plugin_t* plugin) {
 #endif
     const size_t end = list.find(bank_separator, at);
     const std::string path(list.substr(at, end == std::string_view::npos ? list.size() - at : end - at));
-    if (!path.empty()) if(auto bank=load_dpcm_file(path))install_dpcm_bank(p,slot,std::move(bank));
+    if (!path.empty()) load_and_install_sample(p,slot,path);
     if (end == std::string_view::npos) break;
     at = end + 1;
   }
@@ -1746,21 +1908,24 @@ const clap_plugin_params_t kParams{params_count, params_info, params_value, valu
 
 // The editor size rides along so a project reopens the editor at the size it was left at; zero
 // means "never resized".
-struct StateBlob { uint32_t magic; uint32_t version; double values[kParamCount]; uint32_t dpcm_sizes[16]; uint32_t gui_width, gui_height; };
+struct StateBlob { uint32_t magic; uint32_t version; double values[kParamCount]; uint32_t dpcm_sizes[16]; uint32_t brr_sizes[16]; uint32_t gui_width, gui_height; };
 bool state_save(const clap_plugin_t* plugin, const clap_ostream_t* stream) {
   if (!stream || !stream->write) return false;
-  StateBlob state{0x53454e59U, 16, {}, {}, 0, 0};
+  StateBlob state{0x53454e59U, 17, {}, {}, {}, 0, 0};
 #ifdef YANES_HAS_EDITOR
   state.gui_width = self(plugin)->gui_width; state.gui_height = self(plugin)->gui_height;
 #endif
   for (clap_id i = 0; i < kParamCount; ++i) state.values[i] = self(plugin)->params[i].load(std::memory_order_relaxed);
-  std::array<std::shared_ptr<const std::vector<uint8_t>>,16> banks{};
+  std::array<std::shared_ptr<const std::vector<uint8_t>>,16> banks{}, brr{};
   for (size_t i = 0; i < 16; ++i) {banks[i]=self(plugin)->dpcm_banks[i].load();state.dpcm_sizes[i]=static_cast<uint32_t>(banks[i]?std::min<size_t>(banks[i]->size(),1024U*1024U):0);}
+  for (size_t i = 0; i < 16; ++i) {brr[i]=self(plugin)->snes_brr[i].load();state.brr_sizes[i]=static_cast<uint32_t>(brr[i]?std::min<size_t>(brr[i]->size(),1024U*1024U):0);}
   const auto* data = reinterpret_cast<const uint8_t*>(&state);
   uint64_t done = 0;
   while (done < sizeof(state)) { const int64_t n = stream->write(stream, data + done, sizeof(state) - done); if (n <= 0) return false; done += static_cast<uint64_t>(n); }
   for (size_t i = 0; i < 16; ++i) { done = 0;
     while (done < state.dpcm_sizes[i]) { const int64_t n = stream->write(stream, banks[i]->data() + done, state.dpcm_sizes[i] - done); if (n <= 0) return false; done += static_cast<uint64_t>(n); } }
+  for (size_t i = 0; i < 16; ++i) { done = 0;
+    while (done < state.brr_sizes[i]) { const int64_t n = stream->write(stream, brr[i]->data() + done, state.brr_sizes[i] - done); if (n <= 0) return false; done += static_cast<uint64_t>(n); } }
   return true;
 }
 bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
@@ -1774,10 +1939,17 @@ bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
   if (!read_exact(&header, sizeof(header)) || header.magic != 0x53454e59U) return false;
   std::array<double, kParamCount> values{};
   for (clap_id i = 0; i < kParamCount; ++i) values[i] = kSpecs[i].def;
-  std::array<uint32_t, 16> sizes{};
+  std::array<uint32_t, 16> sizes{}, brr_sizes{};
   uint32_t gui_width = 0, gui_height = 0;
-  if (header.version == 16) {
+  if (header.version == 17) {
     StateBlob state{}; state.magic = header.magic; state.version = header.version;
+    if (!read_exact(reinterpret_cast<uint8_t*>(&state) + sizeof(header), sizeof(state) - sizeof(header))) return false;
+    std::copy(std::begin(state.values), std::end(state.values), values.begin());
+    std::copy(std::begin(state.dpcm_sizes), std::end(state.dpcm_sizes), sizes.begin());
+    std::copy(std::begin(state.brr_sizes), std::end(state.brr_sizes), brr_sizes.begin());
+    gui_width = state.gui_width; gui_height = state.gui_height;
+  } else if (header.version == 16) {
+    struct Legacy16 { uint32_t magic, version; double values[kParamCount]; uint32_t dpcm_sizes[16]; uint32_t gui_width, gui_height; } state{};
     if (!read_exact(reinterpret_cast<uint8_t*>(&state) + sizeof(header), sizeof(state) - sizeof(header))) return false;
     std::copy(std::begin(state.values), std::end(state.values), values.begin());
     std::copy(std::begin(state.dpcm_sizes), std::end(state.dpcm_sizes), sizes.begin());
@@ -1818,11 +1990,13 @@ bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
     std::copy(std::begin(state.values), std::end(state.values), values.begin()); sizes[0] = state.dpcm_size;
   } else return false;
   for (uint32_t size : sizes) if (size > 1024U * 1024U) return false;
+  for (uint32_t size : brr_sizes) if (size > 1024U * 1024U) return false;
   for (double value : values) if (!std::isfinite(value)) return false;
   // Stage every payload before touching the running patch. A truncated later
   // slot must not leave new parameters and earlier banks partially installed.
+  // The DPCM banks come first on disk, then the SNES BRR banks.
   auto* p = self(plugin);
-  std::array<std::shared_ptr<const std::vector<uint8_t>>,16> banks{};
+  std::array<std::shared_ptr<const std::vector<uint8_t>>,16> banks{}, brr{};
   try {
     for (size_t i = 0; i < banks.size(); ++i) {
       if (sizes[i] == 0) continue;
@@ -1830,7 +2004,15 @@ bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
       if (!read_exact(bank->data(), sizes[i])) return false;
       banks[i] = std::move(bank);
     }
+    for (size_t i = 0; i < brr.size(); ++i) {
+      if (brr_sizes[i] == 0) continue;
+      auto bank = std::make_shared<std::vector<uint8_t>>(brr_sizes[i]);
+      if (!read_exact(bank->data(), brr_sizes[i])) return false;
+      brr[i] = std::move(bank);
+    }
     p->retired_dpcm_banks.reserve(p->retired_dpcm_banks.size() + banks.size());
+    p->retired_snes_brr.reserve(p->retired_snes_brr.size() + brr.size());
+    p->retired_snes_pcm.reserve(p->retired_snes_pcm.size() + brr.size());
   } catch (const std::bad_alloc&) {
     return false;
   }
@@ -1838,6 +2020,7 @@ bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
   // execute its recipe and overwrite the other values in that snapshot.
   for (clap_id i = 0; i < kParamCount; ++i) set_param(p, i, values[i], false);
   for (size_t i = 0; i < banks.size(); ++i) install_dpcm_bank(p, i, std::move(banks[i]));
+  for (size_t i = 0; i < brr.size(); ++i) install_snes_bank(p, i, std::move(brr[i]));
 #ifdef YANES_HAS_EDITOR
   // An open editor keeps its size; the host already owns that window's geometry.
   if (!gui_is_open(p) && gui_width >= static_cast<uint32_t>(yanes::ui::minimum_width) &&

@@ -9,6 +9,7 @@ export YANES_LIBRETRO_HOST="$build/yanes-libretro-host"
 export YANES_GB_REPLAY="$build/yanes-gb-replay"
 export YANES_NES_REPLAY="$build/yanes-nes-replay"
 export YANES_PCE_REPLAY="$build/yanes-pce-replay"
+export YANES_SMS_REPLAY="$build/yanes-sms-replay"
 export YANES_PARITY_COMPARE="$build/yanes-parity-compare"
 passed=0
 failed=0
@@ -44,6 +45,16 @@ for game in Turrican "Bonk's Adventure" 'Air Zonk' 'Time Cruise'; do
   echo "=== pce: $game (8s) ==="
   if YANES_AUTO_START= YANES_AUTO_A_FRAMES= \
     "$root/tools/test_pce_rom_parity.sh" "$roms/pcengine/$game.pce" 8; then
+    passed=$((passed + 1))
+  else
+    failed=$((failed + 1))
+  fi
+done
+# SMS SN76489 titles whose music plays without input. FM-add-on games (Fantasy
+# Zone II, Wonder Boy III) are excluded: their audio is YM2413, not the PSG.
+for game in 'Alex Kidd in Miracle World' 'Alex Kidd in Shinobi World' 'Sonic the Hedgehog 2'; do
+  echo "=== sms: $game (8s) ==="
+  if "$root/tools/test_sms_rom_parity.sh" "$roms/sms/$game.sms" 8; then
     passed=$((passed + 1))
   else
     failed=$((failed + 1))

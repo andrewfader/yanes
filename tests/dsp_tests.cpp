@@ -1,7 +1,9 @@
 #include "../src/dsp.hpp"
+#include "../src/snes_dsp.hpp"
 #include <cassert>
 #include <cmath>
 #include <set>
+#include <vector>
 
 int main() {
   assert(std::abs(yanes::midi_frequency(69.0) - 440.0) < 1e-10);
@@ -88,5 +90,78 @@ int main() {
     assert(std::abs(yanes::analog_poly(phase, std::fmod(phase * 1.0045, 1.0), 0.5)) <= 1.0f);
     assert(std::abs(yanes::digital_ensemble(phase, 0.6)) <= 1.0f);
     assert(std::abs(yanes::tine_piano(phase, 3.2, 0.65, 0.2)) <= 1.0f);
+  }
+
+  // --- SNES S-DSP core ---------------------------------------------------------
+  // Each fractional position's four Gaussian weights sum to ~2048, so the >>11 in
+  // the interpolator is unity gain and a constant signal passes through unchanged.
+  for (int frac = 0; frac < 4096; frac += 17) {
+    const int offset = (frac >> 4) & 0xFF;
+    const int sum = yanes::snes::kGauss[static_cast<size_t>(255 - offset)] +
+                    yanes::snes::kGauss[static_cast<size_t>(511 - offset)] +
+                    yanes::snes::kGauss[static_cast<size_t>(256 + offset)] +
+                    yanes::snes::kGauss[static_cast<size_t>(offset)];
+    assert(std::abs(sum - 2048) <= 2);
+    const int dc = yanes::snes::interpolate(1000, 1000, 1000, 1000, frac);
+    assert(std::abs(dc - 1000) <= 12);  // per-tap flooring + cleared low bit
+    // Interpolating a rising ramp lands between the two centre samples.
+    const int ramp = yanes::snes::interpolate(0, 1000, 2000, 3000, frac);
+    assert(ramp >= 800 && ramp <= 2200);
+  }
+
+  // BRR round-trips a smooth sine with low error (it is near-lossless there),
+  // reports the whole-sample loop, and preserves length.
+  {
+    std::vector<int16_t> sine(256);
+    for (size_t i = 0; i < sine.size(); ++i)
+      sine[i] = static_cast<int16_t>(std::lround(12000.0 * std::sin(6.28318530718 * i / 64.0)));
+    const auto brr = yanes::snes::brr_encode(sine.data(), sine.size(), true);
+    assert(brr.size() == (sine.size() / 16) * 9);
+    const auto decoded = yanes::snes::brr_decode(brr.data(), brr.size());
+    assert(decoded.pcm.size() == sine.size());
+    assert(decoded.loop == 0);  // whole-sample loop
+    double energy = 0.0, error = 0.0;
+    for (size_t i = 0; i < sine.size(); ++i) {
+      energy += static_cast<double>(sine[i]) * sine[i];
+      const double e = static_cast<double>(decoded.pcm[i]) - sine[i];
+      error += e * e;
+    }
+    assert(error / energy < 0.05 && "BRR round-trip of a sine is near-lossless");
+  }
+
+  // A .brr file image's two-byte loop-offset header sets the loop point, instead
+  // of always looping to the start.
+  {
+    std::vector<int16_t> tone(160);
+    for (size_t i = 0; i < tone.size(); ++i)
+      tone[i] = static_cast<int16_t>(std::lround(9000.0 * std::sin(6.28318530718 * i / 40.0)));
+    const auto blocks = yanes::snes::brr_encode(tone.data(), tone.size(), true);
+    std::vector<uint8_t> file;
+    const uint16_t loop_offset = 5 * 9;  // loop back to block 5 -> sample 80
+    file.push_back(static_cast<uint8_t>(loop_offset & 0xff));
+    file.push_back(static_cast<uint8_t>(loop_offset >> 8));
+    file.insert(file.end(), blocks.begin(), blocks.end());
+    const auto decoded = yanes::snes::brr_decode_file(file.data(), file.size());
+    assert(decoded.loop == 5 * 16 && "the .brr loop header sets a mid-sample loop point");
+    // A bare block stream (no header) still loops to the start.
+    assert(yanes::snes::brr_decode_file(blocks.data(), blocks.size()).loop == 0);
+  }
+
+  // A one-shot (non-looping) BRR sample decodes to a finite length and stops.
+  {
+    std::vector<int16_t> ramp(48);
+    for (size_t i = 0; i < ramp.size(); ++i) ramp[i] = static_cast<int16_t>(i * 200 - 4800);
+    const auto brr = yanes::snes::brr_encode(ramp.data(), ramp.size(), false);
+    const auto decoded = yanes::snes::brr_decode(brr.data(), brr.size());
+    assert(decoded.loop == -1);
+    assert(decoded.pcm.size() == ramp.size());
+  }
+
+  // The echo FIR returns finite output and decays once its input stops.
+  {
+    yanes::snes::Echo echo;
+    echo.configure(480, {{64, 0, 0, 0, 0, 0, 0, 0}}, 0.4f, 0.6f);
+    for (int i = 0; i < 48000; ++i) { const float out = echo.process(i < 240 ? 0.5f : 0.0f); assert(std::isfinite(out)); }
+    assert(std::abs(echo.process(0.0f)) < 0.5f);
   }
 }

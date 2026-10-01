@@ -4,16 +4,16 @@ YANES is a clean-room CLAP instrument for NES and other retro console, computer,
 It builds on Linux, Windows, and macOS and is designed for Bitwig Studio and other CLAP hosts. A
 custom editor is included on all three platforms (X11 on Linux, Win32, and Cocoa).
 
-![YANES editor showing the Voice controls](docs/ui-review-2026-09-26/page1.png)
+![YANES editor showing the Voice controls](docs/ui-review-2026-09-30/page1.png)
 
-Screenshots of every editor page: [Voice](docs/ui-review-2026-09-26/page1.png),
-[Sequence](docs/ui-review-2026-09-26/page2.png),
-[Synth](docs/ui-review-2026-09-26/page3.png),
-[FM](docs/ui-review-2026-09-26/page4.png),
-[Hardware](docs/ui-review-2026-09-26/page5.png),
-[FX + TV](docs/ui-review-2026-09-26/page6.png), and
-[Custom](docs/ui-review-2026-09-26/page7.png).
-Also see the [preset browser](docs/ui-review-2026-09-26/presets.png).
+Screenshots of every editor page: [Voice](docs/ui-review-2026-09-30/page1.png),
+[Sequence](docs/ui-review-2026-09-30/page2.png),
+[Synth](docs/ui-review-2026-09-30/page3.png),
+[FM](docs/ui-review-2026-09-30/page4.png),
+[Hardware](docs/ui-review-2026-09-30/page5.png),
+[FX + TV](docs/ui-review-2026-09-30/page6.png), and
+[Custom](docs/ui-review-2026-09-30/page7.png).
+Also see the [preset browser](docs/ui-review-2026-09-30/presets.png).
 
 ## What is implemented
 
@@ -21,12 +21,28 @@ YANES is a polyphonic multi-chip synthesizer. Its core oscillator set covers NES
 noise, and DPCM; VRC6, FDS, Namco 163, VRC7, and Sunsoft 5B expansions; Game Boy and Master System
 voices; Genesis PSG and YM2612 FM; AY-3-8910, POKEY, PC Engine, OPL2/OPL3, OPN/OPNA, OPM, SID,
 Konami SCC, Philips SAA1099, and Atari TIA. It also includes original morphing-wavetable,
-phase-distortion, additive, six-operator FM, and digital-partial synthesis modes, plus stack modes
-that map MIDI channels to multi-voice chip layouts.
+phase-distortion, additive, six-operator FM, digital-partial, SNES-style Gaussian-sample,
+Neo Geo-style FM bell, arcade feedback-FM, and vowel/formant-wavetable synthesis modes, plus stack
+modes that map MIDI channels to multi-voice chip layouts.
 
 The NES DPCM voice additionally supports a sixteen-slot bank: mono or stereo 16-bit WAV files are
 converted to one-bit DPCM, while pre-encoded `.ydmc` data can be loaded directly. Slots map to
 consecutive MIDI notes and can be looped, trimmed, and saved in CLAP project state.
+
+The **SNES sample bank** voice plays that same sixteen-slot bank as a real, key-tracked sampler
+through a clean-room model of the SNES S-DSP: an imported WAV is resampled to the S-DSP's native
+32&nbsp;kHz and **BRR-encoded** (the console's four predictor filters and block-aligned loop), and
+playback **decodes the BRR and interpolates with the S-DSP's exact 512-entry 4-point Gaussian
+table** — the soft, high-rolled-off character of real SNES samples. Raw `.brr` files load directly,
+including the two-byte loop-offset header that carries a sample's real mid-sample loop point;
+the BRR bytes persist in project state (format v17), so a reopened project decodes identically; an
+empty slot falls back to a built-in SNES-style tone so the voice is always playable. When this
+voice is selected its echo runs through the S-DSP's eight-tap **echo FIR** — the soft, high-rolled-
+off colour of the console's signature reverb — reusing the Effects rack's Echo time, feedback and
+mix (no extra control). The Gaussian table and BRR filter coefficients are fixed SNES hardware
+constants; the surrounding code is implemented from the documented hardware behaviour, not ported
+from an emulator. YANES's clean-room S-DSP is checked against the reference (blargg's SPC_DSP): it
+matches real cartridge BRR samples to within 0.99 correlation (see `FURNACE_PARITY.md`).
 
 The current instrument provides 12.5%, 25%, 50%, and 75% band-limited pulse waves, the NES
 32-step triangle waveform, and the 2A03's 32,767-step and 93-step noise LFSRs with all 16 timer
@@ -71,7 +87,7 @@ error. It resamples differing source rates and also reports 1024-frame energy-en
 which is stable across different chip-core phase and resampling implementations. An optional
 minimum envelope-correlation threshold is suitable for CI.
 
-`advertised_tests` holds one proof per parameter (all 136) and one per preset (all 81) that it
+`advertised_tests` holds one proof per parameter (all 136) and one per preset (all 97) that it
 does what it advertises, measured from rendered audio in the advertised unit: Attack and
 Release in milliseconds, gains in dB, Transpose/Fine tune/bend/vibrato/sweep in semitones and
 cents, rates in Hz or steps per second, pulse duty in percent, FM index against the Bessel
@@ -197,7 +213,7 @@ Four additional families are included because they add synthesis methods not alr
 
 ## Original retro-digital synthesis
 
-Five additional methods broaden the instrument without copying factory ROMs or commercial
+Nine additional methods broaden the instrument without copying factory ROMs or commercial
 presets:
 
 - **Morphing wavetable** moves continuously through sine-, triangle-, saw-, and pulse-derived
@@ -210,9 +226,17 @@ presets:
   It follows the six-operator/32-algorithm concept without reproducing factory voices.
 - **Digital partial pair** layers a generated transient with morphing-table and additive sustain
   components for late-1980s digital/analog-style patches.
+- **SNES Gaussian sample** models the S-DSP's soft, high-rolled-off tone with a built-in Gaussian
+  character; Sample Tone opens it from a warm sub-flute to a brighter pluck.
+- **Neo Geo FM bell** rings with an irrational modulator ratio and a decaying index, like struck
+  arcade-FM metal, while **Arcade feedback FM** makes the spiky-yet-rounded wave a self-feedback
+  operator produces.
+- **Vowel formant wavetable** sweeps the two lowest vocal formants across "ah", "eh" and "ee" for a
+  talking, choir-like colour; Table Warp widens or narrows the formant bandwidth.
 
 Original presets include Vector Wavetable Pad, Phase-Distortion Brass, Additive Drawbars,
-Six-Operator Electric Piano, and Digital Partial Strings.
+Six-Operator Electric Piano, Digital Partial Strings, Neo Geo FM Bell, Arcade Spike Lead, and
+Vowel Formant Pad.
 
 Six era-inspired keyboard modes extend that original section without copying factory ROMs or
 patch data: a deliberately compact two-operator Porta FM voice, detuned vintage analog poly,
@@ -282,9 +306,12 @@ editor at four sizes with repeated window lifecycles and saves PPM screenshots. 
 X display; the ordinary CTest frontend checks remain headless. See the
 [native UI and leak results](docs/REVIEW_2026-09-26.md#follow-up-native-ui-and-leak-checks).
 
-The catalogue contains **59 sound sources and 81 factory presets** (plus Manual). Every source
-has a factory starting preset, including the console stacks and noise voices. New recipes include
-Custom wave lead, Game Boy custom bass, Custom wave organ, and Game Boy duty macro. Choose
+The catalogue contains **64 sound sources and 97 factory presets** (plus Manual). Every source
+has a factory starting preset, including the console stacks and noise voices. Recent recipes
+include the deep-bass set (Moog ladder, Oberheim SEM, Korg resonant, Moog lead), the 1980s synth
+families (Juno chorus strings, Prophet sync lead, Hoover rave stab, DX slap bass, CS-80 brass
+swell, SID PWM arp lead), and the SNES voices (SNES soft bass, SNES bright sample, SNES sampler).
+Choose
 **Custom wavetable** directly in the sound-source menu, or use the Custom wave switch to override
 another source. The drawing is always active when Custom wavetable itself is selected.
 
@@ -315,7 +342,10 @@ zero processing latency and a release/echo-dependent tail so offline hosts do no
 
 ## NES DPCM sample bank
 
-Yes, sample import is implemented, but only for this bank. `yanes-dpcm` converts a mono or stereo
+Sample import feeds this one sixteen-slot bank, which two voices read in different ways: the NES
+DPCM modes play it as the one-bit delta stream below, and the **SNES sample bank** voice plays the
+same slots as BRR samples through the S-DSP model described above (a raw `.brr` loads directly, and
+an imported WAV is BRR-encoded as well as DPCM-encoded). `yanes-dpcm` converts a mono or stereo
 16-bit PCM WAV to the one-bit delta stream used by the NES DPCM modes:
 
 ```sh
@@ -333,8 +363,8 @@ project, all sixteen bank slots are included in CLAP state, so reopening that pr
 depend on the environment variable or original files. DPCM Base Key maps consecutive MIDI keys to
 slots; each file is limited to 1 MiB. Empty slots retain the generated, copyright-free kick/snare
 fallback. State versions 8 and 9 migrate their former single sample into slot one, while versions
-10 through 15 retain all sixteen slots and receive defaults for newer mixer, loop, DAC, trim,
-and later controls.
+10 through 16 retain all sixteen slots and receive defaults for newer mixer, loop, DAC, trim,
+and later controls. Version 17 adds the per-slot BRR samples the SNES sample-bank voice plays.
 Each slot can loop independently through the DPCM Loop Mask, and DPCM Initial Level exposes the
 2A03 DAC starting value used before the first delta bit. DPCM Trim Start and Trim End provide
 normalized, non-destructive start/end boundaries shared by the bank; they are not per-sample loop

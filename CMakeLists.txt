@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(YANES VERSION 0.3.2 LANGUAGES CXX)
+project(YANES VERSION 0.3.4 LANGUAGES CXX)
 
 # Keep windows.h from defining the min/max macros no matter which header pulls it in.
 add_compile_definitions($<$<CXX_COMPILER_ID:MSVC>:NOMINMAX>)
@@ -129,6 +129,11 @@ target_compile_features(yanes-nes-replay PRIVATE cxx_std_20)
 yanes_warnings(yanes-nes-replay)
 install(TARGETS yanes-nes-replay RUNTIME DESTINATION bin)
 
+add_executable(yanes-sms-replay tools/yanes_sms_replay.cpp)
+target_compile_features(yanes-sms-replay PRIVATE cxx_std_20)
+yanes_warnings(yanes-sms-replay)
+install(TARGETS yanes-sms-replay RUNTIME DESTINATION bin)
+
 add_executable(yanes-gb-envelope-rom tools/yanes_gb_envelope_rom.cpp)
 target_compile_features(yanes-gb-envelope-rom PRIVATE cxx_std_20)
 yanes_warnings(yanes-gb-envelope-rom)
@@ -198,6 +203,14 @@ if(YANES_NES_ROM)
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nes_rom_parity.sh ${YANES_NES_ROM})
   set_tests_properties(nes_rom_parity PROPERTIES TIMEOUT 120 ENVIRONMENT
     "YANES_NES_REPLAY=$<TARGET_FILE:yanes-nes-replay>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
+endif()
+# SMS SN76489 real-ROM parity. YANES_SMS_ROM is a .sms game; YANES_SMS_CORE is the
+# Genesis Plus GX core patched with third_party/genesis-plus-gx-psg-register-log.patch.
+if(YANES_SMS_ROM)
+  add_test(NAME sms_rom_parity COMMAND
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_sms_rom_parity.sh ${YANES_SMS_ROM})
+  set_tests_properties(sms_rom_parity PROPERTIES TIMEOUT 180 ENVIRONMENT
+    "YANES_SMS_REPLAY=$<TARGET_FILE:yanes-sms-replay>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
 endif()
 add_executable(yanes-benchmark tools/yanes_benchmark.cpp)
 target_compile_features(yanes-benchmark PRIVATE cxx_std_20)
@@ -276,6 +289,45 @@ foreach(suite note_tests state_tests bank_tests preset_tests modulation_tests)
 endforeach()
 set_tests_properties(bank_tests PROPERTIES
   ENVIRONMENT "YANES_DPCM_TOOL=$<TARGET_FILE:yanes-dpcm>")
+
+# SNES S-DSP parity: pin the SNES sampler voice to the hardware-reference S-DSP
+# (blargg's SPC_DSP, as used by cycle-accurate emulators). Point this at the
+# directory holding SPC_DSP.cpp/SPC_DSP.h (a Furnace checkout's
+# src/engine/platform/sound/snes). The reference is test-only and never linked
+# into the product. Disabled when unset.
+set(YANES_SNES_DSP_REFERENCE "" CACHE PATH "Directory containing the reference SPC_DSP sources")
+if(YANES_SNES_DSP_REFERENCE)
+  if(NOT EXISTS "${YANES_SNES_DSP_REFERENCE}/SPC_DSP.cpp")
+    message(FATAL_ERROR "YANES_SNES_DSP_REFERENCE='${YANES_SNES_DSP_REFERENCE}' has no SPC_DSP.cpp")
+  endif()
+  add_executable(snes_dsp_parity tests/snes_dsp_parity.cpp tests/snes_dsp_reference.cpp
+    "${YANES_SNES_DSP_REFERENCE}/SPC_DSP.cpp")
+  target_compile_features(snes_dsp_parity PRIVATE cxx_std_20)
+  target_include_directories(snes_dsp_parity PRIVATE "${clap_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests" "${YANES_SNES_DSP_REFERENCE}")
+  target_link_libraries(snes_dsp_parity PRIVATE ${CMAKE_DL_LIBS})
+  yanes_enable_assertions(snes_dsp_parity)
+  add_test(NAME snes_dsp_parity COMMAND snes_dsp_parity $<TARGET_FILE:yanes_clap>)
+else()
+  message(STATUS "SNES S-DSP parity disabled: pass -DYANES_SNES_DSP_REFERENCE=/path/to/snes/dsp/sources")
+endif()
+
+# SID reference parity: benchmark the SID voice against reSIDfp, the reference
+# MOS6581/8580 emulation used by accurate SID players. Auto-enabled when the
+# system libresidfp is present; it is test-only and never linked into the product.
+find_library(YANES_RESIDFP_LIB residfp)
+find_path(YANES_RESIDFP_INCLUDE residfp.h PATH_SUFFIXES residfp)
+if(YANES_RESIDFP_LIB AND YANES_RESIDFP_INCLUDE)
+  add_executable(sid_resid_parity tests/sid_resid_parity.cpp tests/sid_resid_reference.cpp)
+  target_compile_features(sid_resid_parity PRIVATE cxx_std_20)
+  target_include_directories(sid_resid_parity PRIVATE "${clap_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests" "${YANES_RESIDFP_INCLUDE}")
+  target_link_libraries(sid_resid_parity PRIVATE "${YANES_RESIDFP_LIB}" ${CMAKE_DL_LIBS})
+  yanes_enable_assertions(sid_resid_parity)
+  add_test(NAME sid_resid_parity COMMAND sid_resid_parity $<TARGET_FILE:yanes_clap>)
+else()
+  message(STATUS "SID reference parity disabled: libresidfp not found")
+endif()
 add_executable(bdd_e2e_tests tests/bdd_e2e_tests.cpp src/hardware_fm.cpp)
 target_include_directories(bdd_e2e_tests PRIVATE "${clap_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 target_compile_features(bdd_e2e_tests PRIVATE cxx_std_20)

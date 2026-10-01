@@ -28,6 +28,8 @@ class Blob {
     bytes_.resize(values_at_ + value_count * sizeof(double), 0);
     sizes_at_ = bytes_.size();
     bytes_.resize(sizes_at_ + size_count * sizeof(uint32_t), 0);
+    // From v17 a second size table (the SNES BRR banks) follows the DPCM sizes.
+    if (version >= 17) { brr_sizes_at_ = bytes_.size(); bytes_.resize(brr_sizes_at_ + size_count * sizeof(uint32_t), 0); }
     // From v15 the editor size follows the sizes; these are the editor's defaults.
     if (version >= 15) { put32(1600); put32(1050); }
     // Trailing padding to the natural alignment of the writer's struct.
@@ -42,6 +44,10 @@ class Blob {
     assert(index < size_count_);
     std::memcpy(bytes_.data() + sizes_at_ + index * sizeof(uint32_t), &v, sizeof(v));
   }
+  void brr_size(size_t index, uint32_t v) {
+    assert(index < size_count_ && brr_sizes_at_ != 0);
+    std::memcpy(bytes_.data() + brr_sizes_at_ + index * sizeof(uint32_t), &v, sizeof(v));
+  }
   void append(const std::vector<uint8_t>& payload) {
     bytes_.insert(bytes_.end(), payload.begin(), payload.end());
   }
@@ -54,7 +60,7 @@ class Blob {
     bytes_.insert(bytes_.end(), b, b + sizeof(v));
   }
   std::vector<uint8_t> bytes_;
-  size_t value_count_, size_count_, values_at_{}, sizes_at_{};
+  size_t value_count_, size_count_, values_at_{}, sizes_at_{}, brr_sizes_at_{};
 };
 
 // A value inside the parameter's declared range that is not its default, so a test can
@@ -130,10 +136,26 @@ void test_v16_bank_payload_round_trip(const Library& library) {
   blob.append(payload);
   assert(load_state(plugin, blob.memory()));
 
+  // A v16 project still loads; re-saving migrates it to the current format, and
+  // the DPCM payloads survive that migration byte for byte.
   StateMemory resaved;
   assert(save_state(plugin, &resaved));
-  assert(resaved.bytes.size() == blob.memory().bytes.size());
-  assert(resaved.bytes == blob.memory().bytes);
+  const size_t sizes_at = 8 + count * sizeof(double);
+  uint32_t saved_sizes[16]{};
+  std::memcpy(saved_sizes, resaved.bytes.data() + sizes_at, sizeof(saved_sizes));
+  for (size_t slot = 0; slot < 16; ++slot) assert(saved_sizes[slot] == slot_sizes[slot]);
+  // The DPCM payloads follow the header (DPCM sizes, then BRR sizes, then editor size).
+  const size_t payload_at = sizes_at + 2 * 16 * sizeof(uint32_t) + 2 * sizeof(uint32_t);
+  assert(resaved.bytes.size() == payload_at + payload.size());
+  assert(std::equal(payload.begin(), payload.end(), resaved.bytes.begin() + static_cast<long>(payload_at)));
+
+  // Migrated state round-trips through a fresh instance unchanged.
+  const clap_plugin_t* fresh = library.create();
+  assert(load_state(fresh, resaved));
+  StateMemory again;
+  assert(save_state(fresh, &again));
+  assert(again.bytes == resaved.bytes);
+  fresh->destroy(fresh);
   plugin->destroy(plugin);
 }
 
@@ -141,7 +163,8 @@ void test_v16_bank_payload_round_trip(const Library& library) {
 void test_editor_size_round_trip(const Library& library) {
   const clap_plugin_t* plugin = library.create();
   const uint32_t count = params_of(plugin)->count(plugin);
-  const size_t gui_at = 8 + count * sizeof(double) + 16 * sizeof(uint32_t);
+  // The editor size follows the DPCM sizes and the SNES BRR sizes (v17).
+  const size_t gui_at = 8 + count * sizeof(double) + 2 * 16 * sizeof(uint32_t);
   const auto saved_size = [&](const clap_plugin_t* instance) {
     StateMemory out;
     assert(save_state(instance, &out));
@@ -151,7 +174,7 @@ void test_editor_size_round_trip(const Library& library) {
   };
   assert((saved_size(plugin) == std::array<uint32_t, 2>{1600, 1050}));
 
-  Blob blob(16, count, 16);
+  Blob blob(17, count, 16);
   for (clap_id i = 0; i < count; ++i) blob.value(i, param_info(plugin, i).default_value);
   const uint32_t small[2] = {800, 525};
   std::memcpy(blob.bytes().data() + gui_at, small, sizeof(small));
@@ -240,13 +263,14 @@ void test_legacy_sample_lands_in_first_slot(const Library& library) {
 
   StateMemory resaved;
   assert(save_state(plugin, &resaved));
-  // v16 header: magic, version, kParamCount doubles, sixteen sizes, then the editor size.
+  // v17 header: magic, version, kParamCount doubles, sixteen DPCM sizes, sixteen
+  // BRR sizes, then the editor size.
   const size_t sizes_at = 8 + count * sizeof(double);
   uint32_t sizes[16]{};
   std::memcpy(sizes, resaved.bytes.data() + sizes_at, sizeof(sizes));
   assert(sizes[0] == payload.size());
   for (size_t slot = 1; slot < 16; ++slot) assert(sizes[slot] == 0);
-  const size_t payload_at = sizes_at + sizeof(sizes) + 2 * sizeof(uint32_t);
+  const size_t payload_at = sizes_at + 2 * sizeof(sizes) + 2 * sizeof(uint32_t);
   assert(resaved.bytes.size() == payload_at + payload.size());
   assert(std::equal(payload.begin(), payload.end(), resaved.bytes.begin() + static_cast<long>(payload_at)));
   plugin->destroy(plugin);
@@ -276,7 +300,7 @@ void test_rejects_malformed_state(const Library& library) {
   assert(!load_state(plugin, bad_magic));
 
   // Unknown versions, both older and newer than the supported range.
-  for (const uint32_t version : {0U, 1U, 7U, 17U, 99U, 0xffffffffU}) {
+  for (const uint32_t version : {0U, 1U, 7U, 18U, 99U, 0xffffffffU}) {
     StateMemory wrong = saved;
     std::memcpy(wrong.bytes.data() + 4, &version, sizeof(version));
     assert(!load_state(plugin, wrong));

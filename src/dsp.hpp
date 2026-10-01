@@ -350,6 +350,95 @@ inline float tine_piano(double phase, double index, double brightness, double ag
   return static_cast<float>(std::sin(p + mod) * 0.82 + std::sin(p * 2.0) * strike * 0.18);
 }
 
+// SNES S-DSP-style 4-point Gaussian interpolation for pitched sample playback:
+// four neighbouring samples (s[-1..2]) weighted by a Gaussian centred at the
+// fractional read position. It is what gives BRR sample replay its soft, gently
+// high-rolled-off body instead of the harsh steps of nearest-neighbour or the
+// ring of linear interpolation.
+inline float gaussian_interp4(float sm1, float s0, float s1, float s2, double frac) {
+  const double f = std::clamp(frac, 0.0, 1.0);
+  const double w0 = std::exp(-(1.0 + f) * (1.0 + f) * 1.7);
+  const double w1 = std::exp(-f * f * 1.7);
+  const double w2 = std::exp(-(1.0 - f) * (1.0 - f) * 1.7);
+  const double w3 = std::exp(-(2.0 - f) * (2.0 - f) * 1.7);
+  const double sum = w0 + w1 + w2 + w3;
+  return static_cast<float>((sm1 * w0 + s0 * w1 + s1 * w2 + s2 * w3) / sum);
+}
+
+// SNES / S-DSP flavour: BRR samples are replayed through a 4-point Gaussian
+// interpolator that gently rolls off the top octave, which is what gives the
+// console its soft, slightly muffled, "rounded" body. This is not a sample
+// player; it is a compact model of that timbre: a small set of partials with a
+// Gaussian-shaped high rolloff, softly saturated and quantised like a short BRR
+// block. Shape opens the interpolator up from a warm sub-flute to a brighter
+// plucked sample.
+inline float snes_wave(double phase, int shape) {
+  constexpr double tau = 6.2831853071795864769;
+  const double p = std::floor(phase * 128.0) / 128.0;  // the fixed replay grid
+  const double bright = std::clamp(shape, 0, 7) / 7.0;
+  double wave = std::sin(tau * p) +
+                (0.40 + 0.60 * bright) * 0.5 * std::sin(tau * 2.0 * p) +
+                bright * 0.24 * std::sin(tau * 3.0 * p) +
+                bright * bright * 0.13 * std::sin(tau * 4.0 * p);
+  wave = std::tanh(wave * 0.9);  // the sampled body, gently compressed
+  return quantize_bipolar(wave * 0.72, 64);
+}
+
+// A round FM bell in the spirit of the YM2610 (Neo Geo) and other arcade FM
+// chips: an irrational modulator ratio makes the partials inharmonic, so the
+// tone rings like struck metal rather than a pitched pipe, and the modulation
+// index falls as the note ages so the bell mellows into a hum the way a real
+// strike decays from clang to tone.
+inline float bell_fm(double phase, double ratio, double index, double age_seconds) {
+  constexpr double tau = 6.2831853071795864769;
+  const double p = tau * phase;
+  const double strike = std::exp(-std::max(0.0, age_seconds) * 3.2);
+  const double partial = (1.0 + std::clamp(ratio, 0.5, 8.0)) * 1.4142135623730951;
+  const double modulator = std::sin(p * partial);
+  const double carrier = std::sin(p + std::clamp(index, 0.0, 8.0) * (0.4 + 0.6 * strike) * modulator);
+  const double shimmer = std::sin(p * 3.51) * 0.25 * std::exp(-std::max(0.0, age_seconds) * 6.0);
+  return static_cast<float>(carrier * 0.85 + shimmer);
+}
+
+// The spiky-yet-rounded wave arcade FM chips make when a single operator is fed
+// most of its own output back in: strong self-feedback drives a sine toward a
+// sawtooth with a soft, rounded spike at the wrap. Two fixed-point iterations
+// approximate the feedback loop cheaply, and brightness adds an octave edge.
+inline float feedback_fm(double phase, double index, double brightness) {
+  constexpr double tau = 6.2831853071795864769;
+  const double p = tau * phase;
+  const double depth = 0.6 + std::clamp(index, 0.0, 8.0) * 0.18;
+  double fb = std::sin(p);
+  fb = std::sin(p + fb * depth * 0.7);
+  fb = std::sin(p + fb * depth);
+  const double edge = std::sin(p * 2.0) * std::clamp(brightness, 0.0, 1.0) * 0.4;
+  return static_cast<float>(std::tanh((fb + edge) * 1.1) * 0.86);
+}
+
+// A vowel/formant wavetable: a logical extension of the additive voice that
+// sweeps the two lowest vocal formants across "ah", "eh" and "ee" as position
+// moves, boosting the harmonics nearest each formant so the tone takes on a
+// talking, choir-like colour. Warp widens or narrows the formant bandwidth.
+inline float formant_wave(double phase, double position, double warp) {
+  constexpr double tau = 6.2831853071795864769;
+  const double pos = std::clamp(position, 0.0, 1.0) * 2.0;
+  const int region = std::min(1, static_cast<int>(pos));
+  const double mix = pos - region;
+  constexpr double f1[3] = {2.0, 3.0, 2.0};   // first formant, in harmonics of f0
+  constexpr double f2[3] = {5.0, 7.0, 11.0};  // second formant
+  const double c1 = f1[region] * (1.0 - mix) + f1[region + 1] * mix;
+  const double c2 = f2[region] * (1.0 - mix) + f2[region + 1] * mix;
+  const double width = 1.2 + std::clamp(warp, 0.0, 1.0) * 2.5;
+  double out = 0.0, weight = 0.0;
+  for (int harmonic = 1; harmonic <= 16; ++harmonic) {
+    const double d1 = (harmonic - c1) / width, d2 = (harmonic - c2) / width;
+    const double amplitude = std::exp(-d1 * d1) + 0.7 * std::exp(-d2 * d2) + 0.15 / harmonic;
+    out += std::sin(tau * phase * harmonic) * amplitude;
+    weight += amplitude;
+  }
+  return static_cast<float>(out / std::max(1.0, weight * 0.6));
+}
+
 struct NoiseLfsr {
   uint16_t bits{1};
 
