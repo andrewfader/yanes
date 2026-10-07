@@ -1900,6 +1900,7 @@ PresetClaim preset_claim(int id) {
       {{80}, kStack},                   // 118 Virtual Boy channel stack
       {{81}, kStack},                   // 119 WonderSwan channel stack
       {{82}, kStack},                   // 120 GBA channel stack
+      {{48}, kSustain},                 // 121 Theremin
   }};
   return table[static_cast<size_t>(id)];
 }

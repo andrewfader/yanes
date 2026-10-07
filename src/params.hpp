@@ -131,7 +131,7 @@ constexpr std::array<ParamSpec, kParamCount> kSpecs{{
     {"DPCM trim end", "NES/DPCM bank", 0.05, 1, 1, false},
     {"Channel mute mask", "Hardware/Stack mixer", 0, 65535, 0, true},
     {"Channel solo mask", "Hardware/Stack mixer", 0, 65535, 0, true},
-    {"Preset", "Presets", 0, 120, 0, true},
+    {"Preset", "Presets", 0, 121, 0, true},
     {"Pitch bend range", "Performance", 0, 48, 2, true},
     {"Duty sequence", "Sequences/Duty", 0, 2, 0, true},
     {"Duty length", "Sequences/Duty", 1, 8, 4, true},
@@ -299,7 +299,8 @@ constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord l
     "WonderSwan noise percussion",
     "Virtual Boy channel stack",
     "WonderSwan channel stack",
-    "GBA channel stack"};
+    "GBA channel stack",
+    "Theremin"};
 static_assert(std::size(kWaveNames) == static_cast<size_t>(kSpecs[kWaveform].max) + 1);
 static_assert(std::size(kPresetNames) == static_cast<size_t>(kSpecs[kPreset].max) + 1);
 

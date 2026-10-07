@@ -278,8 +278,9 @@ presets:
   talking, choir-like colour; Table Warp widens or narrows the formant bandwidth.
 
 Original presets include Vector Wavetable Pad, Phase-Distortion Brass, Additive Drawbars,
-Six-Operator Electric Piano, Digital Partial Strings, Neo Geo FM Bell, Arcade Spike Lead, and
-Vowel Formant Pad.
+Six-Operator Electric Piano, Digital Partial Strings, Neo Geo FM Bell, Arcade Spike Lead,
+Vowel Formant Pad, and Theremin (a near-sine additive voice that glides between notes and adds
+hand vibrato after a quarter second).
 
 Six era-inspired keyboard modes extend that original section without copying factory ROMs or
 patch data: a deliberately compact two-operator Porta FM voice, detuned vintage analog poly,

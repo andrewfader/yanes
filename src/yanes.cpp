@@ -658,6 +658,7 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 119: put(kWaveform, 81); put(kStrictHardware, 1); put(kGainDb, -6.0); break; // WonderSwan channel stack
     case 120: put(kWaveform, 82); put(kStrictHardware, 1); put(kGainDb, -9.0); break; // GBA channel stack
     case 115: put(kWaveform, 77); put(kExpansionShape, 6); put(kTranspose, -12); put(kReleaseMs, 60); put(kGainDb, 0.5); break; // Seinfeld slap bass
+    case 121: put(kWaveform, 48); put(kAdditiveTilt, 0.85); put(kWavetablePosition, 0.1); put(kPortamentoMs, 180); put(kVibratoRate, 6.0); put(kVibratoDepth, 0.25); put(kVibratoDelay, 250); put(kAttackMs, 60); put(kReleaseMs, 300); put(kEchoMix, 0.18); put(kEchoTime, 260); put(kGainDb, -7.0); break; // Theremin (near-sine odd partials, gliding between notes, delayed hand vibrato)
     default: break;
   }
 }
