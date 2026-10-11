@@ -25,15 +25,20 @@ end
 mark("plugin-instantiated")
 
 -- Exercise a non-default preset and sample-accurate host automation.
+-- Normalise against each parameter's real range, so the recipe survives new sources and presets.
+local function normalized(index, value)
+  local _, minimum, maximum = reaper.TrackFX_GetParam(track, fx, index)
+  return (value - minimum) / (maximum - minimum)
+end
 local preset = reaper.TrackFX_GetParamFromIdent(track, fx, ":78")
 if preset < 0 then preset = 78 end
-reaper.TrackFX_SetParamNormalized(track, fx, preset, 48.0 / 48.0)
+reaper.TrackFX_SetParamNormalized(track, fx, preset, normalized(preset, 48))  -- Retro chip drum kit
 mark("preset-set")
 local waveform = reaper.TrackFX_GetParamFromIdent(track, fx, ":0")
 if waveform < 0 then waveform = 0 end
 local envelope = reaper.GetFXEnvelope(track, fx, waveform, true)
-reaper.InsertEnvelopePoint(envelope, 0.0, 57.0 / 57.0, 0, 0, false, true)
-reaper.InsertEnvelopePoint(envelope, 0.75, 51.0 / 57.0, 0, 0, false, true)
+reaper.InsertEnvelopePoint(envelope, 0.0, normalized(waveform, 57), 0, 0, false, true)   -- the kit for the hits
+reaper.InsertEnvelopePoint(envelope, 0.75, normalized(waveform, 51), 0, 0, false, true)  -- Porta FM for the held note
 reaper.Envelope_SortPoints(envelope)
 mark("automation-written")
 

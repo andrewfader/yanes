@@ -22,6 +22,9 @@ std::vector<float> snes_reference_render(const uint8_t* blocks, int block_bytes,
   SPC_DSP dsp;
   dsp.init(ram);
   dsp.soft_reset();
+  // Furnace's copy of the reference adds a switch that bypasses the Gaussian
+  // interpolator (nearest sample instead); the hardware always interpolates.
+  dsp.setupInterpolation(true);
   dsp.write(0x6C, 0x20);  // FLG: reset off, not muted, echo-buffer writes disabled
   dsp.write(0x7D, 0x00);  // echo delay 0
   dsp.write(0x4D, 0x00);  // echo off

@@ -9,6 +9,7 @@
 #include "../src/snes_dsp.hpp"
 
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -53,10 +54,19 @@ double rms(const std::vector<float>& x, size_t from, size_t to) {
   return std::sqrt(s / std::max<size_t>(1, to - from));
 }
 
-// Best normalised cross-correlation of two level-normalised signals over a steady
-// window, searching a small lag to absorb the voices' different key-on delays.
+// Best normalised cross-correlation of two level-normalised signals over the
+// stretch where the reference is sounding (a looped sample's sustain, or a
+// one-shot drum's whole body), searching a small lag to absorb the voices'
+// different key-on delays.
 double best_correlation(const std::vector<float>& a, const std::vector<float>& b) {
-  const size_t from = 2000, len = 6000;  // skip onset, compare the sustain
+  float peak = 0.0f;
+  for (const float x : a) peak = std::max(peak, std::abs(x));
+  size_t onset = 0, last = 0;
+  for (size_t i = 0; i < a.size(); ++i) if (std::abs(a[i]) > peak * 0.01f) { if (!last) onset = i; last = i; }
+  if (peak < 1e-6f || last <= onset) return 0.0;
+  const size_t from = onset + std::min<size_t>(64, (last - onset) / 4);  // past the key-on
+  if (last < from + 32) return 0.0;
+  const size_t len = std::min<size_t>(6000, last - from);
   const double ra = rms(a, from, from + len), rb = rms(b, from, from + len);
   if (ra < 1e-6 || rb < 1e-6) return 0.0;
   double best = -1.0;
@@ -74,7 +84,7 @@ double best_correlation(const std::vector<float>& a, const std::vector<float>& b
 }
 
 // Play `blocks` (whose loop point is loop_block) through both engines across a
-// sweep of pitches and return how many fell below the 0.9 correlation gate; the
+// sweep of pitches and return how many fell below the 0.99 correlation gate; the
 // .brr file at brr_path is what YANES imports.
 int run_parity(const Library& library, const std::vector<uint8_t>& blocks, int loop_block,
                const std::string& brr_path, const char* label, double& worst) {
@@ -87,8 +97,14 @@ int run_parity(const Library& library, const std::vector<uint8_t>& blocks, int l
     const auto reference = snes_reference_render(blocks.data(), static_cast<int>(blocks.size()), loop_block, pitch, frames);
     const auto mine = yanes_render(library, brr_path, base, key, frames);
     const double corr = best_correlation(reference, mine);
+    if (const char* dump = std::getenv("YANES_SNES_PARITY_DUMP"); dump && *dump) {
+      // Raw float32 renders for diagnosing a miss, one pair per pitch.
+      const std::string stem = std::string(dump) + "/" + fs::path(label).stem().string() + "-" + std::to_string(key);
+      std::ofstream(stem + "-ref.f32", std::ios::binary).write(reinterpret_cast<const char*>(reference.data()), static_cast<std::streamsize>(reference.size() * sizeof(float)));
+      std::ofstream(stem + "-yanes.f32", std::ios::binary).write(reinterpret_cast<const char*>(mine.data()), static_cast<std::streamsize>(mine.size() * sizeof(float)));
+    }
     std::printf("  key %2d  ratio %.4f  pitch 0x%04X  correlation %.4f\n", key, ratio, pitch, corr);
-    if (!(corr > 0.9)) ++failures;
+    if (!(corr > 0.99)) ++failures;
     worst = std::min(worst, corr);
   }
   return failures;
@@ -118,8 +134,7 @@ int main(int argc, char** argv) {
   if (const char* env = std::getenv("YANES_SNES_SAMPLES"); env && *env) {
     const std::string list = env;
     const char sep = test_platform::path_list_separator();
-    int tested = 0;
-    for (size_t start = 0; start <= list.size() && tested < 4;) {
+    for (size_t start = 0; start <= list.size();) {
       const size_t end = list.find(sep, start);
       const std::string path = list.substr(start, end == std::string::npos ? std::string::npos : end - start);
       start = end == std::string::npos ? list.size() + 1 : end + 1;
@@ -130,13 +145,12 @@ int main(int argc, char** argv) {
       const int loop_block = (file[0] | (file[1] << 8)) / 9;
       const std::vector<uint8_t> blocks(file.begin() + 2, file.end());
       failures += run_parity(library, blocks, loop_block, path, path.c_str(), worst);
-      ++tested;
     }
   }
 
   fs::remove_all(dir);
   if (failures) {
-    std::fprintf(stderr, "SNES S-DSP parity FAILED: %d pitch(es) below 0.9 correlation (worst %.4f)\n", failures, worst);
+    std::fprintf(stderr, "SNES S-DSP parity FAILED: %d pitch(es) below 0.99 correlation (worst %.4f)\n", failures, worst);
     return 1;
   }
   std::printf("SNES S-DSP parity: all pitches matched the hardware reference (worst correlation %.4f)\n", worst);

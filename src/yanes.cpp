@@ -62,6 +62,7 @@ extern char** environ;
 @interface YANES_EDITOR_VIEW : NSView
 @property(assign, nonatomic) void* plugin;
 @property(assign, nonatomic) NSTimer* refresh;
+@property(assign, nonatomic) double scrollAccumulator;
 @end
 #endif
 
@@ -153,6 +154,7 @@ struct Voice {
   std::shared_ptr<const std::vector<uint8_t>> dpcm_data{};
   double sample_pos{};  // SNES sampler: fractional read position in decoded PCM
   std::shared_ptr<const yanes::snes::BrrSample> snes_data{};
+  yanes::snes::BrrPlayer snes_player{};  // SNES sampler: hardware-style on-the-fly BRR decode
   float beeper_bit{};        // One-bit speakers: how much of this output sample the pin is high (0..1).
   bool sample_done{};        // OKI ADPCM: the one-shot sound has played out.
   double held_level{-1.0};   // GBA: volume, latched once per video frame.
@@ -219,11 +221,14 @@ struct Plugin {
   std::atomic<uint32_t> scope_write{};
   std::atomic<uint64_t> scope_revision{};
   uint32_t scope_decimator{};
+  float scope_last{};
   // Touched by the audio thread and by parameter changes on every platform, so these live outside
   // the editor blocks below: process() and params_flush() run whether or not an editor is open.
   struct GuiOutEvent { uint8_t type; clap_id id; double value; };
-  // Painting a step lane can touch every step between two host flushes; size for that.
-  static constexpr uint32_t kGuiOutCap = 1024;
+  // Painting a step lane can touch every step between two host flushes, and a
+  // right-drag line on the Custom lane sends every sample per motion event; size so
+  // a slow host flush never drops an edit or a gesture end.
+  static constexpr uint32_t kGuiOutCap = 16384;
   static constexpr uint8_t kGuiBegin = 0, kGuiValue = 1, kGuiEnd = 2;
   std::array<GuiOutEvent, kGuiOutCap> gui_out{};
   std::atomic<uint32_t> gui_out_w{};
@@ -622,7 +627,7 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     // SNES / arcade / vowel new voices.
     case 85: put(kWaveform, 59); put(kExpansionShape, 2); put(kTranspose, -12); put(kAttackMs, 4); put(kReleaseMs, 220); put(kGainDb, -3.0); break; // SNES soft bass
     case 86: put(kWaveform, 59); put(kExpansionShape, 6); put(kAttackMs, 2); put(kReleaseMs, 320); put(kChorusMix, 0.14); put(kGainDb, -2.0); break; // SNES bright sample
-    case 87: put(kWaveform, 60); put(kFmRatio, 3.5); put(kFmIndex, 5.0); put(kAttackMs, 0); put(kReleaseMs, 900); put(kChorusMix, 0.16); put(kGainDb, -5.5); break; // Neo Geo FM bell
+    case 87: put(kWaveform, 60); put(kFmRatio, 3.5); put(kFmIndex, 5.0); put(kAttackMs, 0); put(kReleaseMs, 900); put(kChorusMix, 0.16); put(kGainDb, -4.0); break; // Neo Geo FM bell
     case 88: put(kWaveform, 61); put(kFmIndex, 6.0); put(kFmBrightness, 0.72); put(kAttackMs, 1); put(kReleaseMs, 130); put(kDrive, 0.12); put(kGainDb, -10.0); break; // Arcade spike lead
     case 89: put(kWaveform, 62); put(kWavetablePosition, 0.4); put(kWavetableWarp, 0.5); put(kAttackMs, 30); put(kReleaseMs, 900); put(kChorusMix, 0.22); put(kChorusRate, 0.3); put(kGainDb, -1.0); break; // Vowel formant pad
     // SNES sampler and 1980s synth families.
@@ -634,7 +639,7 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 95: put(kWaveform, 4); put(kExpansionShape, 7); put(kLayerMode, 2); put(kLayerMix, 0.30); put(kChorusMix, 0.34); put(kChorusRate, 0.30); put(kAttackMs, 2); put(kReleaseMs, 260); put(kDrive, 0.24); put(kGainDb, -8.0); break; // Hoover rave stab
     case 96: put(kWaveform, 39); put(kExpansionShape, 2); put(kDuty, 1); put(kArpMode, 1); put(kArpRate, 16); put(kReleaseMs, 400); put(kGainDb, -6.0); break; // SID PWM arp lead
     case 97: put(kWaveform, 53); put(kExpansionShape, 4); put(kAttackMs, 80); put(kReleaseMs, 900); put(kVibratoDepth, 0.15); put(kChorusMix, 0.20); put(kGainDb, -1.0); break; // CS-80 brass swell
-    case 98: put(kWaveform, 7); put(kFmRatio, 2); put(kFmIndex, 3.2); put(kReleaseMs, 220); put(kChorusMix, 0.12); put(kGainDb, -6.0); put(kFmSustainRate, 0); break; // Master System FM (YM2413/OPLL add-on, via the OPLL-core VRC7 voice)
+    case 98: put(kWaveform, 70); put(kGenesisAlgorithm, 10); put(kChorusMix, 0.12); put(kGainDb, -4.0); break; // Master System FM: the FM add-on's YM2413 through ymfm, ROM synthesizer patch
     case 99: put(kWaveform, 63); put(kExpansionShape, 7); put(kAttackMs, 70); put(kReleaseMs, 1100); put(kChorusMix, 0.24); put(kChorusRate, 0.26); put(kEchoMix, 0.26); put(kEchoTime, 140); put(kEchoFeedback, 0.42); put(kGainDb, 2.0); break; // SNES orchestra pad (S-DSP echo on the sampler voice)
     // Sample players, one-bit speakers, speech and the later handhelds.
     case 100: put(kWaveform, 64); put(kExpansionShape, 3); put(kVibratoDepth, 0.12); put(kGainDb, -9.0); break; // Amiga ProTracker lead (25% pulse loop)
@@ -1589,37 +1594,43 @@ float render_voice(Plugin* p, Voice& v) {
     // sample loaded it falls back to the built-in SNES tone so the voice is
     // always playable (as the DPCM voice falls back to drums).
     const auto& sample = v.snes_data;
-    if (sample && sample->pcm.size() >= 2) {
-      const auto& pcm = sample->pcm;
-      const size_t n = pcm.size();
+    if (sample && sample->pcm.size() >= 2 && !sample->blocks.empty()) {
+      const size_t n = sample->pcm.size();
       const int base_key = std::clamp(static_cast<int>(p->params[kDpcmBaseKey].load(std::memory_order_relaxed)) + v.dpcm_slot, 0, 127);
       const double ratio = frequency / std::max(1.0, yanes::midi_frequency(static_cast<double>(base_key)));
-      const double advance = static_cast<double>(yanes::snes::kNativeRate) * ratio / p->sample_rate;
-      const size_t trim_start = std::min(n - 1, static_cast<size_t>(static_cast<double>(n) * effective_param<kDpcmTrimStart>(p)));
-      const double trim_end_f = effective_param<kDpcmTrimEnd>(p);
-      const size_t trim_end = trim_end_f > 0.0 ? std::min(n, static_cast<size_t>(static_cast<double>(n) * trim_end_f)) : n;
-      const size_t end = std::max(trim_start + 1, trim_end);
-      bool ended = false;
-      if (v.sample_pos >= static_cast<double>(end)) {
-        const uint32_t loop_mask = static_cast<uint32_t>(p->params[kDpcmLoopMask].load(std::memory_order_relaxed));
-        if (loop_mask & (1U << v.dpcm_slot)) {
-          // The sample's own loop point, unless the trim window excludes it.
-          double loop_point = sample->loop >= 0 ? static_cast<double>(sample->loop) : static_cast<double>(trim_start);
-          if (loop_point < static_cast<double>(trim_start) || loop_point >= static_cast<double>(end))
-            loop_point = static_cast<double>(trim_start);
-          v.sample_pos = loop_point + std::fmod(v.sample_pos - loop_point, static_cast<double>(end) - loop_point);
-        } else {
-          // Like the S-DSP, a one-shot sample is silent once its end block plays.
-          v.releasing = true;
-          ended = true;
-        }
+      // The S-DSP's pitch register: 14 bits of 1/4096-sample steps, so the replay
+      // rate lands on the same grid the console's does.
+      const double pitch = std::clamp(std::round(ratio * 4096.0), 1.0, 16383.0) / 4096.0;
+      const double advance = static_cast<double>(yanes::snes::kNativeRate) * pitch / p->sample_rate;
+      const uint32_t loop_mask = static_cast<uint32_t>(p->params[kDpcmLoopMask].load(std::memory_order_relaxed));
+      const bool looping = (loop_mask & (1U << v.dpcm_slot)) != 0;
+      auto& player = v.snes_player;
+      if (!player.started) {
+        // The trim window, in blocks (the S-DSP addresses samples by block).
+        const size_t trim_start = std::min(n - 1, static_cast<size_t>(static_cast<double>(n) * effective_param<kDpcmTrimStart>(p)));
+        const double trim_end_f = effective_param<kDpcmTrimEnd>(p);
+        const size_t trim_end = trim_end_f > 0.0 ? std::min(n, static_cast<size_t>(static_cast<double>(n) * trim_end_f)) : n;
+        const size_t end = std::max(trim_start + 1, trim_end);
+        const size_t start_block = trim_start / static_cast<size_t>(yanes::snes::kBrrBlockSamples);
+        const size_t end_block = (end + static_cast<size_t>(yanes::snes::kBrrBlockSamples) - 1) / static_cast<size_t>(yanes::snes::kBrrBlockSamples);
+        // The sample's own loop point, unless the trim window excludes it.
+        const size_t loop_at = sample->loop_block >= 0 ? static_cast<size_t>(sample->loop_block) : start_block;
+        player.start(*sample, start_block, end_block, looping, loop_at);
       }
-      const double clamped = std::min(v.sample_pos, static_cast<double>(end) - 1.0);
-      const long index = static_cast<long>(std::floor(clamped));
-      const int frac12 = static_cast<int>((clamped - std::floor(clamped)) * 4096.0) & 0xFFF;
-      auto at = [&](long i) { return static_cast<int>(pcm[static_cast<size_t>(std::clamp<long>(i, 0, static_cast<long>(end) - 1))]); };
-      value = ended ? 0.0f : static_cast<float>(yanes::snes::interpolate(at(index - 1), at(index), at(index + 1), at(index + 2), frac12)) / 32768.0f;
-      v.sample_pos += advance;
+      player.looping = looping;
+      if (player.finished()) {
+        // Like the S-DSP, a one-shot sample is silent once its end block plays.
+        v.releasing = true;
+        value = 0.0f;
+      } else {
+        const long index = static_cast<long>(std::floor(player.position));
+        const int frac12 = static_cast<int>((player.position - static_cast<double>(index)) * 4096.0) & 0xFFF;
+        // The S-DSP centres its four taps one sample ahead of the integer position
+        // (its buffer read starts at the position itself), so a fractional replay
+        // rate lands on exactly the hardware's sample grid.
+        value = static_cast<float>(yanes::snes::interpolate(player.at(index), player.at(index + 1), player.at(index + 2), player.at(index + 3), frac12)) / 32768.0f;
+        player.position += advance;
+      }
     } else {
       value = yanes::snes_wave(v.phase, shape);
     }
@@ -1931,9 +1942,19 @@ StereoSample process_rack(Plugin* p, float input) {
   float delayed;
   if (static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 63) {
     static constexpr float fir[8] = {0.30f, 0.24f, 0.18f, 0.12f, 0.08f, 0.04f, 0.02f, 0.02f};
+    // The S-DSP runs its FIR at 32 kHz, so the taps sit one S-DSP sample apart however
+    // fast the host runs; a fractional tap reads between two buffer entries.
+    const double spacing = p->sample_rate / static_cast<double>(yanes::snes::kNativeRate);
     float filtered = 0.0f;
-    for (int t = 0; t < 8; ++t)
-      filtered += fir[t] * p->delay_buffer[(p->delay_write + 2 * size - echo_samples - static_cast<size_t>(t)) % size];
+    for (int t = 0; t < 8; ++t) {
+      const double back = std::min(static_cast<double>(size - 1),
+                                   static_cast<double>(echo_samples) + static_cast<double>(t) * spacing);
+      const size_t whole = static_cast<size_t>(back);
+      const float frac = static_cast<float>(back - static_cast<double>(whole));
+      const float a = p->delay_buffer[(p->delay_write + 2 * size - whole) % size];
+      const float b = p->delay_buffer[(p->delay_write + 2 * size - whole - 1) % size];
+      filtered += fir[t] * (a + (b - a) * frac);
+    }
     delayed = filtered;
   } else {
     delayed = p->delay_buffer[(p->delay_write + size - echo_samples) % size];
@@ -2240,7 +2261,14 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
     block_peak_l=std::max(block_peak_l,std::abs(safe_l));block_peak_r=std::max(block_peak_r,std::abs(safe_r));
     out.data32[0][frame]=safe_l;
     if (out.channel_count > 1) out.data32[1][frame]=safe_r;
-    if((p->scope_decimator++&7U)==0U){const uint32_t at=p->scope_write.fetch_add(1,std::memory_order_relaxed);p->scope_samples[at&255U].store((effected.left+effected.right)*0.5f,std::memory_order_relaxed);p->scope_revision.fetch_add(1,std::memory_order_release);}
+    if((p->scope_decimator++&7U)==0U){
+      const float scope_sample=(effected.left+effected.right)*0.5f;
+      const uint32_t at=p->scope_write.fetch_add(1,std::memory_order_relaxed);
+      p->scope_samples[at&255U].store(scope_sample,std::memory_order_relaxed);
+      // Silence after silence is not a change: the editor only repaints while the trace moves.
+      if(scope_sample!=0.0f||p->scope_last!=0.0f)p->scope_revision.fetch_add(1,std::memory_order_release);
+      p->scope_last=scope_sample;
+    }
   }
   take_events(process->frames_count, true);
   p->output_peak_l.store(block_peak_l,std::memory_order_relaxed);p->output_peak_r.store(block_peak_r,std::memory_order_relaxed);
@@ -2577,17 +2605,31 @@ const void* entry_factory(const char* id) { return id && !std::strcmp(id, CLAP_P
   [area release];
   [super updateTrackingAreas];
 }
-- (void)mouseDown:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Down button:1]; }
-- (void)mouseDragged:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Move button:1]; }
-- (void)mouseUp:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Up button:1]; }
+// AppKit hands a Control-click to mouseDown: with the Control flag set rather than to
+// rightMouseDown:, so it is mapped to the right button here, as the Mac convention expects.
+- (BOOL)isControlClick:(NSEvent*)event { return ([event modifierFlags] & NSEventModifierFlagControl) != 0; }
+- (void)mouseDown:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Down button:[self isControlClick:event] ? 3 : 1]; }
+- (void)mouseDragged:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Move button:[self isControlClick:event] ? 3 : 1]; }
+- (void)mouseUp:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Up button:[self isControlClick:event] ? 3 : 1]; }
 - (void)rightMouseDown:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Down button:3]; }
 - (void)rightMouseUp:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Up button:3]; }
 - (void)rightMouseDragged:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Move button:3]; }
-- (void)otherMouseDown:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Down button:2]; }
-- (void)otherMouseUp:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Up button:2]; }
+// Only the middle button (number 2) opens a slot; thumb and other extra buttons are ignored.
+- (void)otherMouseDown:(NSEvent*)event { if ([event buttonNumber] == 2) [self handleEvent:event action:GuiPointer::Down button:2]; }
+- (void)otherMouseUp:(NSEvent*)event { if ([event buttonNumber] == 2) [self handleEvent:event action:GuiPointer::Up button:2]; }
 - (void)scrollWheel:(NSEvent*)event {
-  if ([event deltaY] == 0) return;  // horizontal scrolling and momentum tails
-  const int button = [event deltaY] > 0 ? 4 : 5;
+  // A wheel click is one notch. A trackpad reports precise, point-sized deltas and a momentum
+  // tail: those accumulate into notches of about ten points, and the tail is dropped.
+  if ([event momentumPhase] != NSEventPhaseNone) return;
+  double delta = [event scrollingDeltaY];
+  if ([event hasPreciseScrollingDeltas]) {
+    self.scrollAccumulator += delta;
+    if (std::fabs(self.scrollAccumulator) < 10.0) return;
+    delta = self.scrollAccumulator;
+    self.scrollAccumulator = 0.0;
+  }
+  if (delta == 0) return;  // horizontal scrolling
+  const int button = delta > 0 ? 4 : 5;
   [self handleEvent:event action:GuiPointer::Down button:button];
 }
 - (void)mouseMoved:(NSEvent*)event { [self handleEvent:event action:GuiPointer::Move button:0]; }

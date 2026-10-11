@@ -118,11 +118,11 @@ at row 16, which is 1.600 s (150 blocks) at Furnace's default speed; the SIDs
 gate for one block because their default D=8/S=0 envelope has decayed long
 before that.
 
-## Current result
+## First-wave result
 
-Furnace `fa9541d` vs YANES at 48 kHz: **21/21** primary fixtures and **42/42**
-octave holdouts, **63/63** overall, each row clearing every applicable threshold of
-both gates.
+Furnace `fa9541d` vs YANES at 48 kHz, for the original 21 chips: **21/21** primary fixtures
+and **42/42** octave holdouts, **63/63** overall, each row clearing every applicable threshold
+of both gates. The second wave below brings the registered suite to 110 cases.
 
 | Fixture | Envelope | Spectrum | Onset ms | Offset ms | Pitch cents | Env. shape dB | Env. local dB | Result |
 |---|---:|---:|---:|---:|---:|---:|---:|:---:|
@@ -150,9 +150,10 @@ both gates.
 
 ## Second wave (October 2026)
 
-Sixteen more fixtures cover the chips added in October 2026, each with octave holdouts:
-**110 registered parity tests pass** (37 primaries, 73 holdouts). Two cases are kept as files but
-not registered; see *Known gaps* below.
+Seventeen more fixtures cover the chips added in October 2026, each with octave holdouts:
+**110 registered parity tests pass** (37 primaries, 73 holdouts). Four cases (the `msx-cymbal`
+fixture and both its holdouts, and `msx-ym2413`'s low holdout) are kept as files but not
+registered; CMake lists them at configure time. See *Known gaps* below.
 
 Most of these fixtures play Furnace's default instrument untouched. Where the default instrument
 is silent or does not use the mode that defines the YANES voice, the generator
@@ -232,9 +233,10 @@ ymfm's YM2413 envelope releases about 1.25 times faster than Furnace's Nuked-OPL
 registers (the violin's carrier release: about 200 dB/s against 160; the cymbal's decay: about
 52 dB/s against 42). Both ROM tables give the violin carrier release rate 7 and both cores compute
 the same rate, 29, so the difference is in ymfm's envelope stepping; it has not been pinned to a
-line. Two cases miss the 60 ms note-end gate because of it and are not registered (CMake prints
-which): `msx-ym2413` one octave down (70 ms) and `msx-cymbal` (65 ms; its spectrum, 0.995, and
-envelope shape pass). Their modules are in `tests/furnace` and `tests/furnace_holdout`.
+line. The cases that miss the 60 ms note-end gate because of it are not registered (CMake prints
+which): `msx-ym2413` one octave down (70 ms) and `msx-cymbal` with its two holdouts (65 ms; its
+spectrum, 0.995, and envelope shape pass). Their modules are in `tests/furnace` and
+`tests/furnace_holdout`.
 
 Apple II speaker, TMS5220 speech and the slap bass have no Furnace reference (Furnace has no
 Apple II or TMS5220 chip); their behaviour is proved by `tests/extra_chips_tests.cpp` and the
@@ -362,7 +364,7 @@ bright tones still clear 0.80. It is not the acceptance gate.
 
 ## September 2026 audit additions
 
-The 63 Furnace cases still cover 21 specific default voices, not every shape, FM routing,
+The Furnace cases still cover specific default voices, not every shape, FM routing,
 source, or preset. Their pitch term folds octaves, so a passing row does not independently
 prove absolute pitch. The new `hardware_fm_tests` checks absolute 440 Hz and 3520 Hz output
 for all seven hardware-FM core configurations, and rejects an unwanted sub-octave. It also
@@ -382,8 +384,17 @@ default-voice Furnace suite (that suite's contract is "pick a voice, play a note
 has no default sample). Instead `snes_dsp_parity` pins the voice directly to the hardware
 reference: blargg's `SPC_DSP` (the cycle-accurate S-DSP used by accurate SNES emulators, and the
 same core Furnace's SNES chip builds on). The test feeds an identical BRR sample to both engines
-at matched pitches and requires >0.9 correlation; in practice a synthetic sine matches at 0.9998
-and real Donkey Kong Country cartridge samples at 0.988–0.9998.
+at matched pitches (the S-DSP's 14-bit pitch register, which the voice now quantises to) and
+requires >0.99 correlation over the stretch where the reference is sounding. In practice a
+synthetic sine matches at 0.9998, and all 69 real Donkey Kong Country cartridge samples
+(pitched loops and one-shot drums alike) match at four pitches each to 0.996 or better, median
+0.9993. Three things had to be right to get there: the voice decodes BRR on the fly with the
+predictor history carried through the loop point, as the hardware does, rather than looping a
+linear decode; its four interpolation taps start at the integer read position, as the S-DSP's
+buffer read does, so a fractional replay rate lands on the same sample grid; and the reference
+is rendered with its Gaussian interpolator switched on (Furnace's copy of `SPC_DSP` adds a flag
+that bypasses it and leaves it off by default, so earlier figures compared against a
+nearest-sample render).
 
 Enable it by pointing at the reference sources (a Furnace checkout's
 `src/engine/platform/sound/snes`, which holds `SPC_DSP.cpp`):
@@ -393,7 +404,9 @@ cmake -S . -B build -DYANES_SNES_DSP_REFERENCE=/path/to/furnace/src/engine/platf
 ```
 
 The reference is test-only and never linked into the product. Set `YANES_SNES_SAMPLES` (a path
-list of `.brr` files) to also pin the voice to real cartridge samples; it is skipped when unset.
+list of `.brr` files; also a CMake cache variable of the same name, which CTest forwards to this
+test and to `bank_tests`) to also pin the voice to real cartridge samples. Without it the test
+covers the synthetic sample only, and CMake says so at configure time.
 
 ## SMS SN76489 real-ROM parity (more accurate than Furnace)
 

@@ -50,4 +50,32 @@ fi
 rendered=$(find "$work/render" -maxdepth 1 -type f -name 'yanes-reaper*.wav' -print -quit)
 test -n "$rendered" && test -s "$rendered" || { cat "$work/render.log" >&2; echo "REAPER produced no WAV render" >&2; exit 1; }
 "$audio_compare" "$rendered" "$rendered" 0.9999 >/dev/null
+# The render must carry what the project says: twelve kit hits in the first 0.7 s (the preset
+# recalled from the saved project), a held C-4 from 0.82 s that is pitched and sustained (the
+# automation moved the source to Porta FM before it), and silence once the note has released.
+python3 - "$rendered" <<'PY' || { echo "REAPER render does not match the project it was rendered from" >&2; exit 1; }
+import math, struct, sys, wave
+with wave.open(sys.argv[1], 'rb') as w:
+    rate, channels, width, frames = w.getframerate(), w.getnchannels(), w.getsampwidth(), w.getnframes()
+    raw = w.readframes(frames)
+assert width in (2, 3, 4), width
+def sample(i):
+    if width == 2: return struct.unpack_from('<h', raw, i * 2)[0] / 32768.0
+    if width == 3: b = raw[i * 3:i * 3 + 3]; return int.from_bytes(b, 'little', signed=True) / 8388608.0
+    return struct.unpack_from('<i', raw, i * 4)[0] / 2147483648.0
+mono = [sum(sample(f * channels + c) for c in range(channels)) / channels for f in range(frames)]
+def rms_db(a, b):
+    seg = mono[int(a * rate):int(b * rate)]
+    return 10 * math.log10(sum(x * x for x in seg) / max(1, len(seg)) + 1e-20)
+def crossings(a, b):
+    seg = mono[int(a * rate):int(b * rate)]
+    return sum(1 for i in range(1, len(seg)) if seg[i - 1] < 0 <= seg[i])
+hits = rms_db(0.0, 0.7); held = rms_db(0.9, 1.6); tail = rms_db(1.9, 2.0)
+hz = crossings(1.0, 1.5) / 0.5
+print(f"hits {hits:.1f} dB, held note {held:.1f} dB at ~{hz:.0f} Hz, tail {tail:.1f} dB")
+assert hits > -40, "the drum kit passage is missing (preset not recalled)"
+assert held > -40 and rms_db(1.4, 1.6) - rms_db(0.9, 1.1) > -6, "the held note is not sustained (automation to Porta FM missing)"
+assert 200 < hz < 330, f"the held note is not pitched near C-4 ({hz:.0f} Hz)"
+assert tail < held - 30, "the note does not release"
+PY
 echo "REAPER CLAP integration passed: project recall, MIDI, automation, and offline render"

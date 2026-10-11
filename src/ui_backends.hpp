@@ -237,6 +237,7 @@ bool gui_create(const clap_plugin_t* plugin, const char* api, bool floating) {
 }
 void gui_destroy(const clap_plugin_t* plugin) {
   auto* p = self(plugin);
+  if (p->gui_editor) p->gui_editor->cancel();  // a drag in flight ends with the window
   if (p->gui_timer != CLAP_INVALID_ID && p->host_timers && p->host_timers->unregister_timer)
     p->host_timers->unregister_timer(p->host, p->gui_timer);
   p->gui_timer = CLAP_INVALID_ID;
@@ -343,6 +344,8 @@ void gui_paint(Plugin* p) {
   EndPaint(p->hwnd, &ps);
 }
 
+// Editor windows alive in this DLL; the window class is unregistered with the last one.
+int gui_window_count = 0;
 LRESULT CALLBACK gui_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   auto* p = reinterpret_cast<Plugin*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
   if (msg == WM_NCCREATE) {
@@ -434,24 +437,41 @@ bool gui_preferred(const clap_plugin_t*, const char** api, bool* floating) {
 bool gui_create(const clap_plugin_t* plugin, const char* api, bool floating) {
   auto* p = self(plugin);
   if (!gui_supported(plugin, api, floating) || p->hwnd) return false;
+  // The class belongs to this DLL, not the host executable: a class registered against the
+  // host's module outlives an unload, and a reload at another address would reuse it with a
+  // window procedure that no longer exists.
+  HMODULE module = nullptr;
+  GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                     reinterpret_cast<LPCWSTR>(&gui_wndproc), &module);
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);
   wc.lpfnWndProc = gui_wndproc;
-  wc.hInstance = GetModuleHandleW(nullptr);
+  wc.hInstance = module;
   wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));  // IDC_ARROW is narrow without UNICODE
   wc.lpszClassName = L"YANES_Editor_0_2_0";
-  RegisterClassExW(&wc);
+  if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
   p->hwnd = CreateWindowExW(0, wc.lpszClassName, L"YANES", WS_CHILD,
                             0, 0, static_cast<int>(p->gui_width), static_cast<int>(p->gui_height),
                             GetDesktopWindow(), nullptr, wc.hInstance, p);
   if (!p->hwnd) return false;
+  ++gui_window_count;
   SetTimer(p->hwnd, 1, 16, nullptr);
   p->gui_seen_revision = p->ui_revision.load(std::memory_order_acquire);
   return true;
 }
 void gui_destroy(const clap_plugin_t* plugin) {
   auto* p = self(plugin);
-  if (p->hwnd) { KillTimer(p->hwnd, 1); DestroyWindow(p->hwnd); }
+  if (p->gui_editor) p->gui_editor->cancel();  // a drag in flight ends with the window
+  if (p->hwnd) {
+    KillTimer(p->hwnd, 1);
+    DestroyWindow(p->hwnd);
+    if (--gui_window_count == 0) {
+      HMODULE module = nullptr;
+      GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         reinterpret_cast<LPCWSTR>(&gui_wndproc), &module);
+      UnregisterClassW(L"YANES_Editor_0_2_0", module);
+    }
+  }
   p->hwnd = nullptr;
 }
 bool gui_scale(const clap_plugin_t*, double) { return false; }
@@ -548,6 +568,7 @@ bool gui_create(const clap_plugin_t* plugin, const char* api, bool floating) {
 }
 void gui_destroy(const clap_plugin_t* plugin) {
   auto* p = self(plugin);
+  if (p->gui_editor) p->gui_editor->cancel();  // a drag in flight ends with the window
   if (p->view) {
     [p->view.refresh invalidate];
     p->view.refresh = nil;

@@ -41,8 +41,12 @@ voice is selected its echo runs through the S-DSP's eight-tap **echo FIR** — t
 off colour of the console's signature reverb — reusing the Effects rack's Echo time, feedback and
 mix (no extra control). The Gaussian table and BRR filter coefficients are fixed SNES hardware
 constants; the surrounding code is implemented from the documented hardware behaviour, not ported
-from an emulator. YANES's clean-room S-DSP is checked against the reference (blargg's SPC_DSP): it
-matches real cartridge BRR samples to within 0.99 correlation (see `FURNACE_PARITY.md`).
+from an emulator. The voice decodes BRR on the fly the way the S-DSP voice does, carrying the
+predictor history through the loop point, and steps its replay rate on the console's 14-bit pitch
+register. YANES's clean-room S-DSP is checked against the reference (blargg's SPC_DSP, with its
+Gaussian interpolator on): every one of 69 real Donkey Kong Country cartridge samples matches at
+four pitches to within 0.996 correlation (median 0.9993; the test gate is 0.99). Pass
+`-DYANES_SNES_SAMPLES=a.brr:b.brr` to pin the suite to your own samples (see `FURNACE_PARITY.md`).
 
 The current instrument provides 12.5%, 25%, 50%, and 75% band-limited pulse waves, the NES
 32-step triangle waveform, and the 2A03's 32,767-step and 93-step noise LFSRs with all 16 timer
@@ -80,37 +84,40 @@ register widths; unsupported combinations such as OPL detune are intentionally i
 than simulated outside the chip.
 
 `yanes-register-render` renders timestamped hexadecimal register writes through ymfm at native
-YM2612, YM2151, YM3812, or YMF262 rates. This provides a deterministic bridge for comparing YANES
+YM2203, YM2608, YM2612, YM2151, YM3812, or YMF262 rates. This provides a deterministic bridge for comparing YANES
 against register logs and audio exported by Furnace without incorporating Furnace's GPL engine.
 `yanes-audio-compare` checks two 16-bit PCM renders and reports normalized correlation and RMS
 error. It resamples differing source rates and also reports 1024-frame energy-envelope correlation,
 which is stable across different chip-core phase and resampling implementations. An optional
 minimum envelope-correlation threshold is suitable for CI.
 
-`advertised_tests` holds one proof per parameter (all 136) and one per preset (all 97) that it
+`advertised_tests` holds one proof per parameter (all 136) and one per preset (all 121) that it
 does what it advertises, measured from rendered audio in the advertised unit: Attack and
 Release in milliseconds, gains in dB, Transpose/Fine tune/bend/vibrato/sweep in semitones and
 cents, rates in Hz or steps per second, pulse duty in percent, FM index against the Bessel
 sideband ratio, table position against the sine/triangle/saw/square harmonic series, echo
 delay and feedback, DPCM playback against the 2A03 DMC period table, and so on. Each preset must
 select the chip its name says, have the character its name says (a bass sounds an octave or more
-down, a bell decays, a pad sustains, an echo repeats, a zap sweeps, a stack plays every channel),
-and every setting its recipe makes must be audible in its sound. The tables are indexed by ID,
-so the suite fails if a parameter or preset has no proof.
+down, a bell decays, a pad sustains, an echo repeats, a zap sweeps, a stack plays every one of its
+channels), and every setting its recipe makes must be audible in its sound. The tables are
+indexed by ID and sized to the parameter and preset lists, so the suite fails if a parameter or
+preset has no proof, no voice claim, or no character claim.
 
-The 21-chip audio suite (`tools/compare_furnace_audio.sh`, fixtures under `tests/furnace/`) uses
+The 38-chip audio suite (`tools/compare_furnace_audio.sh`, fixtures under `tests/furnace/`) uses
 `yanes-parity-compare`: onset alignment, log-band spectrum, octave-folded YIN pitch, and envelope
 shape. A fixture only selects a voice and plays a note — duty, wavetable, noise settings, FM ratio
 and release all come from the plugin's own per-voice defaults, so a passing row means the sound a
 user gets from that voice matches the chip, not that the engine could be talked into it. Each of the
-21 fixtures is also rendered an octave up and down as an untuned holdout; **all 63 cases pass**.
+38 fixtures is also rendered an octave up and down as an untuned holdout; **all 110 registered
+cases pass**.
 `yanes-parity-compare --self-test` runs as its own CTest to keep the gate from drifting into
 something a wrong render could satisfy. Every fixture is also scored by `envelope_oracle`, which
 compares the two amplitude envelopes in dB (attack, decay, release and note end); its
-`--self-test` plants a missing attack, a 3x slow attack, a missing decay and a 1.5x release and
-requires each to fail. Packaged Furnace 0.6.8.3 cannot load these INF2 modules; configure
+`--self-test` plants eight defects (a missing attack, a 3x slow attack, a missing decay, a 1.5x
+release, an over-long release, an ignored release, a note that never ends and a level far off)
+and requires each to fail, alongside six controls that must pass. Packaged Furnace 0.6.8.3 cannot load these INF2 modules; configure
 `-DYANES_FURNACE_EXECUTABLE=` to a git Furnace binary (CI builds the commit pinned in
-`.github/workflows/ci.yml`). With REAPER installed the same 21 fixtures are also rendered through
+`.github/workflows/ci.yml`). With REAPER installed the same fixtures are also rendered through
 REAPER as a real CLAP host (`reaper_envelope_oracle`). See `FURNACE_PARITY.md`.
 
 `tools/compare_furnace.sh CHIP module.fur [minimum-correlation]` performs the complete external-oracle
@@ -153,14 +160,20 @@ NES uses the same libretro host with a Nestopia checkout patched by
 captured 2A03 pulse, triangle, noise, DMC, frame-counter, length, sweep, and
 envelope state before applying the published nonlinear mixer curves.
 
-All three real-ROM lanes can be enrolled in CTest with `-DYANES_GB_ROM=...`,
-`-DYANES_PCE_ROM=...`, and `-DYANES_NES_ROM=...`. The ROMs and patched cores
-stay external. The scripts reject silent captures and compare a smoothed
+The Master System lane uses a Genesis Plus GX checkout patched with
+`third_party/genesis-plus-gx-psg-register-log.patch`: `tools/test_sms_rom_parity.sh game.sms`
+logs every SN76489 write while the core renders the game, and `yanes-sms-replay` plays that
+register stream through YANES's SN76489 model (attenuators start silent, as the chip powers up).
+Games that lean on the FM add-on are not pure-PSG comparisons and are left out.
+
+All four real-ROM lanes can be enrolled in CTest with `-DYANES_GB_ROM=...`,
+`-DYANES_PCE_ROM=...`, `-DYANES_NES_ROM=...`, and `-DYANES_SMS_ROM=...`. The ROMs and patched
+cores stay external. The scripts reject silent captures and compare a smoothed
 musical-energy contour plus log-band spectrum, avoiding a misleading raw-wave
 correlation between emulators with different analog filters and reset phase.
 
-`tools/test_real_roms.sh /path/to/roms /path/to/build` runs the 26-game regression
-matrix from `nes/`, `gb/`, and `pcengine/` subdirectories. Build the replay tools,
+`tools/test_real_roms.sh /path/to/roms /path/to/build` runs the 29-game regression
+matrix from `nes/`, `gb/`, `pcengine/`, and `sms/` subdirectories. Build the replay tools,
 `tools/build_gb_oracle.sh /path/to/build/yanes-gb-oracle`, and
 `tools/build_libretro_host.sh /path/to/build/yanes-libretro-host` first. Missing
 ROMs count as failures. The runner records the later Start presses needed by
@@ -350,7 +363,7 @@ editor at four sizes with repeated window lifecycles and saves PPM screenshots. 
 X display; the ordinary CTest frontend checks remain headless. See the
 [native UI and leak results](docs/REVIEW_2026-09-26.md#follow-up-native-ui-and-leak-checks).
 
-The catalogue contains **64 sound sources and 97 factory presets** (plus Manual). Every source
+The catalogue contains **83 sound sources and 121 factory presets** (plus Manual). Every source
 has a factory starting preset, including the console stacks and noise voices. Recent recipes
 include the deep-bass set (Moog ladder, Oberheim SEM, Korg resonant, Moog lead), the 1980s synth
 families (Juno chorus strings, Prophet sync lead, Hoover rave stab, DX slap bass, CS-80 brass
@@ -396,6 +409,8 @@ an imported WAV is BRR-encoded as well as DPCM-encoded). `yanes-dpcm` converts a
 build/yanes-dpcm input.wav sample.ydmc
 YANES_DPCM_BANK="$PWD/kick.ydmc:$PWD/snare.ydmc:$PWD/tom.ydmc" bitwig-studio
 ```
+
+(On Windows the list separator is `;`, as in `PATH`.)
 
 WAV input is mixed to mono and converted at 16,744 Hz, the fastest NTSC 2A03 DPCM rate. The plug-in
 reads WAV or `.ydmc` bank entries during initialization, never on the audio thread.
@@ -458,9 +473,10 @@ recalls the project, renders it offline, and validates the WAV:
 ctest --test-dir build --output-on-failure -R reaper_clap_integration
 ```
 
-CMake downloads the small official CLAP headers. For an offline build, pass
-`-DCLAP_ROOT=/path/to/clap`. It also fetches the pinned `ymfm` source used by the hardware FM
-models, so the first online configuration requires Git and network access.
+CMake downloads the small official CLAP headers and the pinned `ymfm` source used by the
+hardware FM models, so the first online configuration requires Git and network access. For an
+offline build, pass `-DCLAP_ROOT=/path/to/clap -DYMFM_ROOT=/path/to/ymfm` (a checkout of the
+commit named in `CMakeLists.txt`).
 
 ### Review and CPU measurements
 
@@ -528,12 +544,12 @@ Copy-Item build\Release\YANES.clap "$env:CommonProgramFiles\CLAP\"
 
 #### Companion CLI tools (optional)
 
-The build also creates command-line utilities (`yanes-dpcm`, `yanes-register-render`, `yanes-audio-compare`, etc.). You can install them into your local PATH using CMake:
+The build also creates command-line utilities (`yanes-dpcm`, `yanes-register-render`, `yanes-audio-compare`, `yanes-parity-compare`, `yanes-vgm-extract`, the four `yanes-*-replay` tools and `yanes-compare-furnace`). You can install them into your local PATH using CMake:
 
 ```sh
 cmake --install build --prefix ~/.local
 ```
-*(Or system-wide: `sudo cmake --install build --prefix /usr/local`)*
+*(Or system-wide: `sudo cmake --install build --prefix /usr/local`. The plug-in itself installs to `<prefix>/lib/clap`, so `--prefix /usr` places it in the standard `/usr/lib/clap`.)*
 
 ### Prebuilt binary
 
@@ -561,8 +577,9 @@ Windows and macOS release packages are unsigned; if macOS refuses to load a down
 xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/CLAP/YANES.clap
 ```
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds and tests every platform and
-publishes the packages with SHA-256 checksums.
+Pushing a `v*` tag (or a bare version tag) runs `.github/workflows/release.yml`, which builds and
+tests every platform and publishes the packages, named by the version without the `v`, together
+with a `SHA256SUMS.txt` of their checksums.
 
 ### DAW setup
 

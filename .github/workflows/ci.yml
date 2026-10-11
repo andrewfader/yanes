@@ -50,7 +50,7 @@ jobs:
           sudo apt-get install -y build-essential cmake pkg-config libx11-dev libxft-dev \
             libsndfile1-dev libfftw3-dev libfmt-dev zlib1g-dev
 
-      # Furnace is the reference for the 63-fixture chip-audio suite (timbre,
+      # Furnace is the reference for the 110-case chip-audio suite (timbre,
       # pitch and envelope). Built headless once per pinned commit and cached.
       - name: Restore Furnace
         id: furnace-cache

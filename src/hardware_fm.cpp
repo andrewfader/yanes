@@ -88,8 +88,10 @@ struct HardwareFmVoice::Impl : ymfm::ymfm_interface {
           ? static_cast<uint8_t>(four_op_carrier ? kCarrierLevel : std::clamp(18 + op * 6 + modulator_offset, 0, 63))
           : opl_level(alg, op, modulator_offset);
       write(chip, static_cast<uint16_t>(0x40 + s), level);
+      // The OPL rate registers are four bits where the OPN's are five (an OPL step
+      // is two OPN steps), so the shared controls scale down rather than clamp.
       write(chip, static_cast<uint16_t>(0x60 + s),
-            static_cast<uint8_t>((std::clamp(c.attack, 0, 15) << 4) | std::clamp(c.decay, 0, 15)));
+            static_cast<uint8_t>(((std::clamp(c.attack, 0, 31) >> 1) << 4) | (std::clamp(c.decay, 0, 31) >> 1)));
       write(chip, static_cast<uint16_t>(0x80 + s),
             static_cast<uint8_t>((std::clamp(c.sustain_level, 0, 15) << 4) | std::clamp(c.release, 0, 15)));
       write(chip, static_cast<uint16_t>(0xe0 + s), static_cast<uint8_t>(op & 3));

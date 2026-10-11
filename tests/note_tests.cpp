@@ -654,6 +654,33 @@ void test_cents_sequence(const Library& library) {
   }
 }
 
+// The tuning expression is per-note pitch in semitones: +7 plays a fifth up.
+void test_tuning_expression_pitch(const Library& library) {
+  const clap_plugin_t* plugin = library.create();
+  {
+    Runner runner(plugin, kRate, kBlock);
+    set_sine(runner, plugin);
+    Events on;
+    on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 69, 3, 1.0));
+    runner.run(&on);
+    std::vector<float> plain;
+    for (int i = 0; i < 20; ++i) { runner.run(); plain.insert(plain.end(), runner.left().begin(), runner.left().end()); }
+    Events tune;
+    tune.push(expression_event(CLAP_NOTE_EXPRESSION_TUNING, 0, 69, 3, 7.0));
+    runner.run(&tune);
+    std::vector<float> tuned;
+    for (int i = 0; i < 20; ++i) { runner.run(); tuned.insert(tuned.end(), runner.left().begin(), runner.left().end()); }
+    const double before = mean_hz(plain, 1024, plain.size() - 256);
+    const double after = mean_hz(tuned, 1024, tuned.size() - 256);
+    const double fifth = 440.0 * std::pow(2.0, 7.0 / 12.0);
+    if (std::abs(before / 440.0 - 1.0) > 0.01 || std::abs(after / fifth - 1.0) > 0.01) {
+      std::fprintf(stderr, "tuning expression: %.2f Hz before, %.2f Hz after +7 (expected %.2f)\n", before, after, fifth);
+      assert(false);
+    }
+  }
+  plugin->destroy(plugin);
+}
+
 // Delayed vibrato: the pitch holds steady for the delay, then wobbles.
 void test_vibrato_delay(const Library& library) {
   const clap_plugin_t* plugin = library.create();
@@ -1295,6 +1322,7 @@ int main(int argc, char** argv) {
   test_wheels_are_per_channel(library);
   test_nonfinite_parameter_events_are_ignored(library);
   test_pitch_bend_range(library);
+  test_tuning_expression_pitch(library);
   test_duty_sequence(library);
   test_channel_volume(library);
   test_unhandled_midi_is_ignored(library);

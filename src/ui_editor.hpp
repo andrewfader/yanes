@@ -345,6 +345,14 @@ class Editor {
 
   // --- input ---
 
+  // The window is going away (or the host lost the pointer): close any open gesture so the
+  // host never keeps an unmatched begin, and drop a menu that has nothing to draw on.
+  void cancel() {
+    if (drag_.param >= 0) end_drag();
+    menu_.param = -1;
+    hover_ = Hit{};
+  }
+
   void pointer(PointerAction action, int button, int x, int y, unsigned modifiers, double now) {
     if (action == PointerAction::Leave) { hover_ = Hit{}; menu_.hover = -1; return; }
     if (action == PointerAction::Move) { move(x, y, modifiers); return; }
@@ -402,6 +410,7 @@ class Editor {
     int anchor_step = 0;
     double anchor_value = 0.0;
     std::vector<int> touched;
+    std::vector<double> before;  // the lane's values at the press, for a right-drag line to shorten
   };
   struct Menu {
     int param = -1;
@@ -521,7 +530,12 @@ class Editor {
       const double t = step == drag_.anchor_step ? 1.0 : static_cast<double>(s - drag_.anchor_step) / (step - drag_.anchor_step);
       touch(lane.param + s, std::round(drag_.anchor_value + (value - drag_.anchor_value) * t));
     }
-    if (!drag_.line) { drag_.anchor_step = step; drag_.anchor_value = value; }
+    if (drag_.line) {
+      // The line only ever spans anchor..here: steps a longer sweep covered go back to what they were.
+      for (int s = 0; s < lane.steps && s < static_cast<int>(drag_.before.size()); ++s)
+        if ((s < from || s > to) && std::find(drag_.touched.begin(), drag_.touched.end(), lane.param + s) != drag_.touched.end())
+          host_.edit(lane.param + s, drag_.before[static_cast<size_t>(s)]);
+    } else { drag_.anchor_step = step; drag_.anchor_value = value; }
   }
 
   void press(int button, int x, int y, unsigned modifiers, double now) {
@@ -596,6 +610,8 @@ class Editor {
         drag_.line = button == 3;
         drag_.anchor_step = hit.sub;
         drag_.anchor_value = lane_value_at(spec, hit.rect, y);
+        drag_.before.clear();
+        for (int s = 0; s < spec.steps; ++s) drag_.before.push_back(host_.value(spec.param + s));
         if (!drag_.line) paint_lane(x, y);
         return;
       }
@@ -640,6 +656,7 @@ class Editor {
 
   void wheel(int x, int y, int direction, unsigned modifiers) {
     if (menu_.param >= 0) return;
+    if (drag_.param >= 0) return;  // a nudge inside a drag would nest a second gesture on the same parameter
     const Hit hit = hit_test(x, y);
     if (hit.target == Target::Size) { host_.request_size(next_size_step(host_.size_percent(), direction)); return; }
     int param = hit.param;

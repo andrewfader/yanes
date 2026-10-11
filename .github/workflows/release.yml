@@ -76,7 +76,8 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ inputs.tag || github.ref_name }}"
-          name="YANES-${tag}-${{ matrix.package }}"
+          version="${tag#v}"  # v0.3.8 and 0.3.8 both package as YANES-0.3.8-<platform>
+          name="YANES-${version}-${{ matrix.package }}"
           mkdir -p "dist/${name}"
           cp README.md LICENSE THIRD_PARTY_NOTICES.md "dist/${name}/"
           case "${{ runner.os }}" in

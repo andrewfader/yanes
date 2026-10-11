@@ -93,8 +93,38 @@ inline int interpolate(int s0, int s1, int s2, int s3, int frac12) {
 struct BrrSample {
   std::vector<int16_t> pcm;
   int loop{-1};
+  // The block stream the PCM was decoded from (up to and including the end block)
+  // and its loop block, so a voice can decode it the way the hardware does: on the
+  // fly, carrying the predictor history across the loop point (see BrrPlayer).
+  std::vector<uint8_t> blocks;
+  int loop_block{-1};
   bool empty() const { return pcm.empty(); }
 };
+
+// Decode one BRR block's sixteen samples given the two previous decoded samples
+// (stored doubled, as the S-DSP keeps them), updating that history.
+inline void brr_decode_block(const uint8_t* b, int& p1, int& p2, int16_t* out) {
+  const int header = b[0];
+  const int shift = header >> 4;
+  const int filter = (header >> 2) & 3;
+  for (int n = 0; n < kBrrBlockSamples; ++n) {
+    int nibble = (b[1 + (n >> 1)] >> (n & 1 ? 0 : 4)) & 0x0F;
+    int s = static_cast<int16_t>(nibble << 12) >> 12;  // sign-extend 4 bits
+    if (shift <= 12) s = (s << shift) >> 1; else s = (s < 0 ? -0x800 : 0);
+    const int q1 = p1, q2 = p2 >> 1;
+    switch (filter) {
+      case 1: s += q1 >> 1; s += (-q1) >> 5; break;
+      case 2: s += q1; s -= q2; s += q2 >> 4; s += (q1 * -3) >> 6; break;
+      case 3: s += q1; s -= q2; s += (q1 * -13) >> 7; s += (q2 * 3) >> 4; break;
+      default: break;
+    }
+    s = clamp16(s);
+    s = static_cast<int16_t>(s * 2);
+    p2 = p1;
+    p1 = s;
+    out[n] = static_cast<int16_t>(s);
+  }
+}
 
 // Decode a BRR byte stream (nine-byte blocks) to 16-bit PCM, applying the four
 // predictor filters and reading the per-block loop/end flags. The PCM holds the
@@ -110,38 +140,81 @@ inline BrrSample brr_decode(const uint8_t* brr, size_t bytes, int loop_block = -
   out.pcm.reserve(blocks * kBrrBlockSamples);
   int p1 = 0, p2 = 0;  // the two most recent decoded samples (stored doubled)
   bool loops = false;
+  size_t used = 0;
   for (size_t block = 0; block < blocks; ++block) {
     const uint8_t* b = brr + block * kBrrBlockBytes;
-    const int header = b[0];
-    const int shift = header >> 4;
-    const int filter = (header >> 2) & 3;
-    const bool loop = (header & 0x02) != 0;
-    const bool end = (header & 0x01) != 0;
-    for (int n = 0; n < kBrrBlockSamples; ++n) {
-      int nibble = (b[1 + (n >> 1)] >> (n & 1 ? 0 : 4)) & 0x0F;
-      int s = static_cast<int16_t>(nibble << 12) >> 12;  // sign-extend 4 bits
-      if (shift <= 12) s = (s << shift) >> 1; else s = (s < 0 ? -0x800 : 0);
-      const int q1 = p1, q2 = p2 >> 1;
-      switch (filter) {
-        case 1: s += q1 >> 1; s += (-q1) >> 5; break;
-        case 2: s += q1; s -= q2; s += q2 >> 4; s += (q1 * -3) >> 6; break;
-        case 3: s += q1; s -= q2; s += (q1 * -13) >> 7; s += (q2 * 3) >> 4; break;
-        default: break;
-      }
-      s = clamp16(s);
-      s = static_cast<int16_t>(s * 2);
-      p2 = p1;
-      p1 = s;
-      out.pcm.push_back(static_cast<int16_t>(s));
-    }
+    int16_t samples[kBrrBlockSamples];
+    brr_decode_block(b, p1, p2, samples);
+    out.pcm.insert(out.pcm.end(), std::begin(samples), std::end(samples));
+    used = block + 1;
     // The end block terminates the stream; its loop flag means the sample loops
     // back to its loop point rather than stopping.
-    if (end) { loops = loop; break; }
+    if (b[0] & 0x01) { loops = (b[0] & 0x02) != 0; break; }
   }
+  out.blocks.assign(brr, brr + used * kBrrBlockBytes);
   const size_t loop_at = static_cast<size_t>(std::max(0, loop_block)) * kBrrBlockSamples;
   out.loop = loops ? (loop_at < out.pcm.size() ? static_cast<int>(loop_at) : 0) : -1;
+  out.loop_block = loops ? out.loop / kBrrBlockSamples : -1;
   return out;
 }
+
+// Plays a BrrSample the way the S-DSP voice does: blocks are decoded on demand into
+// a short ring buffer and the predictor history runs straight through the loop
+// point, so a sample whose loop block predicts from the end of the sample (as real
+// cartridge samples do) decodes the same on every pass. Positions are in samples
+// from the first sample of `start_block`; the window runs to `end_block`
+// (exclusive) and then either loops to `loop_block` or ends.
+struct BrrPlayer {
+  static constexpr int kRing = 64;
+  const BrrSample* sample{};
+  size_t block{}, start_block{}, end_block{}, loop_block{};
+  bool looping{}, ended{}, started{};
+  int p1{}, p2{};
+  long decoded{};  // samples decoded so far (the ring holds the last kRing of them)
+  std::array<int16_t, kRing> ring{};
+  double position{};
+
+  // Seed the predictor from the linear decode so a window starting mid-sample
+  // begins with the history the hardware would have reached there.
+  void start(const BrrSample& s, size_t first, size_t last, bool loop, size_t loop_at) {
+    sample = &s;
+    const size_t total = s.blocks.size() / kBrrBlockBytes;
+    start_block = std::min(first, total - 1);
+    end_block = std::clamp(last, start_block + 1, total);
+    looping = loop;
+    loop_block = loop_at >= start_block && loop_at < end_block ? loop_at : start_block;
+    block = start_block;
+    const size_t at = start_block * kBrrBlockSamples;
+    p1 = at >= 1 ? s.pcm[at - 1] : 0;
+    p2 = at >= 2 ? s.pcm[at - 2] : 0;
+    decoded = 0;
+    ring.fill(0);
+    position = 0.0;
+    ended = false;
+    started = true;
+  }
+  // Decode blocks until sample `index` is available (or the sample has ended).
+  void ensure(long index) {
+    while (!ended && index >= decoded) {
+      int16_t out[kBrrBlockSamples];
+      brr_decode_block(sample->blocks.data() + block * kBrrBlockBytes, p1, p2, out);
+      for (int n = 0; n < kBrrBlockSamples; ++n) ring[static_cast<size_t>((decoded + n) % kRing)] = out[n];
+      decoded += kBrrBlockSamples;
+      if (++block >= end_block) {
+        if (looping) block = loop_block;
+        else ended = true;
+      }
+    }
+  }
+  int at(long index) {
+    if (index < 0) return 0;
+    ensure(index);
+    if (index >= decoded || index < decoded - kRing) return 0;
+    return ring[static_cast<size_t>(index % kRing)];
+  }
+  // True once a one-shot window has played out (its last sample has been passed).
+  bool finished() const { return ended && position >= static_cast<double>(decoded); }
+};
 
 // Decode a `.brr` file image: the common convention prefixes a two-byte,
 // little-endian loop-offset (in bytes into the block stream); a bare block

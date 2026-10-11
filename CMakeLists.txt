@@ -40,11 +40,19 @@ endif()
 # on checkout, which makes `git apply` reject the patch with "patch does not apply" even though
 # the line content is byte-identical modulo CRs. The CMake-level edit is also idempotent: if the
 # fix is already applied, the find-string is not present and the edit is a no-op.
-FetchContent_Declare(ymfm
-  GIT_REPOSITORY https://github.com/aaronsgiles/ymfm.git
-  GIT_TAG 81aec25ccbb98f4873a255f7551ac4dadac59b4a
-  GIT_SHALLOW TRUE)
-FetchContent_MakeAvailable(ymfm)
+# An offline build points YMFM_ROOT at a checkout of that commit, as CLAP_ROOT does for CLAP.
+if(DEFINED YMFM_ROOT)
+  if(NOT EXISTS "${YMFM_ROOT}/src/ymfm_fm.ipp")
+    message(FATAL_ERROR "YMFM_ROOT='${YMFM_ROOT}' is not a ymfm checkout (no src/ymfm_fm.ipp)")
+  endif()
+  set(ymfm_SOURCE_DIR "${YMFM_ROOT}")
+else()
+  FetchContent_Declare(ymfm
+    GIT_REPOSITORY https://github.com/aaronsgiles/ymfm.git
+    GIT_TAG 81aec25ccbb98f4873a255f7551ac4dadac59b4a
+    GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(ymfm)
+endif()
 file(READ "${ymfm_SOURCE_DIR}/src/ymfm_fm.ipp" _ymfm_fm_ipp)
 string(REPLACE
   "uint32_t phase_select = (bitfield(op13phase, 2) ^ bitfield(op13phase, 7)) | bitfield(op13phase, 3) | (bitfield(op17phase, 5) ^ bitfield(op17phase, 3));"
@@ -94,10 +102,12 @@ if(APPLE)
     SUFFIX "")
 endif()
 
+# The plug-in installs under <prefix>/lib/clap, so --prefix /usr lands in the standard
+# /usr/lib/clap search path; the CLI tools go to <prefix>/bin.
 install(TARGETS yanes_clap
-  BUNDLE DESTINATION clap
-  LIBRARY DESTINATION clap
-  RUNTIME DESTINATION clap)
+  BUNDLE DESTINATION lib/clap
+  LIBRARY DESTINATION lib/clap
+  RUNTIME DESTINATION lib/clap)
 
 add_executable(yanes-dpcm tools/yanes_dpcm.cpp)
 target_compile_features(yanes-dpcm PRIVATE cxx_std_20)
@@ -308,8 +318,14 @@ foreach(suite note_tests state_tests bank_tests preset_tests modulation_tests)
   target_link_libraries(${suite} PRIVATE ${CMAKE_DL_LIBS})
   add_test(NAME ${suite} COMMAND ${suite} $<TARGET_FILE:yanes_clap>)
 endforeach()
+# Real cartridge BRR samples (a path list of .brr files, never committed) pin the SNES
+# voice to the hardware reference and the bank loader to real loop headers.
+set(YANES_SNES_SAMPLES "" CACHE STRING "Path list of real .brr samples for the SNES parity checks")
+if(NOT YANES_SNES_SAMPLES)
+  message(STATUS "SNES real-sample checks limited to the synthetic sample: pass -DYANES_SNES_SAMPLES=a.brr:b.brr")
+endif()
 set_tests_properties(bank_tests PROPERTIES
-  ENVIRONMENT "YANES_DPCM_TOOL=$<TARGET_FILE:yanes-dpcm>")
+  ENVIRONMENT "YANES_DPCM_TOOL=$<TARGET_FILE:yanes-dpcm>;YANES_SNES_SAMPLES=${YANES_SNES_SAMPLES}")
 
 # SNES S-DSP parity: pin the SNES sampler voice to the hardware-reference S-DSP
 # (blargg's SPC_DSP, as used by cycle-accurate emulators). Point this at the
@@ -329,6 +345,7 @@ if(YANES_SNES_DSP_REFERENCE)
   target_link_libraries(snes_dsp_parity PRIVATE ${CMAKE_DL_LIBS})
   yanes_enable_assertions(snes_dsp_parity)
   add_test(NAME snes_dsp_parity COMMAND snes_dsp_parity $<TARGET_FILE:yanes_clap>)
+  set_tests_properties(snes_dsp_parity PROPERTIES ENVIRONMENT "YANES_SNES_SAMPLES=${YANES_SNES_SAMPLES}")
 else()
   message(STATUS "SNES S-DSP parity disabled: pass -DYANES_SNES_DSP_REFERENCE=/path/to/snes/dsp/sources")
 endif()
@@ -503,20 +520,29 @@ elseif(NOT YANES_FURNACE_EXECUTABLE)
   message(STATUS "Furnace parity suite disabled: pass -DYANES_FURNACE_EXECUTABLE=/path/to/furnace")
 endif()
 if(YANES_FURNACE_EXECUTABLE)
-  # The original 21 chips, then the second wave (FURNACE_PARITY.md lists what each one sets).
+  # The original 21 chips, then the second wave: 38 fixtures, each with an octave-up and
+  # octave-down holdout (FURNACE_PARITY.md lists what each one sets).
   set(YANES_FURNACE_FIXTURES ay-tone fds gameboy-noise gameboy-pulse gameboy-wave n163
       nes-noise nes-pulse nes-triangle pce-wave pokey-tone saa1099 scc sid6581
       sid8580 sms-noise sms-tone tia vrc6-pulse vrc6-saw vrc7
       pc-speaker zx-beeper virtual-boy-wave virtual-boy-noise wonderswan-wave wonderswan-noise
-      lynx msx-ym2413 msx-bass-drum msx-snare msx-tom msx-hihat ay-buzzer amiga gba-minmod msm6295)
+      lynx msx-ym2413 msx-bass-drum msx-snare msx-tom msx-hihat msx-cymbal ay-buzzer amiga gba-minmod msm6295)
+  # Known gaps: fixtures that pass timbre and pitch but whose note end misses the envelope gate
+  # (60 ms) because ymfm's YM2413 envelope releases about 1.25x faster than Furnace's Nuked-OPLL
+  # (see FURNACE_PARITY.md). Not registered rather than run with a looser gate.
+  set(YANES_FURNACE_KNOWN_GAPS msx-ym2413_low msx-cymbal msx-cymbal_low msx-cymbal_high)
+  message(STATUS "Furnace parity: not registering ${YANES_FURNACE_KNOWN_GAPS} (YM2413 release-rate gap, FURNACE_PARITY.md)")
   foreach(fixture ${YANES_FURNACE_FIXTURES})
+    if("${fixture}" IN_LIST YANES_FURNACE_KNOWN_GAPS)
+      continue()
+    endif()
     add_test(NAME furnace_audio_${fixture} COMMAND
       ${CMAKE_CURRENT_SOURCE_DIR}/tools/compare_furnace_audio.sh ${fixture}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/furnace/${fixture}.fur 0.8)
     set_tests_properties(furnace_audio_${fixture} PROPERTIES ENVIRONMENT
       "FURNACE=${YANES_FURNACE_EXECUTABLE};YANES_FIXTURE_RENDER=$<TARGET_FILE:yanes-fixture-render>;YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>;YANES_ENVELOPE_ORACLE=$<TARGET_FILE:envelope_oracle>")
   endforeach()
-  # The same 21 fixtures rendered through a real host: REAPER instantiates the
+  # The same fixtures rendered through a real host: REAPER instantiates the
   # CLAP, receives the voice as automation and renders MIDI offline.
   if(REAPER_EXECUTABLE)
     add_test(NAME reaper_envelope_oracle COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_reaper_envelope_oracle.sh)
@@ -524,11 +550,6 @@ if(YANES_FURNACE_EXECUTABLE)
       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} ENVIRONMENT
       "REAPER=${REAPER_EXECUTABLE};FURNACE=${YANES_FURNACE_EXECUTABLE};YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_ENVELOPE_ORACLE=$<TARGET_FILE:envelope_oracle>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
   endif()
-  # Known gaps: fixtures that pass timbre and pitch but whose note end misses the envelope gate
-  # (60 ms) because ymfm's YM2413 envelope releases about 1.25x faster than Furnace's Nuked-OPLL
-  # (see FURNACE_PARITY.md). Not registered rather than run with a looser gate.
-  set(YANES_FURNACE_KNOWN_GAPS msx-ym2413_low msx-cymbal)
-  message(STATUS "Furnace parity: not registering ${YANES_FURNACE_KNOWN_GAPS} (YM2413 release-rate gap, FURNACE_PARITY.md)")
   foreach(fixture ${YANES_FURNACE_FIXTURES})
     foreach(octave low high)
       if("${fixture}_${octave}" IN_LIST YANES_FURNACE_KNOWN_GAPS)

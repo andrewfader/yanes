@@ -1428,7 +1428,7 @@ void register_effects() {
     const auto clean = note(with(rough, {{P::kRetroAmount, 0}}), 0.6, 0.6).mono();
     const auto half = note(with(rough, {{P::kRetroAmount, 0.5}}), 0.6, 0.6).mono();
     const auto full = note(with(rough, {{P::kRetroAmount, 1}}), 0.6, 0.6).mono();
-    expect(residual_db(clean, note(kClean, 0.6, 0.6).mono()) < -100 || rms_db(clean, 0.2, 0.4) > -200, "amount 0 is bypass");
+    expect(residual_db(clean, note(with(kClean, {{P::kGainDb, -18}}), 0.6, 0.6).mono()) < -100, "amount 0 is bypass");
     expect_near(residual_db(half, clean) - residual_db(full, clean), -6.02, 0.5, "dB", "amount 0.5 is half the processed signal");
   });
   prove(P::kBitDepth, "Bit depth quantizes the output: 6 dB of noise per bit removed", [] {
@@ -1783,17 +1783,17 @@ PresetClaim preset_claim(int id) {
       {{0}, kSustain},                  // Clean NES lead
       {{0}, kSustain | kArp},           // NES chord lead
       {{9}, kDrums},                    // NES DPCM kit
-      {{11}, 0},                        // Game Boy wave
+      {{11}, kDecay},                   // Game Boy wave (hardware envelope steps it down)
       {{13}, kSustain | kBass},         // SMS bass
       {{17}, kDecay},                   // Genesis FM bell
       {{0}, kRetroChain},               // Bedroom CRT
       {{0}, kRetroChain},               // Noisy RF television
-      {{26}, 0},                        // PC Engine glass
+      {{26}, kSustain},                 // PC Engine glass
       {{27}, kSustain},                 // DOS OPL2 organ
       {{28}, kSustain},                 // OPL3 brass
-      {{31}, 0},                        // PC-88 adventure
-      {{32}, kDecay},                   // PC-98 FM piano
-      {{33}, 0},                        // X68000 arcade
+      {{31}, kStack},                   // PC-88 adventure
+      {{32}, kDecay | kStack},          // PC-98 FM piano
+      {{33}, kStack},                   // X68000 arcade
       {{25}, kSweep},                   // Atari POKEY zap
       {{38}, kBass},                    // SID 6581 bass
       {{39}, kSustain},                 // SID 8580 lead
@@ -1841,7 +1841,7 @@ PresetClaim preset_claim(int id) {
       {{1}, kBass},                     // NES triangle bass
       {{2}, kNoisy | kDecay},           // NES noise percussion
       {{4}, kSustain},                  // VRC6 saw lead
-      {{7}, 0},                         // VRC7 hollow keys
+      {{7}, kSustain},                  // VRC7 hollow keys
       {{14}, kNoisy | kDecay},          // SMS noise percussion
       {{15}, kSustain},                 // Genesis PSG lead
       {{16}, kNoisy | kDecay},          // Genesis noise percussion
@@ -1852,7 +1852,7 @@ PresetClaim preset_claim(int id) {
       {{22}, kSustain},                 // AY arcade lead
       {{23}, kNoisy | kDecay},          // AY noise percussion
       {{24}, kSustain},                 // POKEY pure lead
-      {{29}, 0},                        // OPNA FM keys
+      {{29}, kSustain},                 // OPNA FM keys
       {{34}, kStack},                   // Atari channel stack
       {{35}, kStack},                   // PC Engine channel stack
       {{36}, kStack},                   // Sound Blaster channel stack
@@ -1866,7 +1866,7 @@ PresetClaim preset_claim(int id) {
       {{56}, kBass},                    // 84 Korg resonant bass
       {{59}, kBass},                    // 85 SNES soft bass
       {{59}, kSustain},                 // 86 SNES bright sample
-      {{60}, kSustain},                 // 87 Neo Geo FM bell
+      {{60}, kDecay},                   // 87 Neo Geo FM bell
       {{61}, kSustain},                 // 88 Arcade spike lead
       {{62}, kSustain | kChorus},       // 89 Vowel formant pad
       {{63}, kSustain},                 // 90 SNES sampler
@@ -1877,7 +1877,7 @@ PresetClaim preset_claim(int id) {
       {{4}, kSustain | kChorus},        // 95 Hoover rave stab
       {{39}, kArp},                     // 96 SID PWM arp lead
       {{53}, kSustain},                 // 97 CS-80 brass swell
-      {{7}, 0},                         // 98 Master System FM (OPLL)
+      {{70}, kSustain},                 // 98 Master System FM (the add-on's YM2413)
       {{63}, kSustain | kChorus},       // 99 SNES orchestra pad (S-DSP echo)
       {{64}, kSustain},                 // 100 Amiga ProTracker lead
       {{64}, kBass},                    // 101 Amiga MOD bass
@@ -1902,6 +1902,7 @@ PresetClaim preset_claim(int id) {
       {{82}, kStack},                   // 120 GBA channel stack
       {{48}, kSustain},                 // 121 Theremin
   }};
+  static_assert(table.size() == std::size(P::kPresetNames), "one proof row per preset");
   return table[static_cast<size_t>(id)];
 }
 
@@ -1953,7 +1954,10 @@ void prove_preset(int id) {
   const int voice = static_cast<int>(values[P::kWaveform]);
   const std::string name = P::kPresetNames[id];
 
-  // 1. The chip or voice the name says.
+  // 1. The chip or voice the name says. Every factory preset must say which, and
+  // claim a character, or the table has a hole rather than a proof.
+  expect(!claim.voices.empty(), "has a proof of the voice its name says");
+  expect(claim.claims != 0, "has a proof of the character its name says");
   if (!claim.voices.empty())
     expect(std::find(claim.voices.begin(), claim.voices.end(), voice) != claim.voices.end(),
            fmt("plays %s (selected %s)", P::kWaveNames[claim.voices[0]], P::kWaveNames[voice]));
@@ -2027,6 +2031,11 @@ void prove_preset(int id) {
     const bool first = measure::tone_amplitude(body, kRate, midi_hz(60)) > 1e-3 || kind_of(stack_voice(voice, 0)) != Kind::kTonal;
     const bool third = measure::tone_amplitude(body, kRate, midi_hz(67)) > 1e-3 || kind_of(stack_voice(voice, 2)) != Kind::kTonal;
     expect(first && third, "channels 1 and 3 play at once, on their own chip channels");
+    // And every channel the stack documents plays something on its own.
+    for (int channel = 0; channel < stack_channels(voice); ++channel) {
+      const auto one = render(patch, {on(0, 60, channel), off(0.6, 60, channel)}, 0.8).mono();
+      expect(rms_db(one, 0.02, 0.3) > -60, fmt("channel %d plays (%.1f dB)", channel + 1, rms_db(one, 0.02, 0.3)));
+    }
   }
 
   // 3. Every setting the recipe makes (beyond picking the voice) is audible in it.

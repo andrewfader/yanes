@@ -1126,6 +1126,7 @@ SCENARIO(integration_every_waveform_is_audible) {
     params_of(plugin)->value_to_text(plugin, wave_id, static_cast<double>(w), name_buf, sizeof(name_buf));
     Stats s = render_sustained(plugin, 4);
     CHECK(s.finite, std::string("non-finite for waveform ") + name_buf);
+    CHECK(s.rms > 1.0e-4, std::string("silent (inaudible) waveform ") + name_buf);
     renders.push_back(render_param(plugin, 8));
     coverage::mark("waveform", "voice", name_buf, "integration_every_waveform_is_audible");
   }

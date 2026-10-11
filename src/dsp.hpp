@@ -397,7 +397,10 @@ inline float bell_fm(double phase, double ratio, double index, double age_second
   const double modulator = std::sin(p * partial);
   const double carrier = std::sin(p + std::clamp(index, 0.0, 8.0) * (0.4 + 0.6 * strike) * modulator);
   const double shimmer = std::sin(p * 3.51) * 0.25 * std::exp(-std::max(0.0, age_seconds) * 6.0);
-  return static_cast<float>(carrier * 0.85 + shimmer);
+  // A struck bell rings down on its own, whatever the key does: about 13 dB in
+  // the first second, then on into a long hum.
+  const double ring = std::exp(-std::max(0.0, age_seconds) * 1.5);
+  return static_cast<float>((carrier * 0.85 + shimmer) * ring);
 }
 
 // The spiky-yet-rounded wave arcade FM chips make when a single operator is fed

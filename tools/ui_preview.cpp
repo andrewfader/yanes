@@ -9,6 +9,7 @@
 #include <X11/Xft/Xft.h>
 #include <X11/Xutil.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -167,18 +168,82 @@ class PreviewHost final : public EditorHost {
       g.polyline(response, amber, 2);
     } else if (page == 3) {
       const int waveform = static_cast<int>(value(P::kWaveform));
-      const int ops = waveform == 49 ? 6 : 4;
-      const int algorithm = static_cast<int>(value(P::kGenesisAlgorithm)) & (ops == 6 ? 31 : 7);
+      // The routing the selected chip actually programs: who modulates whom, and which
+      // operators reach the output. The YM2413 is a fixed modulator-into-carrier pair; its
+      // "algorithm" control picks an instrument.
+      const bool six = waveform == 49;
+      const bool opl2 = waveform == 27, opl3 = waveform == 28 || waveform == 36;
+      const int ops = six ? 6 : ((waveform == 70 || waveform == 71) || opl2 ? 2 : 4);
+      const int algorithm = (waveform == 70 || waveform == 71) ? 0 : static_cast<int>(value(P::kGenesisAlgorithm)) & (six ? 31 : 7);
+      struct Edge { int from, to; };
+      std::vector<Edge> edges;
+      bool carrier[7] = {};
+      if (six) {
+        // six_operator_fm: 6 -> 5, then each algorithm bit picks the modulator of 4, 3, 2 and 1.
+        edges = {{6, 5}, {(algorithm & 1) ? 6 : 5, 4}, {(algorithm & 2) ? 5 : 4, 3}, {(algorithm & 4) ? 4 : 3, 2}, {2, 1}};
+        if (algorithm & 8) edges.push_back({3, 1});
+        bool heard[7] = {};
+        heard[2] = true;
+        if (algorithm & 8) heard[3] = true;
+        if (algorithm & 16) heard[4] = heard[6] = true;
+        for (int pass = 0; pass < 3; ++pass) {
+          if (heard[2]) heard[(algorithm & 4) ? 4 : 3] = true;
+          if (heard[3]) heard[(algorithm & 2) ? 5 : 4] = true;
+          if (heard[4]) heard[(algorithm & 1) ? 6 : 5] = true;
+          if (heard[5]) heard[6] = true;
+        }
+        carrier[1] = true;
+        for (int op = 3; op <= 5; ++op) if (!heard[op]) carrier[op] = true;
+        if (algorithm & 16) carrier[4] = carrier[6] = true;  // extra carriers driven by 4 and 6
+      } else if (ops == 2) {
+        // OPL2 connection bit 0: serial (1 -> 2) or both operators to the output. The OPLL is serial.
+        if (opl2 && (algorithm & 1)) carrier[1] = carrier[2] = true;
+        else { edges = {{1, 2}}; carrier[2] = true; }
+      } else if (opl3) {
+        // Two chained OPL3 channels; each connection bit switches its pair from FM to additive.
+        switch (algorithm & 3) {
+          case 0: edges = {{1, 2}, {2, 3}, {3, 4}}; carrier[4] = true; break;                 // 1>2>3>4
+          case 1: edges = {{1, 2}, {3, 4}}; carrier[2] = carrier[4] = true; break;           // 1>2 + 3>4
+          case 2: edges = {{2, 3}, {3, 4}}; carrier[1] = carrier[4] = true; break;           // 1 + 2>3>4
+          default: edges = {{2, 3}}; carrier[1] = carrier[3] = carrier[4] = true; break;     // 1 + 2>3 + 4
+        }
+      } else {
+        // The eight OPN/OPM algorithms.
+        switch (algorithm) {
+          case 0: edges = {{1, 2}, {2, 3}, {3, 4}}; carrier[4] = true; break;
+          case 1: edges = {{1, 3}, {2, 3}, {3, 4}}; carrier[4] = true; break;
+          case 2: edges = {{1, 4}, {2, 3}, {3, 4}}; carrier[4] = true; break;
+          case 3: edges = {{1, 2}, {2, 4}, {3, 4}}; carrier[4] = true; break;
+          case 4: edges = {{1, 2}, {3, 4}}; carrier[2] = carrier[4] = true; break;
+          case 5: edges = {{1, 2}, {1, 3}, {1, 4}}; carrier[2] = carrier[3] = carrier[4] = true; break;
+          case 6: edges = {{1, 2}}; carrier[2] = carrier[3] = carrier[4] = true; break;
+          default: carrier[1] = carrier[2] = carrier[3] = carrier[4] = true; break;
+        }
+      }
       g.text(r.x + 20, r.y + 24, "OPERATOR ROUTING", muted, 260, TextSize::Small);
-      for (int i = 0; i < ops; ++i) {
-        const int x = r.x + 40 + i * 120, y = r.y + 40;
-        if (i < ops - 1 && (algorithm & (1 << std::min(i, 3))) == 0) g.line(x + 50, y + 25, x + 120, y + 25, pink, 3);
-        g.circle(x, y, 50, pink);
-        char op[16]{}; std::snprintf(op, sizeof(op), "%d", i + 1);
+      auto centre_x = [&](int op) { return r.x + 40 + (op - 1) * 120 + 25; };
+      const int y = r.y + 40, cy = y + 25;
+      for (const Edge& e : edges) {
+        const int x0 = centre_x(e.from), x1 = centre_x(e.to);
+        if (std::abs(e.from - e.to) == 1) {
+          g.line(std::min(x0, x1) + 25, cy, std::max(x0, x1) - 25, cy, pink, 3);
+        } else {
+          // A link that skips operators arcs over them.
+          const int lift = 22 + 10 * std::abs(e.from - e.to);
+          std::vector<yanes::ui::Point> arc = {{x0, cy - 25}, {x0, cy - lift}, {x1, cy - lift}, {x1, cy - 25}};
+          g.polyline(arc, pink, 3);
+        }
+      }
+      // Carriers (operators that reach the output) are amber; modulators pink.
+      for (int i = 1; i <= ops; ++i) {
+        const int x = centre_x(i) - 25;
+        g.circle(x, y, 50, carrier[i] ? amber : pink);
+        char op[16]{};
+        std::snprintf(op, sizeof(op), "%d", i);
         g.text_centered(x + 25, y + 33, op, bg, 30, TextSize::Normal);
       }
-      char text_algorithm[64]{};
-      std::snprintf(text_algorithm, sizeof(text_algorithm), "Algorithm %d  \xe2\x80\xa2  %d operators", algorithm, ops);
+      char text_algorithm[96]{};
+      std::snprintf(text_algorithm, sizeof(text_algorithm), "Algorithm %d  \xe2\x80\xa2  %d operators  \xe2\x80\xa2  amber = output", algorithm, ops);
       g.text(r.x + 820, r.y + 70, text_algorithm, preview_hardware_fm(waveform) || waveform == 49 ? text : faint, 600);
     } else if (page == 4) {
       g.text(r.x + 20, r.y + 24, "CHANNELS  (left mute \xe2\x80\xa2 right solo)", muted, 700, TextSize::Small);
