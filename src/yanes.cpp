@@ -538,6 +538,15 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
       put(static_cast<clap_id>(kWaveSample1 + i), std::round((wave + 1.0) * 7.5));
     }
   };
+  // A game's CH3 table: the 16 wave-RAM bytes as hex, high nibble first, played on the
+  // wave channel with no envelope and the hardware's instant cut softened to 20 ms.
+  auto game_wave = [&](const char* wave_ram) {
+    put(kWaveform, 11); put(kCustomWave, 1); put(kHardwareEnvelope, 0); put(kReleaseMs, 20);
+    for (int i = 0; i < 32; ++i) {
+      const char c = wave_ram[i];
+      put(static_cast<clap_id>(kWaveSample1 + i), c <= '9' ? c - '0' : c - 'a' + 10);
+    }
+  };
   // Presets only touch their relevant synthesis/output sections so they remain useful starting points.
   switch (static_cast<int>(value)) {
     case 1: put(kWaveform, 0); put(kDuty, 1); put(kArpMode, 0); put(kRetroAmount, 0); break;
@@ -666,6 +675,29 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 115: put(kWaveform, 77); put(kExpansionShape, 6); put(kTranspose, -12); put(kReleaseMs, 60); put(kGainDb, 0.5); break; // Seinfeld slap bass
     case 121: put(kWaveform, 48); put(kAdditiveTilt, 0.85); put(kWavetablePosition, 0.1); put(kPortamentoMs, 180); put(kVibratoRate, 6.0); put(kVibratoDepth, 0.25); put(kVibratoDelay, 250); put(kAttackMs, 60); put(kReleaseMs, 300); put(kEchoMix, 0.18); put(kEchoTime, 260); put(kGainDb, -7.0); break; // Theremin (near-sine odd partials, gliding between notes, delayed hand vibrato)
     case 122: put(kWaveform, 58); draw_wave(2); put(kHardwareEnvelope, 1); put(kEnvelopeRate, 4); put(kAttackMs, 0); put(kReleaseMs, 400); put(kEchoMix, 0.2); put(kEchoTime, 180); put(kEchoFeedback, 0.3); put(kGainDb, -6.0); break; // Crystal (sine with a hard step each half-cycle, struck and fading like a bell)
+    // Game Boy CH3 has no volume envelope, so the wave presets sustain like the channel does.
+    // Two shapes no harvested game table comes close to:
+    case 123: put(kWaveform, 11); put(kExpansionShape, 0); put(kTranspose, -12); put(kReleaseMs, 30); put(kGainDb, -8.0); break; // Game Boy wave sine bass
+    case 124: put(kWaveform, 11); put(kExpansionShape, 6); put(kReleaseMs, 50); put(kGainDb, -6.0); break; // Game Boy wave organ
+    // Wave RAM exactly as each game's sound driver loaded it (harvested under SameBoy with
+    // tools/yanes_gb_wave_harvest.c; tools/test_gb_wave_preset_parity.sh checks every byte).
+    case 125: game_wave("1369bdeeeeffffeddeffffeeeedb9631"); put(kGainDb, -6.0); break; // Pokemon Red round wave (Pokemon Red/Blue/Yellow)
+    case 126: game_wave("02468acefffeeddccba9876544332211"); put(kGainDb, -7.0); break; // Pokemon Crystal soft saw (Pokemon Crystal (also Red/Blue/Yellow))
+    case 127: game_wave("0011223344332211ffeeccaa88aaccee"); put(kGainDb, -8.0); break; // Pokemon Crystal hollow wave (Pokemon Crystal, Pokemon Pinball)
+    case 128: game_wave("c0a987f5fffeeddc443322f102468ace"); put(kGainDb, -7.5); break; // Pokemon Crystal buzz wave (Pokemon Crystal)
+    case 129: game_wave("ffffffff0000000000000000ffffffff"); put(kGainDb, -11.0); break; // Tetris Blast square wave (Tetris Blast (also Final Fantasy Adventure, Mega Man Xtreme, Tetris DX))
+    case 130: game_wave("ffffeeddeeddeeffffc963210000048c"); put(kGainDb, -9.0); break; // Link's Awakening wave bass (The Legend of Zelda: Link's Awakening (DX))
+    case 131: game_wave("2266aaeefffffeeaa6668acffeeca633"); put(kGainDb, -6.0); break; // Kirby's Dream Land 2 wave (Kirby's Dream Land 2 (also Kirby's Pinball Land, Kirby's Star Stacker))
+    case 132: game_wave("ff334477aacceeffffeeccbb886644ff"); put(kGainDb, -6.0); break; // Gargoyle's Quest thin wave (Gargoyle's Quest)
+    case 133: game_wave("ffbb77bbddeeffffffffffeeccaaffaa"); put(kGainDb, -1.0); break; // Gargoyle's Quest bright wave (Gargoyle's Quest)
+    case 134: game_wave("ccaa88aaddeeffffffeeddaa99aaccee"); put(kGainDb, -0.5); break; // Gargoyle's Quest hollow wave (Gargoyle's Quest)
+    case 135: game_wave("bdeefeedba88788a4567776542100012"); put(kGainDb, -6.5); break; // Mega Man Xtreme wave lead (Mega Man Xtreme)
+    case 136: game_wave("bdeecaa6579bcca85335689975310244"); put(kGainDb, -5.0); break; // Mega Man Xtreme buzz wave (Mega Man Xtreme)
+    case 137: game_wave("ffffffff000000000000000000000000"); put(kGainDb, -9.5); break; // Final Fantasy Adventure pulse wave (Final Fantasy Adventure)
+    case 138: game_wave("aaaaaa000000aaaaaa000000aa00aa00"); put(kGainDb, -7.5); break; // Metroid II wave (Metroid II: Return of Samus)
+    case 139: game_wave("777751a2800000000000000000000000"); put(kGainDb, -3.0); break; // Wario Land spike wave (Wario Land: Super Mario Land 3)
+    case 140: game_wave("02468aceffffffffeca8642000448844"); put(kGainDb, -8.0); break; // Mega Man V wave (Mega Man V)
+    case 141: game_wave("00001112223334444443332221110000"); put(kGainDb, 3.5); break; // Oracle of Ages soft wave (The Legend of Zelda: Oracle of Ages)
     default: break;
   }
 }
@@ -1201,8 +1233,12 @@ float render_voice(Plugin* p, Voice& v) {
     const double timer = std::clamp(std::round(chip_clock / (divider * frequency) - 1.0), 0.0, 2047.0);
     frequency = chip_clock / (divider * (timer + 1.0));
   } else if (waveform == 10 || waveform == 11) {
-    const double period = std::clamp(std::round(2048.0 - 131072.0 / std::max(8.0, frequency)), 0.0, 2047.0);
-    frequency = 131072.0 / std::max(1.0, 2048.0 - period);
+    // The pulses step an 8-step duty at 1 MHz / (2048 - period); CH3 walks its
+    // 32 wave-RAM samples at 2 MHz / (2048 - period), so a whole table cycles at
+    // half the pulse rate and the two channels land on different pitch grids.
+    const double clock = waveform == 10 ? 131072.0 : 65536.0;
+    const double period = std::clamp(std::round(2048.0 - clock / std::max(8.0, frequency)), 0.0, 2047.0);
+    frequency = clock / std::max(1.0, 2048.0 - period);
   } else if (waveform == 13 || waveform == 14 || waveform == 15 || waveform == 16) {
     // The noise channel runs off the third tone generator's period, so it gets
     // the same register quantisation as a tone.
@@ -1255,11 +1291,18 @@ float render_voice(Plugin* p, Voice& v) {
   float value = 0.0f;
   const int shape = static_cast<int>(p->params[kExpansionShape].load(std::memory_order_relaxed));
   if (custom_wave) {
+    // A drawn table plays centred on its own mean, which is where the hardware's
+    // output capacitor settles on a held note. Left offset (a game table that only
+    // uses levels 0-4 sits near -0.75), the output stage's soft clip would bend it
+    // before the DC blocker ever saw it and add second harmonic the chip never makes.
+    double mean = 0.0;
+    for (int i = 0; i < 32; ++i) mean += p->params[kWaveSample1 + i].load(std::memory_order_relaxed);
+    mean /= 32.0;
     // Four sub-samples keep the drawn 32-step, 4-bit cycle crisp while reducing aliases.
     for (int n = 0; n < 4; ++n) {
       const double phase = std::fmod(v.phase + increment * n / 4.0, 1.0);
       const int index = std::clamp(static_cast<int>(phase * 32.0), 0, 31);
-      value += static_cast<float>(p->params[kWaveSample1 + index].load(std::memory_order_relaxed) / 7.5 - 1.0) * 0.25f;
+      value += static_cast<float>((p->params[kWaveSample1 + index].load(std::memory_order_relaxed) - mean) / 7.5) * 0.25f;
     }
   } else if (waveform == 0) {
     const double width = kDuties[voice_duty(p, v)];
@@ -2222,7 +2265,12 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
     } else {
       const double voice_gain = db_gain(effective_param<kGainDb>(p));
       const double master = db_gain(effective_param<kMasterDb>(p));
-      sample = std::tanh(sample * static_cast<float>(voice_gain)) * static_cast<float>(master);
+      // Linear up to 0.75, then a tanh knee to the same ceiling: a plain tanh bent
+      // every note at ordinary levels (a full-scale Game Boy wave at -6 dB picked
+      // up 7 dB of fifth harmonic the chip never makes).
+      const double x = sample * voice_gain, knee = 0.75;
+      const double clipped = std::abs(x) <= knee ? x : std::copysign(knee + (1.0 - knee) * std::tanh((std::abs(x) - knee) / (1.0 - knee)), x);
+      sample = static_cast<float>(clipped * master);
     }
     sample = process_retro(p, sample);
     const StereoSample effected = process_rack(p, sample);

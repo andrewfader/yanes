@@ -131,7 +131,7 @@ constexpr std::array<ParamSpec, kParamCount> kSpecs{{
     {"DPCM trim end", "NES/DPCM bank", 0.05, 1, 1, false},
     {"Channel mute mask", "Hardware/Stack mixer", 0, 65535, 0, true},
     {"Channel solo mask", "Hardware/Stack mixer", 0, 65535, 0, true},
-    {"Preset", "Presets", 0, 122, 0, true},
+    {"Preset", "Presets", 0, 141, 0, true},
     {"Pitch bend range", "Performance", 0, 48, 2, true},
     {"Duty sequence", "Sequences/Duty", 0, 2, 0, true},
     {"Duty length", "Sequences/Duty", 1, 8, 4, true},
@@ -301,7 +301,26 @@ constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord l
     "WonderSwan channel stack",
     "GBA channel stack",
     "Theremin",
-    "Crystal"};
+    "Crystal",
+    "Game Boy wave sine bass",
+    "Game Boy wave organ",
+    "Pokemon Red round wave",
+    "Pokemon Crystal soft saw",
+    "Pokemon Crystal hollow wave",
+    "Pokemon Crystal buzz wave",
+    "Tetris Blast square wave",
+    "Link's Awakening wave bass",
+    "Kirby's Dream Land 2 wave",
+    "Gargoyle's Quest thin wave",
+    "Gargoyle's Quest bright wave",
+    "Gargoyle's Quest hollow wave",
+    "Mega Man Xtreme wave lead",
+    "Mega Man Xtreme buzz wave",
+    "Final Fantasy Adventure pulse wave",
+    "Metroid II wave",
+    "Wario Land spike wave",
+    "Mega Man V wave",
+    "Oracle of Ages soft wave"};
 static_assert(std::size(kWaveNames) == static_cast<size_t>(kSpecs[kWaveform].max) + 1);
 static_assert(std::size(kPresetNames) == static_cast<size_t>(kSpecs[kPreset].max) + 1);
 
@@ -348,7 +367,7 @@ inline bool format_value(uint32_t id, double value, char* text, uint32_t capacit
 inline bool parse_value(uint32_t id, const char* text, double* value) {
   if (id >= kParamCount || !text || !value) return false;
   const ParamSpec& spec = kSpecs[id];
-  if (spec.stepped && spec.max - spec.min <= 128.0) {
+  if (spec.stepped && spec.max - spec.min <= 256.0) {
     char candidate[128]{};
     for (double v = spec.min; v <= spec.max; v += 1.0) {
       format_value(id, v, candidate, sizeof(candidate));

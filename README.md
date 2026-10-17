@@ -91,7 +91,7 @@ error. It resamples differing source rates and also reports 1024-frame energy-en
 which is stable across different chip-core phase and resampling implementations. An optional
 minimum envelope-correlation threshold is suitable for CI.
 
-`advertised_tests` holds one proof per parameter (all 136) and one per preset (all 122) that it
+`advertised_tests` holds one proof per parameter (all 136) and one per preset (all 141) that it
 does what it advertises, measured from rendered audio in the advertised unit: Attack and
 Release in milliseconds, gains in dB, Transpose/Fine tune/bend/vibrato/sweep in semitones and
 cents, rates in Hz or steps per second, pulse duty in percent, FM index against the Bessel
@@ -138,6 +138,12 @@ and timbre. For a real game, run `tools/test_gb_rom_parity.sh /path/to/game.gb` 
 capture side by hand with `SAMEBOY_SRC=/path/to/SameBoy tools/build_gb_oracle.sh`). `yanes-gb-replay` independently decodes that
 register stream through YANES's pulse, wave-RAM, and LFSR primitives and emits a mix plus four
 isolated channels, so the gate identifies the diverging voice rather than hiding it in a mix.
+
+`gb_wave_preset_parity` (registered with the SameBoy lanes) covers the Game Boy wave set. For each
+preset, `yanes-gb-wave-preset-parity` checks the preset holds its game's 32 samples exactly,
+renders it holding C-4, and writes a script ROM that plays the same bytes on CH3 at the same
+register period; SameBoy's render of that ROM must match the preset in envelope, pitch and timbre
+(`yanes-parity-compare`, 0.9) and in each of the first 16 harmonics to within 1.5 dB.
 The required, small SameBoy instrumentation is in
 `third_party/sameboy-apu-register-log.patch`; no emulator source is incorporated into YANES.
 
@@ -364,11 +370,25 @@ editor at four sizes with repeated window lifecycles and saves PPM screenshots. 
 X display; the ordinary CTest frontend checks remain headless. See the
 [native UI and leak results](docs/REVIEW_2026-09-26.md#follow-up-native-ui-and-leak-checks).
 
-The catalogue contains **83 sound sources and 122 factory presets** (plus Manual). Every source
+The catalogue contains **83 sound sources and 141 factory presets** (plus Manual). Every source
 has a factory starting preset, including the console stacks and noise voices. Recent recipes
 include the deep-bass set (Moog ladder, Oberheim SEM, Korg resonant, Moog lead), the 1980s synth
 families (Juno chorus strings, Prophet sync lead, Hoover rave stab, DX slap bass, CS-80 brass
-swell, SID PWM arp lead), and the SNES voices (SNES soft bass, SNES bright sample, SNES sampler).
+swell, SID PWM arp lead), the SNES voices (SNES soft bass, SNES bright sample, SNES sampler), and
+the Game Boy wave set.
+
+The Game Boy wave set plays wave tables real games loaded into CH3, byte for byte: Pokemon Red
+round wave, Pokemon Crystal soft saw, hollow wave and buzz wave, Tetris Blast square wave, Link's
+Awakening wave bass, Kirby's Dream Land 2 wave, Gargoyle's Quest thin, bright and hollow waves,
+Mega Man Xtreme wave lead and buzz wave, Final Fantasy Adventure pulse wave, Metroid II wave,
+Wario Land spike wave, Mega Man V wave, and Oracle of Ages soft wave. The tables were harvested by
+running each game under SameBoy (`yanes-gb-wave-harvest` logs every APU write while a seeded input
+schedule plays through menus and levels; `tools/gb_wave_tables.py` ranks the tables CH3 actually
+sounded). A table made the set only where its harmonic series differs from every other one's by
+more than 5 dB RMS, so tables that sound alike are folded together: Pokemon Trading Card Game and
+Donkey Kong Land play the same saw as the existing Game Boy wave preset, and the squares in Link's
+Awakening, Final Fantasy Adventure, Mega Man Xtreme and Tetris DX all match Tetris Blast's. Two
+plain shapes no game table came near stay as Game Boy wave sine bass and Game Boy wave organ.
 Choose
 **Custom wavetable** directly in the sound-source menu, or use the Custom wave switch to override
 another source. The drawing is always active when Custom wavetable itself is selected.

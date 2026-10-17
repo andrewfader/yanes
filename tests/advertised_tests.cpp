@@ -1622,7 +1622,11 @@ void register_sources() {
       }
       if (offered.size() < 2) continue;
       std::vector<std::vector<float>> solos;
-      for (const int voice : offered) solos.push_back(render({{P::kWaveform, static_cast<double>(voice)}}, {on(0, 60), off(1.5, 60)}, 1.5).mono());
+      // The solos hold their note the way a stack channel does: a stack runs with the
+      // hardware envelope off, so a solo pulse decaying through the 0.2-0.5 s window
+      // would be scored on its envelope rather than its timbre.
+      for (const int voice : offered)
+        solos.push_back(render({{P::kWaveform, static_cast<double>(voice)}, {P::kHardwareEnvelope, 0}}, {on(0, 60), off(1.5, 60)}, 1.5).mono());
       for (int channel = 0; channel < stack_channels(stack); ++channel) {
         const int voice = stack_voice(stack, channel);
         if (voice >= kVoices) continue;
@@ -1902,6 +1906,25 @@ PresetClaim preset_claim(int id) {
       {{82}, kStack},                   // 120 GBA channel stack
       {{48}, kSustain},                 // 121 Theremin
       {{58}, kCustom | kDecay},         // 122 Crystal
+      {{11}, kSustain | kBass},         // 123 Game Boy wave sine bass
+      {{11}, kSustain},                 // 124 Game Boy wave organ
+      {{11}, kCustom | kSustain},       // 125 Pokemon Red round wave
+      {{11}, kCustom | kSustain},       // 126 Pokemon Crystal soft saw
+      {{11}, kCustom | kSustain},       // 127 Pokemon Crystal hollow wave
+      {{11}, kCustom | kSustain},       // 128 Pokemon Crystal buzz wave
+      {{11}, kCustom | kSustain},       // 129 Tetris Blast square wave
+      {{11}, kCustom | kSustain},       // 130 Link's Awakening wave bass
+      {{11}, kCustom | kSustain},       // 131 Kirby's Dream Land 2 wave
+      {{11}, kCustom | kSustain},       // 132 Gargoyle's Quest thin wave
+      {{11}, kCustom | kSustain},       // 133 Gargoyle's Quest bright wave
+      {{11}, kCustom | kSustain},       // 134 Gargoyle's Quest hollow wave
+      {{11}, kCustom | kSustain},       // 135 Mega Man Xtreme wave lead
+      {{11}, kCustom | kSustain},       // 136 Mega Man Xtreme buzz wave
+      {{11}, kCustom | kSustain},       // 137 Final Fantasy Adventure pulse wave
+      {{11}, kCustom | kSustain},       // 138 Metroid II wave
+      {{11}, kCustom | kSustain},       // 139 Wario Land spike wave
+      {{11}, kCustom | kSustain},       // 140 Mega Man V wave
+      {{11}, kCustom | kSustain},       // 141 Oracle of Ages soft wave
   }};
   static_assert(table.size() == std::size(P::kPresetNames), "one proof row per preset");
   return table[static_cast<size_t>(id)];

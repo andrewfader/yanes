@@ -163,6 +163,15 @@ add_executable(yanes-gb-envelope-rom tools/yanes_gb_envelope_rom.cpp)
 target_compile_features(yanes-gb-envelope-rom PRIVATE cxx_std_20)
 yanes_warnings(yanes-gb-envelope-rom)
 
+# Plays each Game Boy wave preset and writes a script ROM for the same note; the
+# SameBoy lane below scores one against the other.
+add_executable(yanes-gb-wave-preset-parity tools/yanes_gb_wave_preset_parity.cpp)
+target_compile_features(yanes-gb-wave-preset-parity PRIVATE cxx_std_20)
+yanes_warnings(yanes-gb-wave-preset-parity)
+yanes_enable_assertions(yanes-gb-wave-preset-parity)
+target_include_directories(yanes-gb-wave-preset-parity PRIVATE "${clap_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+target_link_libraries(yanes-gb-wave-preset-parity PRIVATE ${CMAKE_DL_LIBS})
+
 # SameBoy capture side of the Game Boy lanes. Point YANES_SAMEBOY_SRC at a SameBoy
 # checkout with third_party/sameboy-apu-register-log.patch applied (CI clones and
 # patches one); tools/build_gb_oracle.sh does the same build by hand. The Nestopia
@@ -190,6 +199,9 @@ if(YANES_SAMEBOY_SRC)
   add_executable(yanes-gb-oracle tools/yanes_gb_oracle.c)
   set_target_properties(yanes-gb-oracle PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
   target_link_libraries(yanes-gb-oracle PRIVATE yanes_sameboy_core m)
+  add_executable(yanes-gb-wave-harvest tools/yanes_gb_wave_harvest.c)
+  set_target_properties(yanes-gb-wave-harvest PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+  target_link_libraries(yanes-gb-wave-harvest PRIVATE yanes_sameboy_core m)
 endif()
 
 add_executable(vgm_tests tests/vgm_tests.cpp)
@@ -432,6 +444,11 @@ if(TARGET yanes-gb-oracle)
   add_test(NAME gb_envelope_oracle COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_gb_envelope_oracle.sh)
   set_tests_properties(gb_envelope_oracle PROPERTIES TIMEOUT 120 ENVIRONMENT
     "YANES_GB_ENVELOPE_ROM=$<TARGET_FILE:yanes-gb-envelope-rom>;YANES_GB_ORACLE=$<TARGET_FILE:yanes-gb-oracle>;YANES_GB_REPLAY=$<TARGET_FILE:yanes-gb-replay>;YANES_ENVELOPE_ORACLE=$<TARGET_FILE:envelope_oracle>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
+  add_test(NAME gb_wave_preset_parity COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_gb_wave_preset_parity.sh)
+  set_tests_properties(gb_wave_preset_parity PROPERTIES TIMEOUT 180 ENVIRONMENT
+    "YANES_GB_WAVE_PRESET_PARITY=$<TARGET_FILE:yanes-gb-wave-preset-parity>;YANES_CLAP=$<TARGET_FILE:yanes_clap>;YANES_GB_ORACLE=$<TARGET_FILE:yanes-gb-oracle>;YANES_PARITY_COMPARE=$<TARGET_FILE:yanes-parity-compare>")
+else()
+  message(STATUS "SameBoy lanes (gb_envelope_oracle, gb_wave_preset_parity) not registered: set YANES_SAMEBOY_SRC")
 endif()
 
 add_executable(compatibility_tests tests/compatibility_tests.cpp)
