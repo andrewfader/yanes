@@ -1901,6 +1901,7 @@ PresetClaim preset_claim(int id) {
       {{81}, kStack},                   // 119 WonderSwan channel stack
       {{82}, kStack},                   // 120 GBA channel stack
       {{48}, kSustain},                 // 121 Theremin
+      {{58}, kCustom | kDecay},         // 122 Crystal
   }};
   static_assert(table.size() == std::size(P::kPresetNames), "one proof row per preset");
   return table[static_cast<size_t>(id)];

@@ -91,7 +91,7 @@ error. It resamples differing source rates and also reports 1024-frame energy-en
 which is stable across different chip-core phase and resampling implementations. An optional
 minimum envelope-correlation threshold is suitable for CI.
 
-`advertised_tests` holds one proof per parameter (all 136) and one per preset (all 121) that it
+`advertised_tests` holds one proof per parameter (all 136) and one per preset (all 122) that it
 does what it advertises, measured from rendered audio in the advertised unit: Attack and
 Release in milliseconds, gains in dB, Transpose/Fine tune/bend/vibrato/sweep in semitones and
 cents, rates in Hz or steps per second, pulse duty in percent, FM index against the Bessel
@@ -292,8 +292,9 @@ presets:
 
 Original presets include Vector Wavetable Pad, Phase-Distortion Brass, Additive Drawbars,
 Six-Operator Electric Piano, Digital Partial Strings, Neo Geo FM Bell, Arcade Spike Lead,
-Vowel Formant Pad, and Theremin (a near-sine additive voice that glides between notes and adds
-hand vibrato after a quarter second).
+Vowel Formant Pad, Theremin (a near-sine additive voice that glides between notes and adds
+hand vibrato after a quarter second), and Crystal (a custom wavetable of a sine stepped by a square
+at each half-cycle, struck and fading like a bell).
 
 Six era-inspired keyboard modes extend that original section without copying factory ROMs or
 patch data: a deliberately compact two-operator Porta FM voice, detuned vintage analog poly,
@@ -363,7 +364,7 @@ editor at four sizes with repeated window lifecycles and saves PPM screenshots. 
 X display; the ordinary CTest frontend checks remain headless. See the
 [native UI and leak results](docs/REVIEW_2026-09-26.md#follow-up-native-ui-and-leak-checks).
 
-The catalogue contains **83 sound sources and 121 factory presets** (plus Manual). Every source
+The catalogue contains **83 sound sources and 122 factory presets** (plus Manual). Every source
 has a factory starting preset, including the console stacks and noise voices. Recent recipes
 include the deep-bass set (Moog ladder, Oberheim SEM, Korg resonant, Moog lead), the 1980s synth
 families (Juno chorus strings, Prophet sync lead, Hoover rave stab, DX slap bass, CS-80 brass
