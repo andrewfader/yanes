@@ -105,7 +105,7 @@ class Events {
     offsets_.push_back(storage_.size() * sizeof(uint64_t));
     const size_t words = (sizeof(Event) + sizeof(uint64_t) - 1) / sizeof(uint64_t);
     const size_t at = storage_.size();
-    storage_.resize(at + words, 0);
+    storage_.resize(at + words);
     std::memcpy(storage_.data() + at, bytes, sizeof(Event));
   }
 

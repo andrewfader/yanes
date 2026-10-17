@@ -12,10 +12,17 @@ function(yanes_warnings target)
     $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic>)
 endfunction()
 
+# Optimized configurations take NDEBUG from a definition rather than the default release
+# flags, so a test target can opt out of it: undefining it over the flag instead (/UNDEBUG
+# after /DNDEBUG) makes MSVC warn D9025 on every test target.
+foreach(config RELEASE RELWITHDEBINFO MINSIZEREL)
+  string(REGEX REPLACE "[-/]DNDEBUG" "" CMAKE_CXX_FLAGS_${config} "${CMAKE_CXX_FLAGS_${config}}")
+endforeach()
+add_compile_definitions(
+  $<$<AND:$<CONFIG:Release,RelWithDebInfo,MinSizeRel>,$<NOT:$<BOOL:$<TARGET_PROPERTY:YANES_ASSERTIONS>>>>:NDEBUG>)
+
 function(yanes_enable_assertions target)
-  target_compile_options(${target} PRIVATE
-    $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
-    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
+  set_target_properties(${target} PROPERTIES YANES_ASSERTIONS ON)
 endfunction()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(X11 REQUIRED)
@@ -86,7 +93,7 @@ endif()
 if(APPLE)
   enable_language(OBJCXX)
   set_source_files_properties(src/yanes.cpp PROPERTIES LANGUAGE OBJCXX)
-  target_link_libraries(yanes_clap PRIVATE "-framework Cocoa")
+  target_link_libraries(yanes_clap PRIVATE "-framework Cocoa" "-framework UniformTypeIdentifiers")
 endif()
 target_compile_options(yanes_clap PRIVATE
   $<$<CXX_COMPILER_ID:MSVC>:/W4>

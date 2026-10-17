@@ -25,11 +25,11 @@ class Blob {
     put32(kMagic);
     put32(version);
     values_at_ = bytes_.size();
-    bytes_.resize(values_at_ + value_count * sizeof(double), 0);
+    bytes_.resize(values_at_ + value_count * sizeof(double));
     sizes_at_ = bytes_.size();
-    bytes_.resize(sizes_at_ + size_count * sizeof(uint32_t), 0);
+    bytes_.resize(sizes_at_ + size_count * sizeof(uint32_t));
     // From v17 a second size table (the SNES BRR banks) follows the DPCM sizes.
-    if (version >= 17) { brr_sizes_at_ = bytes_.size(); bytes_.resize(brr_sizes_at_ + size_count * sizeof(uint32_t), 0); }
+    if (version >= 17) { brr_sizes_at_ = bytes_.size(); bytes_.resize(brr_sizes_at_ + size_count * sizeof(uint32_t)); }
     // From v15 the editor size follows the sizes; these are the editor's defaults.
     if (version >= 15) { put32(1600); put32(1050); }
     // Trailing padding to the natural alignment of the writer's struct.

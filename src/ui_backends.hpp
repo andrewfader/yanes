@@ -530,7 +530,11 @@ bool gui_choose_sample(Plugin* p, int slot) {
   NSOpenPanel* panel = [NSOpenPanel openPanel];
   [panel setAllowsMultipleSelection:NO];
   [panel setCanChooseDirectories:NO];
-  [panel setAllowedFileTypes:@[@"wav", @"WAV", @"ydmc"]];
+  // Content types match extensions case-insensitively; .ydmc has no registered type, so it
+  // gets the dynamic one macOS derives from the extension.
+  NSMutableArray<UTType*>* types = [NSMutableArray arrayWithObject:UTTypeWAV];
+  if (UTType* ydmc = [UTType typeWithFilenameExtension:@"ydmc"]) [types addObject:ydmc];
+  [panel setAllowedContentTypes:types];
   if ([panel runModal] != NSModalResponseOK) return false;
   NSURL* url = [[panel URLs] firstObject];
   if (!url) return false;
