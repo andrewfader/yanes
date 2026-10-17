@@ -50,8 +50,8 @@ class Win32Canvas final : public Canvas {
     FillRect(dc_, &area, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
   }
 
-  void fill_rect(int x, int y, int width, int height, uint32_t rgb) override {
-    const RECT area{sx(x), sy(y), sx(x) + std::max(1, sx(width)), sy(y) + std::max(1, sy(height))};
+  void fill_rect(int x, int y, int w, int h, uint32_t rgb) override {
+    const RECT area{sx(x), sy(y), sx(x) + std::max(1, sx(w)), sy(y) + std::max(1, sy(h))};
     SetDCBrushColor(dc_, colorref(rgb));
     FillRect(dc_, &area, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
   }
@@ -61,9 +61,9 @@ class Win32Canvas final : public Canvas {
     std::vector<POINT> converted(static_cast<size_t>(count));
     for (int i = 0; i < count; ++i)
       converted[static_cast<size_t>(i)] = POINT{sx(points[i].x), sy(points[i].y)};
-    const int width = std::max(1, static_cast<int>(std::lround(thickness * uniform_scale(window_width_, window_height_))));
-    HPEN pen = width > 1 ? ExtCreatePen(PS_GEOMETRIC | PS_SOLID | PS_ENDCAP_ROUND | PS_JOIN_ROUND,
-                                        static_cast<DWORD>(width), &brush_of(rgb), 0, nullptr)
+    const int pen_width = std::max(1, static_cast<int>(std::lround(thickness * uniform_scale(window_width_, window_height_))));
+    HPEN pen = pen_width > 1 ? ExtCreatePen(PS_GEOMETRIC | PS_SOLID | PS_ENDCAP_ROUND | PS_JOIN_ROUND,
+                                        static_cast<DWORD>(pen_width), &brush_of(rgb), 0, nullptr)
                          : CreatePen(PS_SOLID, 1, colorref(rgb));
     HGDIOBJ previous = SelectObject(dc_, pen);
     Polyline(dc_, converted.data(), count);

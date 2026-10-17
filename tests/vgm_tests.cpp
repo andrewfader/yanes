@@ -44,8 +44,10 @@ int main(int argc, char** argv) {
     std::ofstream file(input, std::ios::binary);
     file.write(reinterpret_cast<const char*>(vgm.data()), static_cast<std::streamsize>(vgm.size()));
     file.close();
-    const std::string command_line = "\"" + std::string(argv[1]) + "\" " + chip.name + " \"" +
-                                     input.string() + "\" \"" + output.string() + "\"";
+    // Appended piecewise: GCC 12 reports a bogus -Wrestrict overlap on `"literal" + std::string`.
+    std::string command_line = "\"";
+    command_line += argv[1];
+    command_line += std::string("\" ") + chip.name + " \"" + input.string() + "\" \"" + output.string() + "\"";
     assert(run(command_line) == 0);
     std::ifstream extracted(output);
     std::string line;

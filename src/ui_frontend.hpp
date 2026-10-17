@@ -117,7 +117,7 @@ inline float ui_source_sample(Plugin* p, double phase) {
   const int shape = std::clamp(static_cast<int>(v(kExpansionShape)), 0, 7);
   if (v(kCustomWave) >= 0.5 || waveform == 58) {
     const int i = std::clamp(static_cast<int>(phase * 32.0), 0, 31);
-    return static_cast<float>(v(kWaveSample1 + i) / 7.5 - 1.0);
+    return static_cast<float>(v(static_cast<clap_id>(kWaveSample1) + static_cast<clap_id>(i)) / 7.5 - 1.0);
   }
   switch (waveform) {
     case 0: case 10: case 18: case 19:

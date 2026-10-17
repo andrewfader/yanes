@@ -111,7 +111,7 @@ Take render(const Patch& patch, Score score, double seconds) {
         const Event& e = score[next++];
         const uint32_t offset = static_cast<uint32_t>(std::max<long>(0, static_cast<long>(e.time * kRate) - static_cast<long>(at)));
         if (e.kind == Event::kOn || e.kind == Event::kOff) {
-          auto n = note_event(e.kind == Event::kOn ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF,
+          auto n = note_event(static_cast<uint16_t>(e.kind == Event::kOn ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF),
                               static_cast<int16_t>(e.channel), static_cast<int16_t>(e.key), -1, e.value);
           n.header.time = offset;
           events.push(n);
@@ -1963,7 +1963,7 @@ std::vector<Score> preset_scores(int voice) {
 double take_difference_db(const Take& a, const Take& b) {
   double diff = 0, energy = 0;
   for (size_t i = 0; i < a.left.size(); ++i) {
-    for (const auto [x, y] : {std::pair{a.left[i], b.left[i]}, std::pair{a.right[i], b.right[i]}}) {
+    for (const auto& [x, y] : {std::pair{a.left[i], b.left[i]}, std::pair{a.right[i], b.right[i]}}) {
       diff += (x - y) * (x - y);
       energy += x * x;
     }

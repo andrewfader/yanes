@@ -542,7 +542,7 @@ double high_fraction(const std::vector<float>& samples, size_t from, size_t to) 
 // Renders one note and returns the left channel.
 std::vector<float> render_note(Runner& runner, int channel, int key, int blocks) {
   Events on;
-  on.push(midi_event(0x90 | channel, key, 100));
+  on.push(midi_event(static_cast<uint8_t>(0x90 | channel), static_cast<uint8_t>(key), 100));
   std::vector<float> samples;
   runner.run(&on);
   samples.insert(samples.end(), runner.left().begin(), runner.left().end());

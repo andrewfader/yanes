@@ -103,7 +103,11 @@ jobs:
             oracles=(-DYANES_FURNACE_EXECUTABLE="$RUNNER_TEMP/furnace-bin/furnace"
                      -DYANES_SAMEBOY_SRC="$RUNNER_TEMP/sameboy")
           fi
-          cmake -S . -B build-ci -DCMAKE_BUILD_TYPE=Release \
+          # Visual Studio is multi-config (--config Release below) and warns that
+          # CMAKE_BUILD_TYPE goes unused, so only single-config generators get it.
+          build_type=()
+          if [ "$RUNNER_OS" != Windows ]; then build_type=(-DCMAKE_BUILD_TYPE=Release); fi
+          cmake -S . -B build-ci "${build_type[@]}" \
             -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/stage" "${oracles[@]}"
 
       - name: Build

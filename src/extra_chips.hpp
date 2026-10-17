@@ -136,8 +136,8 @@ inline constexpr double kFormantBandwidth[5] = {70, 90, 130, 220, 300};
 // Vowel formants at `position` 0..1 across oo → oh → ah → eh → ee.
 inline Formants vowel_at(double position) {
   const double x = std::clamp(position, 0.0, 1.0) * 4.0;
-  const int i = std::min(3, static_cast<int>(x));
-  const double m = x - i;
+  const size_t i = std::min<size_t>(3, static_cast<size_t>(x));
+  const double m = x - static_cast<double>(i);
   Formants out{};
   for (int n = 0; n < 5; ++n) out.f[n] = kVowels[i].f[n] * (1.0 - m) + kVowels[i + 1].f[n] * m;
   return out;
@@ -331,7 +331,7 @@ inline uint16_t lynx_lfsr_clock(uint16_t state, uint16_t taps, bool& out) {
   parity ^= parity >> 8U; parity ^= parity >> 4U; parity ^= parity >> 2U; parity ^= parity >> 1U;
   const uint16_t feedback = static_cast<uint16_t>((parity & 1U) ^ 1U);
   out = feedback != 0;
-  return static_cast<uint16_t>(((state << 1U) | feedback) & 0xfffU);
+  return static_cast<uint16_t>(((static_cast<unsigned>(state) << 1U) | feedback) & 0xfffU);
 }
 // The rate Mikey's timer can actually clock at: 1 MHz divided by a power of two (prescale 0..6)
 // and a reload count of 1..256.

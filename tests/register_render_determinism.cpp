@@ -37,7 +37,7 @@ std::vector<float> load_wav_mono(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
   std::vector<uint8_t> b((std::istreambuf_iterator<char>(in)), {});
   if (b.size() < 44) return {};
-  auto u16 = [&](size_t p) { return uint16_t(b[p]) | (uint16_t(b[p + 1]) << 8); };
+  auto u16 = [&](size_t p) { return static_cast<uint16_t>(b[p] | (b[p + 1] << 8)); };
   auto u32 = [&](size_t p) { return uint32_t(b[p]) | (uint32_t(b[p + 1]) << 8)
                               | (uint32_t(b[p + 2]) << 16) | (uint32_t(b[p + 3]) << 24); };
   if (std::memcmp(b.data(), "RIFF", 4) || std::memcmp(b.data() + 8, "WAVE", 4)) return {};
@@ -53,7 +53,7 @@ std::vector<float> load_wav_mono(const std::string& path) {
       channels = u16(p + 10); bits = u16(p + 22);
     }
     if (std::memcmp(b.data() + p, "data", 4) == 0) {
-      data_offset = p + 8;
+      data_offset = static_cast<uint32_t>(p + 8);
       data_len = chunk_size;
       break;
     }

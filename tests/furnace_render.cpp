@@ -52,7 +52,7 @@ int main(int argc,char**argv){
     Runner runner(plugin,48000,512);runner.set(find_param(plugin,"Waveform"),selected->waveform);
     
     const int key=selected->key+key_offset;
-    for(int block=0;block<300;++block){Events events;if(block==0)events.push(note_event(CLAP_EVENT_NOTE_ON,selected->channel,static_cast<int16_t>(key),1,1));if(block==note_blocks)events.push(note_event(CLAP_EVENT_NOTE_OFF,selected->channel,static_cast<int16_t>(key),1,0));runner.run((block==0||block==note_blocks)?&events:nullptr);for(uint32_t i=0;i<512;++i){const auto sample=[](float value){return static_cast<int16_t>(std::clamp(value,-1.0f,1.0f)*32767);};pcm.push_back(sample(runner.left()[i]));pcm.push_back(sample(runner.right()[i]));}}
+    for(int block=0;block<300;++block){Events events;if(block==0)events.push(note_event(CLAP_EVENT_NOTE_ON,static_cast<int16_t>(selected->channel),static_cast<int16_t>(key),1,1));if(block==note_blocks)events.push(note_event(CLAP_EVENT_NOTE_OFF,static_cast<int16_t>(selected->channel),static_cast<int16_t>(key),1,0));runner.run((block==0||block==note_blocks)?&events:nullptr);for(uint32_t i=0;i<512;++i){const auto sample=[](float value){return static_cast<int16_t>(std::clamp(value,-1.0f,1.0f)*32767);};pcm.push_back(sample(runner.left()[i]));pcm.push_back(sample(runner.right()[i]));}}
   }
   plugin->destroy(plugin);std::ofstream out(argv[3],std::ios::binary);out.write("RIFF",4);put32(out,static_cast<uint32_t>(pcm.size()*2+36));out.write("WAVEfmt ",8);put32(out,16);put16(out,1);put16(out,2);put32(out,48000);put32(out,192000);put16(out,4);put16(out,16);out.write("data",4);put32(out,static_cast<uint32_t>(pcm.size()*2));out.write(reinterpret_cast<const char*>(pcm.data()),static_cast<std::streamsize>(pcm.size()*2));return out?0:1;
 }

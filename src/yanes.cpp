@@ -535,7 +535,7 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
       const double wave = shape == 0 ? 1.0 - 4.0 * std::abs(phase - 0.5)
           : shape == 1 ? (std::sin(6.28318530718 * phase) + 0.35 * std::sin(18.84955592154 * phase)) / 1.35
           : 0.6 * std::sin(6.28318530718 * phase) + (phase < 0.5 ? 0.4 : -0.4);  // sine stepped by a square
-      put(static_cast<clap_id>(kWaveSample1 + i), std::round((wave + 1.0) * 7.5));
+      put(static_cast<clap_id>(kWaveSample1) + static_cast<clap_id>(i), std::round((wave + 1.0) * 7.5));
     }
   };
   // A game's CH3 table: the 16 wave-RAM bytes as hex, high nibble first, played on the
@@ -544,7 +544,7 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     put(kWaveform, 11); put(kCustomWave, 1); put(kHardwareEnvelope, 0); put(kReleaseMs, 20);
     for (int i = 0; i < 32; ++i) {
       const char c = wave_ram[i];
-      put(static_cast<clap_id>(kWaveSample1 + i), c <= '9' ? c - '0' : c - 'a' + 10);
+      put(static_cast<clap_id>(kWaveSample1) + static_cast<clap_id>(i), c <= '9' ? c - '0' : c - 'a' + 10);
     }
   };
   // Presets only touch their relevant synthesis/output sections so they remain useful starting points.
@@ -755,8 +755,8 @@ void emit_gui_events(Plugin* p, const clap_output_events_t* out) {
       clap_event_param_gesture_t g{};
       g.header.size = sizeof(g);
       g.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-      g.header.type = event.type == Plugin::kGuiBegin ? CLAP_EVENT_PARAM_GESTURE_BEGIN
-                                                     : CLAP_EVENT_PARAM_GESTURE_END;
+      g.header.type = static_cast<uint16_t>(event.type == Plugin::kGuiBegin ? CLAP_EVENT_PARAM_GESTURE_BEGIN
+                                                                            : CLAP_EVENT_PARAM_GESTURE_END);
       g.param_id = event.id;
       if (!out->try_push(out, &g.header)) break;
     } else {
@@ -1004,7 +1004,7 @@ int voice_duty(const Plugin* p, const Voice& v) {
   const double elapsed_steps = std::floor(static_cast<double>(v.samples) * rate / p->sample_rate);
   const int step = mode == 2 ? static_cast<int>(std::min(elapsed_steps, static_cast<double>(length - 1)))
                             : static_cast<int>(std::fmod(elapsed_steps, length));
-  return std::clamp(static_cast<int>(p->params[static_cast<clap_id>(kDutyStep1 + step)].load(std::memory_order_relaxed)), 0, 3);
+  return std::clamp(static_cast<int>(p->params[static_cast<clap_id>(kDutyStep1) + static_cast<clap_id>(step)].load(std::memory_order_relaxed)), 0, 3);
 }
 
 // This voice's fine-pitch offset in semitones from the cents lane, a tracker-style pitch macro
@@ -1018,7 +1018,7 @@ double voice_cents(const Plugin* p, const Voice& v) {
   const double elapsed_steps = std::floor(static_cast<double>(v.samples) * rate / p->sample_rate);
   const int step = mode == 2 ? static_cast<int>(std::min(elapsed_steps, static_cast<double>(length - 1)))
                             : static_cast<int>(std::fmod(elapsed_steps, length));
-  return p->params[static_cast<clap_id>(kCentsStep1 + step)].load(std::memory_order_relaxed) / 100.0;
+  return p->params[static_cast<clap_id>(kCentsStep1) + static_cast<clap_id>(step)].load(std::memory_order_relaxed) / 100.0;
 }
 
 // Sources that carry a DC offset of their own and are AC-coupled at ~20 Hz like a custom table:
@@ -1155,7 +1155,7 @@ float render_voice(Plugin* p, Voice& v) {
   if (arp == 5) {
     const int length = static_cast<int>(p->params[kSequenceLength].load(std::memory_order_relaxed));
     const int step = static_cast<int>(std::fmod(elapsed_samples * arp_rate / p->sample_rate, std::clamp(length, 1, 8)));
-    sequence_pitch = p->params[static_cast<clap_id>(kSequence1 + step)].load(std::memory_order_relaxed);
+    sequence_pitch = p->params[static_cast<clap_id>(kSequence1) + static_cast<clap_id>(step)].load(std::memory_order_relaxed);
   } else {
     sequence_pitch = arp_intervals[std::clamp(arp, 0, 4)][arp_step];
   }
@@ -1296,12 +1296,12 @@ float render_voice(Plugin* p, Voice& v) {
     // uses levels 0-4 sits near -0.75), the output stage's soft clip would bend it
     // before the DC blocker ever saw it and add second harmonic the chip never makes.
     double mean = 0.0;
-    for (int i = 0; i < 32; ++i) mean += p->params[kWaveSample1 + i].load(std::memory_order_relaxed);
+    for (clap_id i = 0; i < 32; ++i) mean += p->params[kWaveSample1 + i].load(std::memory_order_relaxed);
     mean /= 32.0;
     // Four sub-samples keep the drawn 32-step, 4-bit cycle crisp while reducing aliases.
     for (int n = 0; n < 4; ++n) {
       const double phase = std::fmod(v.phase + increment * n / 4.0, 1.0);
-      const int index = std::clamp(static_cast<int>(phase * 32.0), 0, 31);
+      const clap_id index = std::clamp(static_cast<clap_id>(phase * 32.0), clap_id{0}, clap_id{31});
       value += static_cast<float>((p->params[kWaveSample1 + index].load(std::memory_order_relaxed) - mean) / 7.5) * 0.25f;
     }
   } else if (waveform == 0) {
@@ -1366,10 +1366,10 @@ float render_voice(Plugin* p, Voice& v) {
     value = yanes::pulse(v.phase, increment, 0.5);
   } else if (waveform == 9) {
     const auto& dpcm_bank = v.dpcm_data;
-    const int rate = static_cast<int>(p->params[kDpcmRate].load(std::memory_order_relaxed));
+    const size_t rate = std::clamp(static_cast<size_t>(p->params[kDpcmRate].load(std::memory_order_relaxed)), size_t{0}, size_t{15});
     const auto& dpcm_periods = p->params[kClockMode].load(std::memory_order_relaxed) >= 0.5
                                    ? yanes::kDpcmPeriodsPal : yanes::kDpcmPeriods;
-    v.dpcm_phase += (chip_clock / dpcm_periods[std::clamp(rate, 0, 15)]) / p->sample_rate;
+    v.dpcm_phase += (chip_clock / dpcm_periods[rate]) / p->sample_rate;
     while (v.dpcm_phase >= 1.0) {
       const size_t trim_start=dpcm_bank?static_cast<size_t>(static_cast<double>(dpcm_bank->size()*8U)*effective_param<kDpcmTrimStart>(p)):0;
       const size_t trim_end=dpcm_bank?static_cast<size_t>(static_cast<double>(dpcm_bank->size()*8U)*effective_param<kDpcmTrimEnd>(p)):0;
@@ -1390,7 +1390,7 @@ float render_voice(Plugin* p, Voice& v) {
         const int desired = std::clamp(static_cast<int>(64.0 + target * 60.0), 0, 127);
         v.dpcm_level = std::clamp(v.dpcm_level + (desired >= v.dpcm_level ? 2 : -2), 0, 127);
       }
-      v.dpcm_position += dpcm_periods[std::clamp(rate, 0, 15)] / chip_clock;
+      v.dpcm_position += dpcm_periods[rate] / chip_clock;
       v.dpcm_phase -= 1.0;
     }
     value = static_cast<float>((v.dpcm_level - 64) / 64.0);
@@ -1514,7 +1514,7 @@ float render_voice(Plugin* p, Voice& v) {
     if (waveform == 38 && shape >= 3 && shape <= 6) {
       // Approximate NMOS DAC line coupling without importing measured reSID tables.
       uint16_t bled = dac;
-      bled |= static_cast<uint16_t>((dac << 1U) & 0xfffU); bled |= static_cast<uint16_t>(dac >> 1U);
+      bled |= static_cast<uint16_t>((static_cast<unsigned>(dac) << 1U) & 0xfffU); bled |= static_cast<uint16_t>(dac >> 1U);
       raw = (static_cast<double>(bled) / 2047.5 - 1.0) * 0.42;
     }
     const double cutoff_control = effective_param<kChipCutoff>(p);
@@ -1600,7 +1600,7 @@ float render_voice(Plugin* p, Voice& v) {
     value=static_cast<float>(std::tanh(v.chip_lp*1.7));
     v.aux_phase=std::fmod(v.aux_phase+increment*0.5,1.0);
   } else if (waveform == 57 || waveform == 100) {
-    const int drum=waveform==100?std::array<int,6>{0,1,2,4,5,6}[std::clamp(v.channel-9,0,5)]:(((v.key-36)%12+12)%12);
+    const int drum=waveform==100?std::array<int,6>{0,1,2,4,5,6}[static_cast<size_t>(std::clamp(v.channel-9,0,5))]:(((v.key-36)%12+12)%12);
     const double t=elapsed_samples/p->sample_rate;
     const double pitch_ratio=frequency/std::max(1.0,yanes::midi_frequency(static_cast<double>(v.key)));
     const double character=static_cast<double>(shape)/7.0;
@@ -1611,7 +1611,7 @@ float render_voice(Plugin* p, Voice& v) {
       case 0:{const double cycles=(48.0+character*18.0)*t+(145.0+character*55.0)*(1.0-std::exp(-t*22.0))/22.0;drum_value=std::sin(tau*cycles*pitch_ratio)*std::exp(-t*(8.5-character*2.0));duration=0.7;break;}
       case 1:{const double body=std::sin(tau*185.0*pitch_ratio*t)*std::exp(-t*18.0);drum_value=(noise(10500.0,1,15)*0.78*std::exp(-t*(13.0+character*8.0))+body*0.32);duration=0.46;break;}
       case 2:{const double cycles=(105.0+character*75.0)*pitch_ratio*t+85.0*pitch_ratio*(1.0-std::exp(-t*13.0))/13.0;drum_value=std::sin(tau*cycles)*std::exp(-t*7.5);duration=0.82;break;}
-      case 3:{const double p=tau*(170.0+character*130.0)*pitch_ratio*t;drum_value=std::sin(p+2.8*std::sin(p*2.73))*std::exp(-t*10.0);duration=0.62;break;}
+      case 3:{const double ph=tau*(170.0+character*130.0)*pitch_ratio*t;drum_value=std::sin(ph+2.8*std::sin(ph*2.73))*std::exp(-t*10.0);duration=0.62;break;}
       case 4:drum_value=noise(18500.0,1,15)*std::exp(-t*(42.0-character*9.0));duration=0.18;break;
       case 5:drum_value=noise(15800.0,1,15)*std::exp(-t*(8.0+character*3.0));duration=0.82;break;
       case 6:{double bursts=0.0;for(const double onset:{0.0,0.026,0.052,0.085})if(t>=onset)bursts+=std::exp(-(t-onset)*38.0);drum_value=noise(9200.0,3,17)*std::min(1.0,bursts);duration=0.48;break;}

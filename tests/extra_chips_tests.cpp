@@ -70,7 +70,7 @@ void lpc_quantization_follows_the_chip_bit_depths() {
     }
   }
   for (size_t n = 0; n < seen.size(); ++n)
-    assert(seen[n].size() <= static_cast<size_t>(1 << X::kLpcBits[n]) && "no more levels than the coefficient's bits");
+    assert(seen[n].size() <= (size_t{1} << X::kLpcBits[n]) && "no more levels than the coefficient's bits");
   // A voiced lattice rings at the requested pitch.
   X::LpcVoice voice;
   voice.set_formants(X::vowel_at(0.5), 8000.0, true);

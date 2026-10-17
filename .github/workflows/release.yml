@@ -63,7 +63,12 @@ jobs:
 
       - name: Configure CMake
         shell: bash
-        run: cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release ${{ matrix.configure }}
+        # Visual Studio is multi-config (the build step's --config picks Release) and warns
+        # that CMAKE_BUILD_TYPE goes unused, so only single-config generators get it.
+        run: |
+          build_type=()
+          if [ "$RUNNER_OS" != Windows ]; then build_type=(-DCMAKE_BUILD_TYPE=Release); fi
+          cmake -S . -B build-release "${build_type[@]}" ${{ matrix.configure }}
 
       - name: Build
         run: cmake --build build-release --config Release --parallel 3

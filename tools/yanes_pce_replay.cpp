@@ -94,10 +94,10 @@ struct Channel {
 // The cell the waveform index currently addresses, read through the plugin's
 // own wave-RAM primitive and converted back to the five-bit code the DAC ladder
 // is indexed by.
-int wave_cell(const Channel& ch) {
+uint8_t wave_cell(const Channel& ch) {
   const double phase = (ch.waveform_index + 0.5) / 32.0;
   const float sample = yanes::pce_wave_sample(phase, ch.waveform.data());
-  return std::clamp(static_cast<int>(std::lround((sample + 1.0f) * 15.5f)), 0, 31);
+  return static_cast<uint8_t>(std::clamp(static_cast<int>(std::lround((sample + 1.0f) * 15.5f)), 0, 31));
 }
 
 struct Psg {

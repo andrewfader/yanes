@@ -3,6 +3,8 @@ project(YANES VERSION 0.3.12 LANGUAGES CXX)
 
 # Keep windows.h from defining the min/max macros no matter which header pulls it in.
 add_compile_definitions($<$<CXX_COMPILER_ID:MSVC>:NOMINMAX>)
+# MSVC flags std::getenv as unsafe; the standard call is what every caller means.
+add_compile_definitions($<$<CXX_COMPILER_ID:MSVC>:_CRT_SECURE_NO_WARNINGS>)
 
 function(yanes_warnings target)
   target_compile_options(${target} PRIVATE
