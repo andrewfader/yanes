@@ -25,6 +25,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <numbers>
 #include <string>
 #include <vector>
 
@@ -189,8 +190,8 @@ std::vector<double> harmonic_profile(const std::vector<double>& x, double hz) {
   for (int k = 1; k <= 16; ++k) {
     double re = 0, im = 0;
     for (size_t n = first; n < last; ++n) {
-      const double w = 0.5 - 0.5 * std::cos(2 * M_PI * static_cast<double>(n - first) / static_cast<double>(last - first));
-      const double ph = 2 * M_PI * k * hz * static_cast<double>(n) / kRate;
+      const double w = 0.5 - 0.5 * std::cos(2 * std::numbers::pi * static_cast<double>(n - first) / static_cast<double>(last - first));
+      const double ph = 2 * std::numbers::pi * k * hz * static_cast<double>(n) / kRate;
       re += w * x[n] * std::cos(ph);
       im -= w * x[n] * std::sin(ph);
     }
