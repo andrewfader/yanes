@@ -22,14 +22,16 @@ class Blob {
  public:
   Blob(uint32_t version, size_t value_count, size_t size_count)
       : value_count_(value_count), size_count_(size_count) {
-    put32(kMagic);
-    put32(version);
-    values_at_ = bytes_.size();
-    bytes_.resize(values_at_ + value_count * sizeof(double));
-    sizes_at_ = bytes_.size();
-    bytes_.resize(sizes_at_ + size_count * sizeof(uint32_t));
+    // The fixed part is laid out first and allocated once, zeroed. (Growing the
+    // vector table by table trips GCC's -Warray-bounds on the reallocation.)
+    values_at_ = 2 * sizeof(uint32_t);
+    sizes_at_ = values_at_ + value_count * sizeof(double);
+    size_t end = sizes_at_ + size_count * sizeof(uint32_t);
     // From v17 a second size table (the SNES BRR banks) follows the DPCM sizes.
-    if (version >= 17) { brr_sizes_at_ = bytes_.size(); bytes_.resize(brr_sizes_at_ + size_count * sizeof(uint32_t)); }
+    if (version >= 17) { brr_sizes_at_ = end; end += size_count * sizeof(uint32_t); }
+    bytes_.assign(end, 0);
+    std::memcpy(bytes_.data(), &kMagic, sizeof(kMagic));
+    std::memcpy(bytes_.data() + sizeof(kMagic), &version, sizeof(version));
     // From v15 the editor size follows the sizes; these are the editor's defaults.
     if (version >= 15) { put32(1600); put32(1050); }
     // Trailing padding to the natural alignment of the writer's struct.
