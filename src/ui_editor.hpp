@@ -935,10 +935,14 @@ class Editor {
     // Ruler: step numbers, the playing region, and a handle at the end of the loop.
     p.rect(g.ruler, panel_hi);
     p.rect(g.ruler.x, g.ruler.y, std::min(length, spec.steps) * step_w, g.ruler.h, mix(panel_hi, accent, 0.35));
+    // A narrow lane numbers every 2nd, 4th or 8th step so the labels stay legible.
+    int stride = 1;
+    while (stride < 8 && step_w * stride < 26) stride *= 2;
     for (int i = 0; i < spec.steps; ++i) {
+      if (i != 0 && (i + 1) % stride != 0) continue;
       char n[16]{};
       std::snprintf(n, sizeof(n), "%d", i + 1);
-      p.text_centered(g.ruler.x + i * step_w + step_w / 2, g.ruler.y + 21, n, i < length ? text : muted, step_w, TextSize::Small);
+      p.text_centered(g.ruler.x + i * step_w + step_w / 2, g.ruler.y + 21, n, i < length ? text : muted, step_w * stride, TextSize::Small);
     }
     const int handle = g.ruler.x + std::min(length, spec.steps) * step_w;
     p.rect(handle - 2, g.bars.y, 4, g.ruler.bottom() - g.bars.y, active ? amber : soft);

@@ -44,7 +44,7 @@ inline float preview_source_sample(const double* v, double phase) {
   switch (waveform) {
     case 0: case 10: case 18: case 19:
       return yanes::pulse_raw(phase, kDuties[std::clamp(static_cast<int>(v[kDuty]), 0, 3)]);
-    case 8: case 13: case 15: case 22: case 23: case 24: case 42: case 44:
+    case 8: case 13: case 15: case 22: case 23: case 24: case 42: case 44: case 83:
       return yanes::pulse_raw(phase, 0.5);
     case 1: return yanes::nes_triangle(phase);
     case 3: return yanes::pulse_raw(phase, (shape + 1) / 16.0);
@@ -52,7 +52,13 @@ inline float preview_source_sample(const double* v, double phase) {
     case 5: return yanes::fds_wave(phase, shape);
     case 6: case 11: return yanes::n163_wave(phase, shape);
     case 7: return yanes::vrc7_fm(phase, v[kFmRatio], v[kFmIndex]);
-    case 26: case 35: return yanes::pce_wave(phase, shape);
+    case 26: case 35: {
+      const int pick = static_cast<int>(v[kPceWave1]);
+      const size_t step = std::min<size_t>(31, static_cast<size_t>(phase * 32.0));
+      if (pick == 1) return static_cast<float>(v[kPceSample1 + step] / 15.5 - 1.0);
+      if (pick >= 2) return static_cast<float>(yanes::pce_builtin_tables()[static_cast<size_t>(std::min(pick - 2, yanes::kPceBuiltinTables - 1))][step] / 15.5 - 1.0);
+      return yanes::pce_wave(phase, shape);
+    }
     case 38: case 39: return static_cast<float>(2.0 * phase - 1.0);
     case 40: case 41: return yanes::scc_wave(phase, shape);
     case 46: return yanes::morph_wavetable(phase, v[kWavetablePosition], v[kWavetableWarp]);
@@ -334,6 +340,11 @@ int main(int argc, char** argv) {
   host.values[P::kCentsStep1] = 50; host.values[P::kCentsStep2] = -30; host.values[P::kCentsStep3] = 100;
   host.values[P::kDutySeqMode] = 1;
   host.values[P::kSequence2] = 7; host.values[P::kSequence3] = 12; host.values[P::kSequence4] = -5;
+  // The PCE page: channel 1 drawn, the others on built-in tables (as the channel waves preset).
+  const char* drawn = "gmruvtplkjlnopokgd9643578752026b";
+  for (int i = 0; i < 32; ++i) host.values[P::kPceSample1 + i] = drawn[i] <= '9' ? drawn[i] - '0' : drawn[i] - 'a' + 10;
+  host.values[P::kPceWave1] = 1; host.values[P::kPceWave2] = 8; host.values[P::kPceWave3] = 9;
+  host.values[P::kPceWave4] = 12; host.values[P::kPceWave5] = 10; host.values[P::kPceWave6] = 11;
   Editor editor(host, yanes_pages(), yanes_header_control());
   double now = 0.0;
   const auto settle = [&] { for (int i = 0; i < 40; ++i) editor.tick(now += 16.0); };

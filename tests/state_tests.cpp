@@ -1,5 +1,5 @@
-// CLAP state coverage: the current v16 round trip including DPCM bank payloads, the
-// legacy v8..v14 migration paths, and rejection of malformed blobs.
+// CLAP state coverage: the current v18 round trip including DPCM bank payloads, the
+// legacy v8..v17 migration paths, and rejection of malformed blobs.
 //
 // The legacy layouts are reconstructed here from the reader's own struct definitions.
 // That pins the on-disk contract so a future parameter insertion cannot silently shift
@@ -15,6 +15,8 @@ using namespace harness;
 namespace {
 
 constexpr uint32_t kMagic = 0x53454e59U;  // "YNES"
+constexpr uint32_t kCurrent = 18;            // the version the plug-in writes
+constexpr size_t kV17Values = 136;           // parameters stored by v16 and v17
 
 // Byte-level builder for a state blob, so the tests do not depend on the plug-in's
 // private structs.
@@ -73,7 +75,7 @@ double distinct_value(const clap_param_info_t& info) {
   return candidate;
 }
 
-void test_v16_round_trip(const Library& library) {
+void test_current_round_trip(const Library& library) {
   const clap_plugin_t* plugin = library.create();
   const auto* params = params_of(plugin);
   const uint32_t count = params->count(plugin);
@@ -126,8 +128,8 @@ void test_v16_bank_payload_round_trip(const Library& library) {
 
   // Install banks through a v16 blob, then save and compare the produced bytes.
   const uint32_t count = params_of(plugin)->count(plugin);
-  Blob blob(16, count, 16);
-  for (clap_id i = 0; i < count; ++i) blob.value(i, param_info(plugin, i).default_value);
+  Blob blob(16, kV17Values, 16);
+  for (clap_id i = 0; i < kV17Values; ++i) blob.value(i, param_info(plugin, i).default_value);
   std::vector<uint8_t> payload;
   const uint32_t slot_sizes[16] = {32, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1024};
   for (size_t slot = 0; slot < 16; ++slot) {
@@ -165,7 +167,7 @@ void test_v16_bank_payload_round_trip(const Library& library) {
 void test_editor_size_round_trip(const Library& library) {
   const clap_plugin_t* plugin = library.create();
   const uint32_t count = params_of(plugin)->count(plugin);
-  // The editor size follows the DPCM sizes and the SNES BRR sizes (v17).
+  // The editor size follows the DPCM sizes and the SNES BRR sizes (v17 on).
   const size_t gui_at = 8 + count * sizeof(double) + 2 * 16 * sizeof(uint32_t);
   const auto saved_size = [&](const clap_plugin_t* instance) {
     StateMemory out;
@@ -176,7 +178,7 @@ void test_editor_size_round_trip(const Library& library) {
   };
   assert((saved_size(plugin) == std::array<uint32_t, 2>{1600, 1050}));
 
-  Blob blob(17, count, 16);
+  Blob blob(kCurrent, count, 16);
   for (clap_id i = 0; i < count; ++i) blob.value(i, param_info(plugin, i).default_value);
   const uint32_t small[2] = {800, 525};
   std::memcpy(blob.bytes().data() + gui_at, small, sizeof(small));
@@ -194,7 +196,7 @@ void test_editor_size_round_trip(const Library& library) {
 // size_count}; versions 8 and 9 stored a single DPCM size rather than sixteen.
 struct LegacyLayout { uint32_t version; size_t values; size_t sizes; };
 constexpr LegacyLayout kLegacy[] = {
-    {15, 103, 16}, {14, 91, 16}, {13, 79, 16}, {12, 77, 16}, {11, 75, 16}, {10, 73, 16}, {9, 72, 1}, {8, 62, 1},
+    {17, kV17Values, 16}, {16, kV17Values, 16}, {15, 103, 16}, {14, 91, 16}, {13, 79, 16}, {12, 77, 16}, {11, 75, 16}, {10, 73, 16}, {9, 72, 1}, {8, 62, 1},
 };
 
 void test_legacy_migration(const Library& library) {
@@ -265,7 +267,7 @@ void test_legacy_sample_lands_in_first_slot(const Library& library) {
 
   StateMemory resaved;
   assert(save_state(plugin, &resaved));
-  // v17 header: magic, version, kParamCount doubles, sixteen DPCM sizes, sixteen
+  // v18 header: magic, version, kParamCount doubles, sixteen DPCM sizes, sixteen
   // BRR sizes, then the editor size.
   const size_t sizes_at = 8 + count * sizeof(double);
   uint32_t sizes[16]{};
@@ -302,26 +304,26 @@ void test_rejects_malformed_state(const Library& library) {
   assert(!load_state(plugin, bad_magic));
 
   // Unknown versions, both older and newer than the supported range.
-  for (const uint32_t version : {0U, 1U, 7U, 18U, 99U, 0xffffffffU}) {
+  for (const uint32_t version : {0U, 1U, 7U, kCurrent + 1, 99U, 0xffffffffU}) {
     StateMemory wrong = saved;
     std::memcpy(wrong.bytes.data() + 4, &version, sizeof(version));
     assert(!load_state(plugin, wrong));
   }
 
   // A bank size beyond the 1 MiB per-slot limit must be refused rather than allocated.
-  Blob oversized(16, count, 16);
+  Blob oversized(kCurrent, count, 16);
   for (clap_id i = 0; i < count; ++i) oversized.value(i, param_info(plugin, i).default_value);
   oversized.size(3, 1024U * 1024U + 1U);
   assert(!load_state(plugin, oversized.memory()));
 
   // A declared bank size with no payload behind it must fail rather than read past the end.
-  Blob missing_payload(16, count, 16);
+  Blob missing_payload(kCurrent, count, 16);
   for (clap_id i = 0; i < count; ++i) missing_payload.value(i, param_info(plugin, i).default_value);
   missing_payload.size(0, 512);
   assert(!load_state(plugin, missing_payload.memory()));
 
   // Exactly at the limit is accepted.
-  Blob at_limit(16, count, 16);
+  Blob at_limit(kCurrent, count, 16);
   for (clap_id i = 0; i < count; ++i) at_limit.value(i, param_info(plugin, i).default_value);
   at_limit.size(0, 1024U * 1024U);
   at_limit.append(std::vector<uint8_t>(1024U * 1024U, 0x5a));
@@ -337,7 +339,7 @@ void test_state_values_are_clamped(const Library& library) {
   const uint32_t count = params_of(plugin)->count(plugin);
 
   for (const double poison : {-1.0e30, 1.0e30}) {
-    Blob blob(16, count, 16);
+    Blob blob(kCurrent, count, 16);
     for (clap_id i = 0; i < count; ++i) blob.value(i, poison);
     assert(load_state(plugin, blob.memory()));
     for (clap_id i = 0; i < count; ++i) {
@@ -353,7 +355,7 @@ void test_state_values_are_clamped(const Library& library) {
 void test_failed_load_preserves_patch(const Library& library) {
   const clap_plugin_t* plugin = library.create();
   const uint32_t count = params_of(plugin)->count(plugin);
-  Blob original(16, count, 16);
+  Blob original(kCurrent, count, 16);
   for (clap_id i = 0; i < count; ++i) original.value(i, param_info(plugin, i).default_value);
   original.value(find_param(plugin, "Master"), -24.0);
   original.size(0, 8);
@@ -363,7 +365,7 @@ void test_failed_load_preserves_patch(const Library& library) {
   StateMemory before;
   assert(save_state(plugin, &before));
 
-  Blob replacement(16, count, 16);
+  Blob replacement(kCurrent, count, 16);
   for (clap_id i = 0; i < count; ++i) replacement.value(i, param_info(plugin, i).default_value);
   replacement.value(find_param(plugin, "Waveform"), 17);
   replacement.size(0, 8);
@@ -387,7 +389,7 @@ void test_nonfinite_state_is_rejected(const Library& library) {
   StateMemory before;
   assert(save_state(plugin, &before));
   std::vector<LegacyLayout> layouts(std::begin(kLegacy), std::end(kLegacy));
-  layouts.push_back({16, count, 16});
+  layouts.push_back({kCurrent, count, 16});
   for (const auto& layout : layouts) {
     for (const double poison : {std::numeric_limits<double>::quiet_NaN(),
                                std::numeric_limits<double>::infinity(),
@@ -524,7 +526,7 @@ int main(int argc, char** argv) {
   assert(argc == 2);
   const Library library(argv[1]);
 
-  test_v16_round_trip(library);
+  test_current_round_trip(library);
   test_v16_bank_payload_round_trip(library);
   test_editor_size_round_trip(library);
   test_legacy_migration(library);

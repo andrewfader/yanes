@@ -223,6 +223,45 @@ inline float pce_wave(double phase, int shape) {
   return quantize_bipolar(wave, 32);
 }
 
+// The built-in wave-RAM images a PC Engine channel can pick (Sine .. Buzz in the channel
+// wave picker): 32 unsigned five-bit levels each, stretched to the full 0-31 range the way a
+// composer draws them. Built once, on first use.
+inline constexpr int kPceBuiltinTables = 14;
+inline const std::array<std::array<uint8_t, 32>, kPceBuiltinTables>& pce_builtin_tables() {
+  static const auto tables = [] {
+    constexpr double tau = 6.2831853071795864769;
+    std::array<std::array<uint8_t, 32>, kPceBuiltinTables> out{};
+    for (int t = 0; t < kPceBuiltinTables; ++t) {
+      std::array<double, 32> w{};
+      for (int i = 0; i < 32; ++i) {
+        const double p = i / 32.0, s = std::sin(tau * p);
+        switch (t) {
+          case 0: w[i] = s; break;                                                   // sine
+          case 1: w[i] = 1.0 - 4.0 * std::abs(p - 0.5); break;                       // triangle
+          case 2: w[i] = p; break;                                                   // saw
+          case 3: w[i] = p < 0.5 ? 1.0 : 0.0; break;                                 // square
+          case 4: w[i] = p < 0.25 ? 1.0 : 0.0; break;                                // 25% pulse
+          case 5: w[i] = p < 0.125 ? 1.0 : 0.0; break;                               // 12.5% pulse
+          case 6: w[i] = s + 0.5 * std::sin(2.0 * tau * p) + 0.33 * std::sin(3.0 * tau * p); break;  // organ
+          case 7: w[i] = s + std::sin(3.0 * tau * p) / 3.0; break;                   // hollow (odd partials)
+          case 8: w[i] = s + 0.7 * std::sin(4.0 * tau * p); break;                   // bell
+          case 9: w[i] = p < 0.5 ? 1.0 - 0.7 * p : 0.35 - 0.7 * (p - 0.5); break;    // sloped square
+          case 10: for (int k = 1; k <= 4; ++k) w[i] -= std::sin(k * tau * p) / k; break;  // soft saw
+          case 11: w[i] = std::max(0.0, s); break;                                   // half sine
+          case 12: w[i] = p < 0.5 ? 2.0 * p : 0.25 + (p - 0.5); break;               // double saw
+          default: w[i] = i < 3 ? 1.0 : 0.0; break;                                  // buzz: a narrow spike
+        }
+      }
+      const auto [lo, hi] = std::minmax_element(w.begin(), w.end());
+      for (int i = 0; i < 32; ++i)
+        out[static_cast<size_t>(t)][static_cast<size_t>(i)] =
+            static_cast<uint8_t>(std::lround((w[i] - *lo) / (*hi - *lo) * 31.0));
+    }
+    return out;
+  }();
+  return tables;
+}
+
 inline float opl_two_operator(double phase, double ratio, double index, double feedback) {
   constexpr double tau = 6.2831853071795864769;
   const double p = tau * phase;

@@ -765,10 +765,10 @@ inline ParamSpecHint spec_hint_for_id(const char* name) {
 // render_param() exposes that difference.
 struct Render { std::vector<float> left; std::vector<float> right; };
 inline Render render_param(const clap_plugin_t* plugin, int sustain_blocks = 4,
-                           int release_blocks = 4) {
+                           int release_blocks = 4, int16_t channel = 0) {
   Runner r(plugin, 48000.0, 512);
   Events on;
-  on.push(note_event(CLAP_EVENT_NOTE_ON, 0, 60, 1, 1.0));
+  on.push(note_event(CLAP_EVENT_NOTE_ON, channel, 60, 1, 1.0));
   r.run(&on);
   Render out;
   const size_t f = r.frames();
@@ -782,7 +782,7 @@ inline Render render_param(const clap_plugin_t* plugin, int sustain_blocks = 4,
   }
   // Note-off + release tail.
   Events off;
-  off.push(note_event(CLAP_EVENT_NOTE_OFF, 0, 60, 1, 0.0));
+  off.push(note_event(CLAP_EVENT_NOTE_OFF, channel, 60, 1, 0.0));
   r.run(&off);
   for (int i = 0; i < release_blocks; ++i) {
     r.run(nullptr);
@@ -863,6 +863,10 @@ inline const ModuleVoice* voice_for_module(const char* cat) {
       // 53, etc.). NES pulse at 0 has no chip filter, so testing chip
       // params there would always see identical audio.
       {"Chip filter", 38, "Konami SCC wavetable", {}},
+      // PC Engine wave RAM: each channel's picker and samples play on that
+      // channel of the six-channel stack (the scenario routes the note there),
+      // and the samples only once the picker selects Drawn.
+      {"PC Engine wave RAM", 35, "PC Engine six-channel stack", {}},
   };
   for (const auto& m : kTable) if (std::strcmp(m.category, cat) == 0) return &m;
   return nullptr;
@@ -1009,7 +1013,16 @@ SCENARIO(integration_each_param_changes_audio) {
       // Empty prereq list when the module has no entry — keeps the
       // `for (... mv->prereq)` loop safe for the default case.
       const std::vector<ModulePrereq> kNoPrereq{};
-      const auto& prereqs = mv ? mv->prereq : kNoPrereq;
+      std::vector<ModulePrereq> prereqs = mv ? mv->prereq : kNoPrereq;
+      int16_t channel = 0;
+      std::string drawn;
+      if (std::strcmp(s.module, "PC Engine wave RAM") == 0) {
+        channel = static_cast<int16_t>(s.name[7] - '1');  // "PCE ch N ..."
+        if (std::strstr(s.name, "sample")) {
+          drawn = std::string("PCE ch ") + s.name[7] + " wave";
+          prereqs.push_back({drawn.c_str(), 1.0});
+        }
+      }
       // Note: a per-test waveform change also re-runs apply_voice_defaults,
       // which sets several other params from `kVoiceDefaults`. That can shift
       // the audio even when the param under test is at the same value on
@@ -1023,7 +1036,7 @@ SCENARIO(integration_each_param_changes_audio) {
         set_param(p, find_param(p, prereq.param_name), prereq.value);
       }
       set_param(p, static_cast<clap_id>(i), s.min);
-      Render a = render_param(p, 8);
+      Render a = render_param(p, 8, 4, channel);
       Library l4(g_clap_path);
       const clap_plugin_t* p2 = l4.create();
       set_param(p2, find_param(p2, "Waveform"), static_cast<double>(test_waveform));
@@ -1031,7 +1044,7 @@ SCENARIO(integration_each_param_changes_audio) {
         set_param(p2, find_param(p2, prereq.param_name), prereq.value);
       }
       set_param(p2, static_cast<clap_id>(i), s.max);
-      Render b = render_param(p2, 8);
+      Render b = render_param(p2, 8, 4, channel);
       const AudioDiff diff = audio_diff(a.left, a.right, b.left, b.right);
       const bool ok = audio_diff_passes(diff);
       CHECK(ok, std::string("audio at min vs max for '") + s.name +
@@ -1486,6 +1499,7 @@ SCENARIO(integration_every_preset_uses_the_chip_it_is_named_after) {
       {"Virtual Boy", 74, "Virtual Boy VSU"},
       {"WonderSwan", 75, "WonderSwan wavetable"},
       {"AY buzzer", 76, "AY-3-8910 envelope buzzer"},
+      {"AY tone-noise", 83, "AY-3-8910 tone + noise"},
       {"Seinfeld", 77, "Slap bass"},
       {"Genesis channel stack", 21, "Genesis 10ch stack"},
       {"Genesis noise", 16, "Genesis PSG noise"},
@@ -1495,6 +1509,7 @@ SCENARIO(integration_every_preset_uses_the_chip_it_is_named_after) {
       {"PC Engine noise", 37, "PC Engine noise"},
       {"PC Engine channel", 35, "PC Engine 6ch stack"},
       {"PC Engine glass", 26, "PC Engine wavetable"},
+      {"PC Engine drawn", 26, "PC Engine wavetable"},
       {"DOS OPL2", 27, "OPL2 two-op FM"},
       {"OPL3 brass", 28, "OPL3 four-op FM"},
       {"Sound Blaster", 36, "Sound Blaster OPL3 stack"},

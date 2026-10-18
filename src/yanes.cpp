@@ -450,6 +450,7 @@ constexpr VoiceDefaults kVoiceDefaults[] = {
     {82, 0, -1, -1, -1, -1, -1, 0, 0, -1},    // GBA stack: the Game Boy stack's 12.5% pulses
     {76, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // AY buzzer: falling-saw envelope
     {77, -1, 4, -1, -1, -1, -1, 90, 0, -1},   // Slap bass: thumb between soft and popped
+    {83, -1, -1, 4, -1, -1, -1, 0, 0, -1},    // AY tone + noise: noise register 9, a fast rasp
 };
 
 void set_param(Plugin* p, clap_id id, double value, bool apply_preset);
@@ -545,6 +546,14 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     for (int i = 0; i < 32; ++i) {
       const char c = wave_ram[i];
       put(static_cast<clap_id>(kWaveSample1) + static_cast<clap_id>(i), c <= '9' ? c - '0' : c - 'a' + 10);
+    }
+  };
+  // One PC Engine channel's 32 wave-RAM samples as base-32 digits (0-9, then a-v for 10-31);
+  // the picker still has to select Drawn for the channel to play them.
+  auto pce_drawn = [&](int channel, const char* wave_ram) {
+    for (int i = 0; i < 32; ++i) {
+      const char c = wave_ram[i];
+      put(static_cast<clap_id>(kPceSample1) + static_cast<clap_id>(32 * channel + i), c <= '9' ? c - '0' : c - 'a' + 10);
     }
   };
   // Presets only touch their relevant synthesis/output sections so they remain useful starting points.
@@ -698,6 +707,15 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 139: game_wave("777751a2800000000000000000000000"); put(kGainDb, -3.0); break; // Wario Land spike wave (Wario Land: Super Mario Land 3)
     case 140: game_wave("02468aceffffffffeca8642000448844"); put(kGainDb, -8.0); break; // Mega Man V wave (Mega Man V)
     case 141: game_wave("00001112223334444443332221110000"); put(kGainDb, 3.5); break; // Oracle of Ages soft wave (The Legend of Zelda: Oracle of Ages)
+    // Every PC Engine channel on its own wave-RAM image, the way a HuC6280 score is voiced:
+    // a drawn lead, then organ, hollow, soft saw, bell and a sloped square on the noise channels.
+    case 142:
+      put(kWaveform, 35); put(kStrictHardware, 1); put(kReleaseMs, 60); put(kGainDb, -5.0);
+      put(kPceWave1, 1); pce_drawn(0, "gmruvtplkjlnopokgd9643578752026b");
+      put(kPceWave2, 8); put(kPceWave3, 9); put(kPceWave4, 12); put(kPceWave5, 10); put(kPceWave6, 11);
+      break;
+    case 143: put(kWaveform, 26); put(kPceWave1, 1); pce_drawn(0, "vvutsrqponmlkjihfedcba9876543210"); put(kReleaseMs, 150); put(kVibratoRate, 5.5); put(kVibratoDepth, 0.15); put(kVibratoDelay, 300); put(kGainDb, -6.0); break; // PC Engine drawn lead (a sloped square drawn into channel 1)
+    case 144: put(kWaveform, 83); put(kNoisePeriod, 3); put(kReleaseMs, 30); put(kGainDb, -8.0); break; // AY tone-noise rasp (tone and noise mixed on one channel)
     default: break;
   }
 }
@@ -1025,6 +1043,24 @@ double voice_cents(const Plugin* p, const Voice& v) {
 // the TMS5220's one-sided chirp, the Lynx integrator, and the AY's unipolar envelope DAC.
 constexpr bool fast_dc_waveform(int waveform) { return waveform == 68 || waveform == 72 || waveform == 76; }
 
+// Which channel wave picker a PC Engine voice reads: its stack channel, or channel 1 when solo.
+int pce_channel(int selected_waveform, const Voice& v) {
+  return selected_waveform == 35 ? std::clamp<int>(v.channel, 0, 5) : 0;
+}
+// The 32 wave-RAM levels a PC Engine channel's picker selects: that channel's drawn samples or a
+// built-in table. False for Default, which keeps the voice's own wave (or noise).
+bool pce_channel_levels(const Plugin* p, int channel, std::array<uint8_t, 32>& levels) {
+  const int pick = static_cast<int>(p->params[static_cast<clap_id>(kPceWave1) + static_cast<clap_id>(channel)].load(std::memory_order_relaxed));
+  if (pick <= 0) return false;
+  if (pick == 1) {
+    const clap_id first = static_cast<clap_id>(kPceSample1) + static_cast<clap_id>(32 * channel);
+    for (clap_id i = 0; i < 32; ++i) levels[i] = static_cast<uint8_t>(p->params[first + i].load(std::memory_order_relaxed));
+  } else {
+    levels = yanes::pce_builtin_tables()[static_cast<size_t>(std::min(pick - 2, yanes::kPceBuiltinTables - 1))];
+  }
+  return true;
+}
+
 // The SIDs' waveform DAC bias, a custom table and the retro rack's sample-hold all leave a DC
 // offset on the output, so those paths run through a DC blocker.
 bool output_dc_blocker_active(const Plugin* p) {
@@ -1203,7 +1239,9 @@ float render_voice(Plugin* p, Voice& v) {
   } else if (waveform == 34) { // POKEY: four channels, alternate tone and polynomial noise.
     waveform = (v.channel & 1) ? 25 : 24;
   } else if (waveform == 35) { // PC Engine: four wavetable plus two noise-capable voices.
-    waveform = v.channel < 4 ? 26 : 37;
+    // Channels 5 and 6 play noise until their wave picker gives them a table.
+    waveform = v.channel < 4 || p->params[static_cast<clap_id>(kPceWave1) + static_cast<clap_id>(pce_channel(35, v))]
+                                    .load(std::memory_order_relaxed) >= 1.0 ? 26 : 37;
   } else if (waveform == 36) { // Sound Blaster OPL3: melodic channels.
     waveform = 28;
   } else if (waveform == 41) { // SCC: five wavetable voices.
@@ -1245,7 +1283,7 @@ float render_voice(Plugin* p, Voice& v) {
     constexpr double sms_clock = 3579545.0;
     const double period = std::clamp(std::round(sms_clock / (32.0 * frequency)), 1.0, 1023.0);
     frequency = sms_clock / (32.0 * period);
-  } else if (waveform == 22) {
+  } else if (waveform == 22 || waveform == 83) {
     constexpr double ay_clock = 2000000.0;
     const double period = std::clamp(std::round(ay_clock / (16.0 * frequency)), 1.0, 4095.0);
     frequency = ay_clock / (16.0 * period);
@@ -1448,6 +1486,14 @@ float render_voice(Plugin* p, Voice& v) {
     }
   } else if (waveform == 22) {
     value = yanes::pulse(v.phase, increment, 0.5);
+  } else if (waveform == 83) {
+    // The AY mixer with tone and noise both enabled ANDs them: the square only gets through
+    // while the shared 17-bit noise generator is high. Noise period picks its period register
+    // (1..31 counts of 2 MHz / 16), independent of the note. Centred: high a quarter of the time.
+    const double noise_register = 2.0 * std::clamp(std::round(p->params[kNoisePeriod].load(std::memory_order_relaxed)), 0.0, 15.0) + 1.0;
+    v.noise_phase += 2000000.0 / (16.0 * noise_register) / p->sample_rate;
+    while (v.noise_phase >= 1.0) { v.console_lfsr = yanes::lfsr_clock(v.console_lfsr, 3, 17); v.noise_phase -= 1.0; }
+    value = v.phase < 0.5 && (v.console_lfsr & 1U) ? 1.5f : -0.5f;
   } else if (waveform == 23) {
     v.noise_phase += frequency / p->sample_rate;
     while (v.noise_phase >= 1.0) { v.console_lfsr = yanes::lfsr_clock(v.console_lfsr, 3, 17); v.noise_phase -= 1.0; }
@@ -1491,7 +1537,20 @@ float render_voice(Plugin* p, Voice& v) {
     }
     value = v.noise_value;
   } else if (waveform == 26) {
-    value = yanes::pce_wave(v.phase, shape);
+    std::array<uint8_t, 32> levels{};
+    if (pce_channel_levels(p, pce_channel(selected_waveform, v), levels)) {
+      // A wave-RAM image plays centred on its own mean, like a drawn custom table, and four
+      // sub-samples keep its 32 steps crisp while reducing aliases.
+      double mean = 0.0;
+      for (const uint8_t level : levels) mean += level;
+      mean /= 32.0;
+      for (int n = 0; n < 4; ++n) {
+        const double phase = std::fmod(v.phase + increment * n / 4.0, 1.0);
+        value += static_cast<float>((levels[std::min<size_t>(31, static_cast<size_t>(phase * 32.0))] - mean) / 15.5) * 0.25f;
+      }
+    } else {
+      value = yanes::pce_wave(v.phase, shape);
+    }
   } else if (waveform == 37) {
     v.noise_phase += frequency / p->sample_rate;
     while (v.noise_phase >= 1.0) { v.console_lfsr = yanes::pce_lfsr_clock(v.console_lfsr); v.noise_phase -= 1.0; }
@@ -2393,7 +2452,7 @@ const clap_plugin_params_t kParams{params_count, params_info, params_value, valu
 struct StateBlob { uint32_t magic; uint32_t version; double values[kParamCount]; uint32_t dpcm_sizes[16]; uint32_t brr_sizes[16]; uint32_t gui_width, gui_height; };
 bool state_save(const clap_plugin_t* plugin, const clap_ostream_t* stream) {
   if (!stream || !stream->write) return false;
-  StateBlob state{0x53454e59U, 17, {}, {}, {}, 0, 0};
+  StateBlob state{0x53454e59U, 18, {}, {}, {}, 0, 0};
 #ifdef YANES_HAS_EDITOR
   state.gui_width = self(plugin)->gui_width; state.gui_height = self(plugin)->gui_height;
 #endif
@@ -2423,15 +2482,23 @@ bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
   for (clap_id i = 0; i < kParamCount; ++i) values[i] = kSpecs[i].def;
   std::array<uint32_t, 16> sizes{}, brr_sizes{};
   uint32_t gui_width = 0, gui_height = 0;
-  if (header.version == 17) {
+  if (header.version == 18) {
     StateBlob state{}; state.magic = header.magic; state.version = header.version;
     if (!read_exact(reinterpret_cast<uint8_t*>(&state) + sizeof(header), sizeof(state) - sizeof(header))) return false;
     std::copy(std::begin(state.values), std::end(state.values), values.begin());
     std::copy(std::begin(state.dpcm_sizes), std::end(state.dpcm_sizes), sizes.begin());
     std::copy(std::begin(state.brr_sizes), std::end(state.brr_sizes), brr_sizes.begin());
     gui_width = state.gui_width; gui_height = state.gui_height;
+  } else if (header.version == 17) {
+    // v16 and v17 stored the 136 parameters up to the custom wave; v18 added the PC Engine wave RAM.
+    struct Legacy17 { uint32_t magic, version; double values[136]; uint32_t dpcm_sizes[16]; uint32_t brr_sizes[16]; uint32_t gui_width, gui_height; } state{};
+    if (!read_exact(reinterpret_cast<uint8_t*>(&state) + sizeof(header), sizeof(state) - sizeof(header))) return false;
+    std::copy(std::begin(state.values), std::end(state.values), values.begin());
+    std::copy(std::begin(state.dpcm_sizes), std::end(state.dpcm_sizes), sizes.begin());
+    std::copy(std::begin(state.brr_sizes), std::end(state.brr_sizes), brr_sizes.begin());
+    gui_width = state.gui_width; gui_height = state.gui_height;
   } else if (header.version == 16) {
-    struct Legacy16 { uint32_t magic, version; double values[kParamCount]; uint32_t dpcm_sizes[16]; uint32_t gui_width, gui_height; } state{};
+    struct Legacy16 { uint32_t magic, version; double values[136]; uint32_t dpcm_sizes[16]; uint32_t gui_width, gui_height; } state{};
     if (!read_exact(reinterpret_cast<uint8_t*>(&state) + sizeof(header), sizeof(state) - sizeof(header))) return false;
     std::copy(std::begin(state.values), std::end(state.values), values.begin());
     std::copy(std::begin(state.dpcm_sizes), std::end(state.dpcm_sizes), sizes.begin());

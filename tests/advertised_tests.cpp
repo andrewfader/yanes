@@ -729,7 +729,7 @@ void register_oscillators() {
       }
     }
   });
-  prove(P::kNoisePeriod, "Noise period selects the NES noise clock from the period table", [] {
+  prove(P::kNoisePeriod, "Noise period selects the NES noise clock from the period table, and the AY noise register under tone + noise", [] {
     // NTSC 2A03 noise periods in CPU cycles; the 15-bit shift register (feedback
     // bit 0 xor bit 1, starting from 1 as at power-up) clocks once per period.
     constexpr double table[] = {4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068};
@@ -755,6 +755,32 @@ void register_oscillators() {
       const double clock = 1789773.0 / table[period];
       expect_near(static_cast<double>(flips) / reference_flips(static_cast<size_t>(clock * seconds)), 1.0, 0.02, "",
                   fmt("Noise period %d: shift clock %.0f Hz (transitions vs the 2A03 sequence)", period, clock));
+    }
+    // AY tone + noise: Noise period n is noise register 2n + 1, so the 17-bit generator (feedback
+    // bit 0 xor bit 3) clocks at 2 MHz / (16 (2n + 1)). At key 24 the tone is high for 30 ms at a
+    // time and the noise flips inside it; the output flips with it while the tone is high, half the time.
+    auto ay_flips = [](size_t clocks) {
+      uint32_t lfsr = 1;
+      size_t flips = 0;
+      int last = -1;
+      for (size_t i = 0; i < clocks; ++i) {
+        const uint32_t feedback = (lfsr ^ (lfsr >> 3)) & 1U;
+        lfsr = (lfsr >> 1) | (feedback << 16);
+        const int bit = static_cast<int>(lfsr & 1U);
+        if (last >= 0 && bit != last) ++flips;
+        last = bit;
+      }
+      return static_cast<double>(flips);
+    };
+    for (int period : {6, 9, 12, 15}) {
+      const double seconds = 3.0;
+      const auto x = note(with(kQuiet, {{P::kWaveform, 83}, {P::kNoisePeriod, static_cast<double>(period)}, {P::kAttackMs, 0}}),
+                          seconds, seconds, 24).mono();
+      size_t flips = 0;
+      for (size_t i = 1; i < x.size(); ++i) flips += (x[i] > 0) != (x[i - 1] > 0);
+      const double clock = 2000000.0 / (16.0 * (2 * period + 1));
+      expect_near(static_cast<double>(flips) / (0.5 * ay_flips(static_cast<size_t>(clock * seconds))), 1.0, 0.08, "",
+                  fmt("AY tone + noise, Noise period %d: noise clock %.0f Hz (transitions while the tone is high)", period, clock));
     }
   });
   prove(P::kNoiseMode, "Noise mode switches the LFSR to its short, repeating sequence", [] {
@@ -1514,6 +1540,9 @@ enum class Kind { kTonal, kNoise, kPercussive, kHit };
 Kind kind_of(int waveform) {
   switch (waveform) {
     case 2: case 12: case 14: case 16: case 23: case 25: case 37: case 78: case 79: return Kind::kNoise;
+    // AY tone + noise is a square gated by noise: no pitch detector locks onto it, so it is
+    // checked as noise here and its fundamental, duty and gating by its own claims.
+    case 83: return Kind::kNoise;
     case 9: case 57: case 69: case 100: return Kind::kPercussive;
     case 101: return Kind::kHit;
     default: return Kind::kTonal;
@@ -1644,6 +1673,20 @@ void register_sources() {
     }
     // What the later voices advertise beyond their kind.
     {
+      // AY tone + noise ANDs the two: the square only gets through while the noise is high, so the
+      // output is high a quarter of the time, and it is rougher than the plain tone at the same pitch.
+      const auto mixed = note(with(kQuiet, {{P::kWaveform, 83}, {P::kAttackMs, 0}}), 0.8, 0.8, 36).mono();
+      const auto tone = note(with(kQuiet, {{P::kWaveform, 22}, {P::kAttackMs, 0}}), 0.8, 0.8, 36).mono();
+      const Span mw(mixed, 4800, 24000), tw(tone, 4800, 24000);
+      expect_near(measure::duty(mw), 0.25, 0.03, "", "AY tone + noise is high only while tone and noise both are");
+      const size_t lag = static_cast<size_t>(std::lround(kRate / midi_hz(36)));
+      const double rm = measure::autocorrelation(mw, lag), rt = measure::autocorrelation(tw, lag);
+      expect(rt > 0.9 && rm < 0.6, fmt("AY tone + noise is noise-gated (period correlation %.2f vs the plain tone's %.2f)", rm, rt));
+      const double ay_hz = 2000000.0 / (16.0 * std::round(2000000.0 / (16.0 * midi_hz(36))));
+      const double am = measure::tone_amplitude(mw, kRate, ay_hz), at = measure::tone_amplitude(tw, kRate, ay_hz);
+      expect(am > 0.2 * at, fmt("AY tone + noise keeps the tone's pitch (fundamental %.1f dB re the plain tone)", measure::db(am / at)));
+    }
+    {
       // The PC speaker plays one tone at a time: a held chord alternates, 60 times a second.
       const auto chord = render({{P::kWaveform, 66}}, {on(0, 60), on(0, 67), off(1.0, 60), off(1.0, 67)}, 1.0).mono();
       int c_only = 0, g_only = 0, both = 0;
@@ -1772,11 +1815,97 @@ void register_sources() {
   });
 }
 
+// ----- PC Engine wave RAM -------------------------------------------------------
+
+// A held note on PC Engine stack channel `channel` (0-5), or on the solo voice when it is negative.
+std::vector<float> pce_note(int channel, const Patch& extra, int key = 36) {
+  Patch patch = {{P::kWaveform, channel < 0 ? 26.0 : 35.0}, {P::kAttackMs, 0}, {P::kGainDb, -24}};
+  patch.insert(patch.end(), extra.begin(), extra.end());
+  const int midi = std::max(channel, 0);
+  return render(patch, {on(0, key, midi), off(0.6, key, midi)}, 0.6).mono();
+}
+// The pitch a HuC6280 channel lands on for `key`: 3.58 MHz / (32 x period).
+double pce_hz(int key) {
+  const double period = std::round(3579545.0 / (32.0 * midi_hz(key)));
+  return 3579545.0 / (32.0 * period);
+}
+
+void register_pce_wave_ram() {
+  for (uint32_t c = 0; c < 6; ++c) {
+    prove(P::kPceWave1 + c, "Channel wave picks the channel's wave RAM: Default, Drawn, or a built-in 5-bit table", [c] {
+      const uint32_t picker = P::kPceWave1 + c;
+      const int ch = static_cast<int>(c);
+      auto steady = [](const std::vector<float>& x) { return Span(x, static_cast<size_t>(0.1 * kRate), static_cast<size_t>(0.4 * kRate)); };
+      // The built-in pulses keep their duty.
+      for (const auto& [pick, duty] : {std::pair{5, 0.5}, std::pair{6, 0.25}, std::pair{7, 0.125}}) {
+        const auto x = pce_note(ch, {{picker, static_cast<double>(pick)}});
+        expect_near(measure::duty(steady(x)), duty, 0.02, "", fmt("Channel %d %s", ch + 1, P::kPceWaveNames[pick]));
+      }
+      // Sine is pure, Hollow carries the odd third partial, Organ a strong second.
+      const double f0 = pce_hz(36);
+      const auto sine = harmonic_db(pce_note(ch, {{picker, 2}}), f0, 3);
+      expect(sine[1] < -25 && sine[2] < -25, fmt("Channel %d Sine is pure (H2 %.1f, H3 %.1f dB)", ch + 1, sine[1], sine[2]));
+      const auto hollow = harmonic_db(pce_note(ch, {{picker, 9}}), f0, 3);
+      expect(hollow[1] < -25 && hollow[2] > -13 && hollow[2] < -6, fmt("Channel %d Hollow: odd partials (H2 %.1f, H3 %.1f dB)", ch + 1, hollow[1], hollow[2]));
+      const auto organ = harmonic_db(pce_note(ch, {{picker, 8}}), f0, 3);
+      expect(organ[1] > -10 && organ[1] < -3, fmt("Channel %d Organ: strong second partial (H2 %.1f dB)", ch + 1, organ[1]));
+      // Drawn plays the channel's samples: high for the first 8 of 32 steps is a 25% pulse.
+      Patch drawn = {{picker, 1}};
+      for (uint32_t k = 0; k < 32; ++k) drawn.push_back({P::kPceSample1 + 32 * c + k, k < 8 ? 31.0 : 0.0});
+      expect_near(measure::duty(steady(pce_note(ch, drawn))), 0.25, 0.02, "", fmt("Channel %d Drawn plays its wave RAM", ch + 1));
+      // Every choice plays the note and sounds like no other. Drawn's default samples are the
+      // 0-31 ramp, which is exactly the Saw table, and the pulse above is the 25% table, so Drawn
+      // is compared as a four-level staircase.
+      Patch staircase = {{picker, 1}};
+      for (uint32_t k = 0; k < 32; ++k) staircase.push_back({P::kPceSample1 + 32 * c + k, std::round(31.0 * (k / 8) / 3.0)});
+      std::vector<std::vector<float>> takes;
+      for (int pick = 0; pick < static_cast<int>(std::size(P::kPceWaveNames)); ++pick) {
+        takes.push_back(pce_note(ch, pick == 1 ? staircase : Patch{{picker, static_cast<double>(pick)}}, 60));
+        if (pick == 0 && ch >= 4) expect_kind(takes.back(), Kind::kNoise, fmt("Channel %d Default", ch + 1));
+        else expect_kind(takes.back(), Kind::kTonal, fmt("Channel %d %s", ch + 1, P::kPceWaveNames[pick]));
+      }
+      expect(timbre_similarity(pce_note(ch, {{picker, 1}}, 60), takes[4]) > 0.9999, fmt("Channel %d: the default drawn ramp is the Saw table", ch + 1));
+      for (size_t a = 0; a < takes.size(); ++a)
+        for (size_t b = a + 1; b < takes.size(); ++b)
+          expect(timbre_similarity(takes[a], takes[b]) < 0.999,
+                 fmt("Channel %d: %s and %s sound different", ch + 1, P::kPceWaveNames[a], P::kPceWaveNames[b]));
+      // Only this channel changes, and the solo voice follows channel 1's picker alone.
+      const int other = ch == 0 ? 1 : 0;
+      const auto mine = pce_note(other, {}), changed = pce_note(other, {{picker, 5}});
+      expect(mine == changed, fmt("Channel %d's picker leaves channel %d alone", ch + 1, other + 1));
+      const auto solo = pce_note(-1, {{picker, 5}});
+      if (ch == 0) expect_near(measure::duty(steady(solo)), 0.5, 0.02, "", "the solo PC Engine voice plays channel 1's Square");
+      else expect(solo == pce_note(-1, {}), fmt("the solo PC Engine voice ignores channel %d's picker", ch + 1));
+    });
+    for (uint32_t k = 0; k < 32; ++k) {
+      prove(P::kPceSample1 + 32 * c + k, "PCE sample is the level of that 1/32 of the channel's wave-RAM cycle", [c, k] {
+        for (double level : {31.0, 0.0}) {
+          Patch patch = {{P::kPceWave1 + c, 1}};
+          for (uint32_t j = 0; j < 32; ++j) patch.push_back({P::kPceSample1 + 32 * c + j, j == k ? level : (level > 15 ? 0.0 : 31.0)});
+          // Key 36: ~734 samples per cycle, about 23 per step. The cycle starts at note-on.
+          const auto x = pce_note(static_cast<int>(c), patch);
+          const double period = kRate / pce_hz(36);
+          std::vector<double> step(32, 0.0);
+          for (int cycle = 10; cycle < 20; ++cycle)
+            for (int j = 0; j < 32; ++j) {
+              const size_t from = static_cast<size_t>((cycle + (j + 0.25) / 32.0) * period), to = static_cast<size_t>((cycle + (j + 0.75) / 32.0) * period);
+              step[static_cast<size_t>(j)] += measure::mean(Span(x, from, to - from));
+            }
+          const size_t extreme = level > 15 ? static_cast<size_t>(std::max_element(step.begin(), step.end()) - step.begin())
+                                            : static_cast<size_t>(std::min_element(step.begin(), step.end()) - step.begin());
+          expect(extreme == k, fmt("Channel %u sample %u at %.0f is heard at step %zu of the cycle", c + 1, k + 1, level, extreme + 1));
+        }
+      });
+    }
+  }
+}
+
 // ----- presets --------------------------------------------------------------------
 
 enum Claim : unsigned {
   kSustain = 1, kDecay = 2, kBass = 4, kArp = 8, kEcho = 16, kChorus = 32, kRetroChain = 64,
   kSweep = 128, kNoisy = 256, kStack = 512, kCustom = 1024, kDutyMacro = 2048, kDrums = 4096,
+  kWaveRam = 8192,
 };
 struct PresetClaim { std::vector<int> voices; unsigned claims; };
 
@@ -1925,6 +2054,9 @@ PresetClaim preset_claim(int id) {
       {{11}, kCustom | kSustain},       // 139 Wario Land spike wave
       {{11}, kCustom | kSustain},       // 140 Mega Man V wave
       {{11}, kCustom | kSustain},       // 141 Oracle of Ages soft wave
+      {{35}, kStack | kWaveRam},        // 142 PC Engine channel waves
+      {{26}, kSustain | kWaveRam},      // 143 PC Engine drawn lead
+      {{83}, kSustain | kNoisy},        // 144 AY tone-noise rasp
   }};
   static_assert(table.size() == std::size(P::kPresetNames), "one proof row per preset");
   return table[static_cast<size_t>(id)];
@@ -1945,13 +2077,15 @@ std::vector<double> parameters_after(const Patch& patch) {
 // on one channel with different releases (Strict hardware, portamento, arpeggios,
 // the stereo image), and short notes (release settings once an envelope is done).
 // A stack plays every channel it documents.
-std::vector<Score> preset_scores(int voice) {
+std::vector<Score> preset_scores(int voice, const std::vector<double>& values) {
   Score legato = {on(0.0, 60), on(0.4, 67), off(0.7, 60), off(2.2, 67)};
   Score short_notes = {on(0.0, 60), off(0.15, 60), on(0.6, 64), off(0.75, 64)};
   // One extra note per distinct kind of stack channel (enough to hear each chip
   // channel without exhausting the voice pool).
+  // A PC Engine channel with its own wave RAM is a kind of its own.
   for (int channel = 1; channel < stack_channels(voice); ++channel) {
-    if (stack_voice(voice, channel) == stack_voice(voice, channel - 1)) continue;
+    const bool own_wave = voice == 35 && channel < 6 && values[P::kPceWave1 + static_cast<uint32_t>(channel)] >= 1;
+    if (stack_voice(voice, channel) == stack_voice(voice, channel - 1) && !own_wave) continue;
     legato.push_back(on(0.1, 55, channel));
     legato.push_back(off(2.2, 55, channel));
     short_notes.push_back(on(0.0, 55, channel));
@@ -1987,6 +2121,16 @@ void prove_preset(int id) {
            fmt("plays %s (selected %s)", P::kWaveNames[claim.voices[0]], P::kWaveNames[voice]));
   if (claim.claims & kCustom)
     expect(values[P::kCustomWave] >= 0.5 || voice == 58, "plays the drawn custom wave");
+  if (claim.claims & kWaveRam) {
+    // Every PC Engine channel the stack offers (or channel 1, solo) has its own wave RAM, and
+    // channel 1 sounds different from the Default wave it replaces.
+    const uint32_t channels = voice == 35 ? 6 : 1;
+    for (uint32_t c = 0; c < channels; ++c)
+      expect(values[P::kPceWave1 + c] >= 1, fmt("channel %u picks its own wave RAM", c + 1));
+    const auto ours = render(patch, {on(0.0), off(1.0)}, 1.0).mono();
+    const auto plain = render(with(patch, {{P::kPceWave1, 0}}), {on(0.0), off(1.0)}, 1.0).mono();
+    expect(timbre_similarity(ours, plain) < 0.99, "channel 1's wave RAM changes the sound");
+  }
 
   // 2. The character the name says, from a held C-4. Levels are window means
   // (a chorus or an arpeggio makes single points jitter).
@@ -2064,7 +2208,7 @@ void prove_preset(int id) {
 
   // 3. Every setting the recipe makes (beyond picking the voice) is audible in it.
   const auto voice_only = parameters_after({{P::kWaveform, static_cast<double>(voice)}});
-  const auto scores = preset_scores(voice);
+  const auto scores = preset_scores(voice, values);
   std::vector<Take> full;
   for (const auto& score : scores) full.push_back(render(patch, score, 2.6));
   for (uint32_t pid = 0; pid < P::kParamCount; ++pid) {
@@ -2108,6 +2252,7 @@ void register_all() {
   register_dpcm();
   register_effects();
   register_sources();
+  register_pce_wave_ram();
   register_preset_parameter();
 }
 

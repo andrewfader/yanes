@@ -58,6 +58,13 @@ inline std::vector<PageSpec> yanes_pages() {
       {"CUSTOM", "Draw one repeating cycle • enable Custom wave to replace the source oscillator", theme::cyan, 1, 0,
        {{"Custom waveform · 32 samples / 4-bit levels", 0,
          {toggle(kCustomWave), lane(kWaveSample1, 32, -1, "Wave levels · 0 to 15")}}}},
+      {"PCE", "PC Engine wave RAM per channel • pick a built-in table, or Drawn to play the lane", theme::amber, 3, 0,
+       {{"Channel 1 · solo voice", 0, {menu(kPceWave1, 3), lane(kPceSample1, 32, -1, "Wave RAM · 0 to 31")}},
+        {"Channel 2", 1, {menu(kPceWave2, 3), lane(kPceSample1 + 32, 32, -1, "Wave RAM · 0 to 31")}},
+        {"Channel 3", 2, {menu(kPceWave3, 3), lane(kPceSample1 + 64, 32, -1, "Wave RAM · 0 to 31")}},
+        {"Channel 4", 0, {menu(kPceWave4, 3), lane(kPceSample1 + 96, 32, -1, "Wave RAM · 0 to 31")}},
+        {"Channel 5 · or noise", 1, {menu(kPceWave5, 3), lane(kPceSample1 + 128, 32, -1, "Wave RAM · 0 to 31")}},
+        {"Channel 6 · or noise", 2, {menu(kPceWave6, 3), lane(kPceSample1 + 160, 32, -1, "Wave RAM · 0 to 31")}}}},
   };
 }
 
@@ -97,6 +104,7 @@ inline const char* yanes_short_name(int id) {
     case kDpcmTrimEnd: return "Trim end";
     case kDpcmBaseKey: return "Base key";
     case kStrictHardware: return "Strict HW";
+    case kPceWave1: case kPceWave2: case kPceWave3: case kPceWave4: case kPceWave5: case kPceWave6: return "Wave";
     default: return nullptr;
   }
 }

@@ -25,12 +25,19 @@ bool gui_param_relevant(const Plugin* p, clap_id id) {
   const int waveform = static_cast<int>(value(kWaveform));
   if (id >= kWaveSample1 && id <= kWaveSample32) return true;
   if (value(kCustomWave) >= 0.5 || waveform == 58) {
+    if (id >= kPceWave1 && id <= kPceSampleLast) return false;
     if (id == kDuty || id == kDutySeqMode || id == kDutySeqLength || id == kDutySeqRate ||
         (id >= kDutyStep1 && id <= kDutyStep8) || id == kExpansionShape ||
         id == kNoisePeriod || id == kNoiseMode || id == kFmRatio || id == kFmIndex ||
         (id >= kFmAttack && id <= kFmPmDepth) || (id >= kDpcmBaseKey && id <= kDpcmTrimEnd) ||
         id == kDpcmRate || id == kGenesisAlgorithm || id == kGenesisFeedback ||
         (id >= kChipCutoff && id <= kFmBrightness)) return false;
+  }
+  // The solo PC Engine voice plays channel 1's picker; the stack gives each channel its own.
+  if (id >= kPceWave1 && id <= kPceWave6) return waveform == 35 || (waveform == 26 && id == kPceWave1);
+  if (id >= kPceSample1 && id <= kPceSampleLast) {
+    const clap_id picker = static_cast<clap_id>(kPceWave1) + (id - static_cast<clap_id>(kPceSample1)) / 32;
+    return static_cast<int>(value(picker)) == 1 && gui_param_relevant(p, picker);
   }
   if (id >= kSequence1 && id <= kSequence8) return static_cast<int>(value(kArpMode)) == 5;
   if (id >= kDutyStep1 && id <= kDutyStep8) return duty_waveform(waveform) && value(kDutySeqMode) >= 0.5;
@@ -63,7 +70,7 @@ bool gui_param_relevant(const Plugin* p, clap_id id) {
     case kSweepTime:return value(kSweepDepth) != 0.0;
     case kEnvelopeRate:return value(kHardwareEnvelope) >= 0.5;
     case kLayerMix:return static_cast<int>(value(kLayerMode)) != 0;
-    case kNoisePeriod:return waveform==2||waveform==18;
+    case kNoisePeriod:return waveform==2||waveform==18||waveform==83;
     case kNoiseMode:return waveform==2||waveform==12||waveform==14||waveform==16||waveform==18||waveform==19||
                            waveform==20||waveform==21||waveform==24||waveform==25||waveform==34||waveform==42||waveform==43||
                            waveform==64||waveform==72||waveform==82;
@@ -122,7 +129,7 @@ inline float ui_source_sample(Plugin* p, double phase) {
   switch (waveform) {
     case 0: case 10: case 18: case 19:
       return yanes::pulse_raw(phase, kDuties[std::clamp(static_cast<int>(v(kDuty)), 0, 3)]);
-    case 8: case 13: case 15: case 22: case 23: case 24: case 42: case 44:
+    case 8: case 13: case 15: case 22: case 23: case 24: case 42: case 44: case 83:
       return yanes::pulse_raw(phase, 0.5);
     case 1: return yanes::nes_triangle(phase);
     case 3: return yanes::pulse_raw(phase, (shape + 1) / 16.0);
@@ -130,7 +137,11 @@ inline float ui_source_sample(Plugin* p, double phase) {
     case 5: return yanes::fds_wave(phase, shape);
     case 6: case 11: return yanes::n163_wave(phase, shape);
     case 7: return yanes::vrc7_fm(phase, v(kFmRatio), v(kFmIndex));
-    case 26: case 35: return yanes::pce_wave(phase, shape);
+    case 26: case 35: {
+      std::array<uint8_t, 32> levels{};
+      if (pce_channel_levels(p, 0, levels)) return static_cast<float>(levels[std::min<size_t>(31, static_cast<size_t>(phase * 32.0))] / 15.5 - 1.0);
+      return yanes::pce_wave(phase, shape);
+    }
     case 38: case 39: return static_cast<float>(2.0 * phase - 1.0);  // SID default saw
     case 40: case 41: return yanes::scc_wave(phase, shape);
     case 46: return yanes::morph_wavetable(phase, v(kWavetablePosition), v(kWavetableWarp));
@@ -221,6 +232,8 @@ const char* gui_help(clap_id id) {
     case kPitchBendRange:return "Sets how many semitones a full pitch-wheel movement bends, up to four octaves.";
     default:break;
   }
+  if(id>=kPceWave1&&id<=kPceWave6)return "Picks this PC Engine channel's wave RAM: Default keeps the Shape-knob wave (noise on channels 5-6), Drawn plays the lane below, or a built-in 5-bit table. The solo voice uses channel 1.";
+  if(id>=kPceSample1&&id<=kPceSampleLast)return "Sets this 1/32 of the channel's wave-RAM cycle, 0 to 31; plays when the channel's wave is Drawn.";
   if(id>=kSequence1&&id<=kSequence8)return "Sets this step's pitch offset in semitones; plays when Arpeggio is User steps.";
   if(id>=kDutyStep1&&id<=kDutyStep8)return "Sets this step's pulse duty; plays when the duty sequence is on.";
   if(id>=kCentsStep1&&id<=kCentsStep8)return "Sets this step's fine pitch offset, up to a semitone either way; plays when the cents sequence is on.";

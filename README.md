@@ -91,7 +91,7 @@ error. It resamples differing source rates and also reports 1024-frame energy-en
 which is stable across different chip-core phase and resampling implementations. An optional
 minimum envelope-correlation threshold is suitable for CI.
 
-`advertised_tests` holds one proof per parameter (all 136) and one per preset (all 141) that it
+`advertised_tests` holds one proof per parameter (all 334) and one per preset (all 144) that it
 does what it advertises, measured from rendered audio in the advertised unit: Attack and
 Release in milliseconds, gains in dB, Transpose/Fine tune/bend/vibrato/sweep in semitones and
 cents, rates in Hz or steps per second, pulse duty in percent, FM index against the Bessel
@@ -207,7 +207,7 @@ speaker drive, and stereo width. Set **Retro amount** to zero for the clean chip
 The **Preset** parameter supplies clean NES, chord lead, DPCM kit, Game Boy, SMS, Genesis FM,
 bedroom-CRT, and noisy-RF starting points without requiring a plugin-owned window.
 
-The computer/arcade chip lab adds AY-3-8910/SSG tone and noise, Atari POKEY tone and 17-bit
+The computer/arcade chip lab adds AY-3-8910/SSG tone, noise, and tone + noise, Atari POKEY tone and 17-bit
 polynomial noise, PC Engine 32-sample/5-bit wavetable sound, OPL2 two-operator FM, OPL3
 four-operator FM, OPN/OPNA, and OPM. Stack modes provide useful channel layouts for PC-88,
 PC-98, X68000, Atari, PC Engine, and Sound Blaster OPL3. Yamaha FM modes (YM2612, OPL2, OPL3,
@@ -215,7 +215,14 @@ OPN/OPNA, OPM) write registers through ymfm. The remaining chip names are compac
 of each synthesis method, not register- or cycle-perfect emulators.
 
 The PC Engine stack routes channels 1–4 to wavetable voices and channels 5–6 to its 18-bit noise
-generator. PC-98 routes channels 1–6 to FM, 7–9 to SSG, 10–15 to synthesized rhythm (kick, snare,
+generator. The **PCE** page gives each of the six channels its own wave RAM: a **Wave** picker
+chooses Default (the Shape-knob wave, or noise on channels 5–6), Drawn (that channel's 32
+five-bit samples, painted in the lane below it), or one of fourteen built-in 5-bit tables (sine,
+triangle, saw, square, 25% and 12.5% pulse, organ, hollow, bell, sloped square, soft saw, half
+sine, double saw, buzz). Any picker but Default turns channels 5–6 into wavetable channels. The
+solo PC Engine wavetable voice plays channel 1's picker. **AY-3-8910 tone + noise** is the AY
+mixer with both enabled on one channel: the square only gets through while the shared 17-bit
+noise generator is high, and **Noise period** sets that generator's register. PC-98 routes channels 1–6 to FM, 7–9 to SSG, 10–15 to synthesized rhythm (kick, snare,
 tom, hats, cymbal), and 16 to the DPCM/sample bank used as an ADPCM stand-in. X68000 routes
 channels 1–8 to OPM and channel 9 to the same sample bank. Since MIDI has sixteen channels, the
 OPL3 stack exposes sixteen simultaneously addressable 2-operator parts rather than all eighteen
@@ -370,12 +377,13 @@ editor at four sizes with repeated window lifecycles and saves PPM screenshots. 
 X display; the ordinary CTest frontend checks remain headless. See the
 [native UI and leak results](docs/REVIEW_2026-09-26.md#follow-up-native-ui-and-leak-checks).
 
-The catalogue contains **83 sound sources and 141 factory presets** (plus Manual). Every source
+The catalogue contains **84 sound sources and 144 factory presets** (plus Manual). Every source
 has a factory starting preset, including the console stacks and noise voices. Recent recipes
 include the deep-bass set (Moog ladder, Oberheim SEM, Korg resonant, Moog lead), the 1980s synth
 families (Juno chorus strings, Prophet sync lead, Hoover rave stab, DX slap bass, CS-80 brass
 swell, SID PWM arp lead), the SNES voices (SNES soft bass, SNES bright sample, SNES sampler), and
-the Game Boy wave set.
+the Game Boy wave set, and the PC Engine wave-RAM and AY mixer recipes (PC Engine channel waves,
+PC Engine drawn lead, AY tone-noise rasp).
 
 The Game Boy wave set plays wave tables real games loaded into CH3, byte for byte: Pokemon Red
 round wave, Pokemon Crystal soft saw, hollow wave and buzz wave, Tetris Blast square wave, Link's
