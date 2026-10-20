@@ -1,5 +1,5 @@
 // Models for the second wave of sound sources: sample players (Amiga Paula, GBA DirectSound,
-// OKI ADPCM), one-bit speakers (ZX Spectrum, IBM PC, Apple II), the TMS5220-style LPC speech
+// Capcom QSound, OKI ADPCM), one-bit speakers (ZX Spectrum, IBM PC, Apple II), the TMS5220-style LPC speech
 // lattice, the Atari Lynx's programmable LFSR, the Virtual Boy and WonderSwan wavetables, the
 // AY-3-8910's envelope used as an oscillator, and a slapped electric bass.
 //
@@ -444,6 +444,81 @@ inline int8_t gba_builtin(int shape, int index) {
     default: w = 0.6 * std::sin(kTau * p) + 0.4 * std::sin(3.0 * kTau * p + 1.1); break;  // choir
   }
   return static_cast<int8_t>(std::clamp(std::lround(w * 120.0), -128L, 127L));
+}
+
+// ----- Capcom QSound ---------------------------------------------------------------------
+//
+// The CPS-2's QSound DSP (a DSP16A at 60 MHz) mixes 16 channels of 8-bit signed PCM at one fixed
+// output rate, 60 MHz / 2 / 1248 = 24038 Hz, with no interpolation: each channel adds a 16-bit
+// rate register (0x1000 = one sample per output) to its position, so pitch can only land on a
+// 1/4096-sample grid. The 8-bit samples are scaled by 16-bit volumes into a 16-bit mix. Built-in
+// loops are 128 bytes: the sampled instruments CPS-2 scores lean on, drawn from formulas.
+inline constexpr double kQsoundRate = 60000000.0 / 2.0 / 1248.0;
+inline constexpr int kQsoundLoop = 128;
+
+// The position step the rate register actually gives when asked for `step` samples per output.
+inline double qsound_step(double step) {
+  return std::clamp(std::round(step * 4096.0), 1.0, 65535.0) / 4096.0;
+}
+
+inline double qsound_shape(int shape, double p) {
+  auto partials = [p](int count, double tilt, bool odd_only) {
+    double s = 0.0;
+    for (int h = 1; h <= count; ++h)
+      if (!odd_only || (h % 2) == 1) s += std::sin(h * kTau * p) / std::pow(static_cast<double>(h), tilt);
+    return s;
+  };
+  switch (std::clamp(shape, 0, 7)) {
+    case 0: return partials(14, 0.85, false);                                              // brass
+    case 1: return partials(10, 1.15, false) + 0.12 * std::sin(7.0 * kTau * p + 0.6);    // strings
+    case 2: return std::sin(kTau * p) + 0.4 * std::sin(2.0 * kTau * p) + 0.24 * std::sin(3.0 * kTau * p + 0.4)
+                   + 0.13 * std::sin(6.0 * kTau * p);                                      // electric piano
+    case 3: return std::sin(kTau * p) + 0.56 * std::sin(2.0 * kTau * p) + 0.38 * std::sin(4.0 * kTau * p + 1.0)
+                   + 0.19 * std::sin(9.0 * kTau * p);                                      // slap bass
+    case 4: return std::sin(kTau * p) + 0.5 * std::sin(3.0 * kTau * p + 0.8) + 0.36 * std::sin(5.0 * kTau * p + 2.1);  // choir
+    case 5: return partials(9, 1.0, true);                                                 // reed
+    case 6: return partials(12, 1.0, false) + 0.5 * std::sin(2.0 * kTau * p) + 0.4 * std::sin(3.0 * kTau * p);  // orchestra hit
+    default: return p < 0.25 ? 1.0 : -0.33;                                                // pulse lead
+  }
+}
+
+// The Q1 output stage a centre-panned channel goes through at power-on. Measured as a black box
+// (an impulse in sample ROM, the response at each output) rather than taken from the DSP's filter
+// tables: each side is the dry signal plus a negative, one-pole-lowpassed copy a few samples later,
+// which cancels about half the bass (-5.8 dB at DC) and leaves the top flat. The right side runs
+// two samples behind the left. Delays are in output samples, from the left's dry path. Fitted with
+// 100 Hz-5 kHz weighted most, it matches the measured responses to about 25 dB; what it leaves
+// out is the filter's fine ripple, strongest from 400 Hz to 2 kHz.
+struct QsoundQ1 {
+  std::array<double, 8> line{};
+  size_t write{};
+  double low_left{}, low_right{};
+  void reset() { *this = QsoundQ1{}; }
+  double at(size_t back) const { return line[(write + line.size() - back) % line.size()]; }
+  // One 24038 Hz sample in, the left and right outputs.
+  std::array<double, 2> tick(double x) {
+    write = (write + 1) % line.size();
+    line[write] = x;
+    low_left = 0.483 * low_left + 0.517 * (0.339 * at(4) + 0.661 * at(5));
+    low_right = 0.552 * low_right + 0.448 * (0.928 * at(3) + 0.072 * at(4));
+    return {at(0) - 0.482 * low_left, at(2) - 0.472 * low_right};
+  }
+};
+
+// One byte of a built-in loop, each scaled to the same 8-bit peak.
+inline int8_t qsound_builtin(int shape, int index) {
+  static const auto table = [] {
+    std::array<std::array<int8_t, kQsoundLoop>, 8> t{};
+    for (int s = 0; s < 8; ++s) {
+      std::array<double, kQsoundLoop> w{};
+      double peak = 1e-9, mean = 0.0;
+      for (int i = 0; i < kQsoundLoop; ++i) { w[i] = qsound_shape(s, (i + 0.5) / kQsoundLoop); mean += w[i] / kQsoundLoop; }
+      for (int i = 0; i < kQsoundLoop; ++i) peak = std::max(peak, std::abs(w[i] - mean));
+      for (int i = 0; i < kQsoundLoop; ++i) t[s][i] = static_cast<int8_t>(std::lround((w[i] - mean) / peak * 120.0));
+    }
+    return t;
+  }();
+  return table[static_cast<size_t>(std::clamp(shape, 0, 7))][static_cast<size_t>(index & (kQsoundLoop - 1))];
 }
 
 // ----- slap bass -----------------------------------------------------------------------

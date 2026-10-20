@@ -39,7 +39,7 @@ int main(int argc,char**argv){
     {"msx-cymbal",71,9,150,60},{"msx-hihat",71,10,150,60},{"virtual-boy-wave",74,0,150,60},{"virtual-boy-noise",78,0,150,60},
     {"wonderswan-wave",75,0,150,72},{"wonderswan-noise",79,0,150,72},{"lynx",72,0,150,60},
     {"msx-ym2413",70,0,150,60},{"ay-buzzer",76,0,150,60},{"amiga",64,0,150,60},
-    {"gba-minmod",73,0,150,60},{"msm6295",69,0,150,60}};
+    {"gba-minmod",73,0,150,60},{"msm6295",69,0,150,60},{"qsound",84,0,150,60}};
   std::string requested=argv[2];int key_offset=0;
   if(requested.ends_with("-low")){requested.resize(requested.size()-4);key_offset=-12;}
   else if(requested.ends_with("-high")){requested.resize(requested.size()-5);key_offset=12;}

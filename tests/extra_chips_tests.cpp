@@ -188,7 +188,14 @@ void sample_loops_are_eight_bit() {
     lo = 127; hi = -128;
     for (int i = 0; i < X::kGbaLoop; ++i) { lo = std::min<int>(lo, X::gba_builtin(shape, i)); hi = std::max<int>(hi, X::gba_builtin(shape, i)); }
     assert(hi - lo > 100 && "each GBA loop uses most of the 8-bit range");
+    lo = 127; hi = -128;
+    for (int i = 0; i < X::kQsoundLoop; ++i) { lo = std::min<int>(lo, X::qsound_builtin(shape, i)); hi = std::max<int>(hi, X::qsound_builtin(shape, i)); }
+    assert(hi - lo > 100 && "each QSound loop uses most of the 8-bit range");
   }
+  // QSound's rate register steps in 1/4096 of a sample.
+  assert(X::qsound_step(1.0) == 1.0);
+  assert(std::abs(X::qsound_step(0.50003) * 4096.0 - std::round(X::qsound_step(0.50003) * 4096.0)) < 1e-9);
+  assert(std::abs(X::kQsoundRate - 24038.46) < 0.01);
 }
 
 void arcade_kit_sounds_are_short_and_distinct() {

@@ -11,7 +11,7 @@
 
 bool dpcm_waveform(int waveform) { return waveform==9||waveform==18||waveform==32||waveform==33; }
 // The sample players that read the bank (the SNES sampler, Paula, GBA, OKI).
-bool bank_waveform(int waveform) { return waveform==63||waveform==64||waveform==69||waveform==73||waveform==81||waveform==82; }
+bool bank_waveform(int waveform) { return waveform==63||waveform==64||waveform==69||waveform==73||waveform==81||waveform==82||waveform==84; }
 // The YM2413 voices: ROM instruments, with the FM controls only shaping instrument 0.
 bool opll_waveform(int waveform) { return waveform==70||waveform==71; }
 bool duty_waveform(int waveform) {
@@ -77,7 +77,7 @@ bool gui_param_relevant(const Plugin* p, clap_id id) {
     case kExpansionShape:return waveform==3||waveform==4||waveform==5||waveform==6||waveform==11||waveform==19||waveform==24||waveform==25||
                                 waveform==26||waveform==34||waveform==35||waveform==38||waveform==39||waveform==40||
                                 waveform==41||waveform==44||waveform==45||waveform==52||waveform==53||waveform==57||waveform==59||
-                                waveform==64||waveform==69||(waveform>=72&&waveform<=81);
+                                waveform==64||waveform==69||(waveform>=72&&waveform<=81)||waveform==84;
     case kFmRatio:return waveform==7||waveform==51||waveform==60;
     case kFmIndex:return waveform==7||waveform==49||waveform==51||waveform==55||waveform==60||waveform==61||waveform==80;
     case kDpcmRate:return dpcm_waveform(waveform);
@@ -99,7 +99,7 @@ const char* gui_param_name(clap_id id,int waveform){
   if(id==kWavetableWarp&&waveform==68)return "Talk rate";
   if(id==kFmIndex&&waveform==80)return "Ch 5 mod depth";
   if(id!=kExpansionShape)return kSpecs[static_cast<size_t>(id)].name;
-  if(waveform==64||waveform==73)return "Built-in loop";
+  if(waveform==64||waveform==73||waveform==84)return "Built-in loop";
   if(waveform==69)return "Kit layout";
   if(waveform==72)return "LFSR taps";
   if(waveform==74||waveform==75||waveform==80||waveform==81)return "Wave table";
@@ -165,6 +165,7 @@ inline float ui_source_sample(Plugin* p, double phase) {
     case 65: return yanes::pulse_raw(phase, 0.25);
     case 66: case 67: return yanes::pulse_raw(phase, 0.5);
     case 73: return yanes::extra::gba_builtin(shape, static_cast<int>(phase * yanes::extra::kGbaLoop)) / 128.0f;
+    case 84: return yanes::extra::qsound_builtin(shape, static_cast<int>(phase * yanes::extra::kQsoundLoop)) / 128.0f;
     case 74: case 75: case 80: case 81:
       return yanes::extra::console_wavetable(shape, phase, (waveform == 74 || waveform == 80) ? 64 : 16, waveform == 75 || waveform == 81);
     case 82: return yanes::pulse_raw(phase, kDuties[std::clamp(static_cast<int>(v(kDuty)), 0, 3)]);

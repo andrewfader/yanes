@@ -56,7 +56,7 @@ struct ParamSpec {
 };
 
 constexpr std::array<ParamSpec, kParamCount> kSpecs{{
-    {"Waveform", "Oscillator", 0, 83, 0, true},
+    {"Waveform", "Oscillator", 0, 84, 0, true},
     {"Pulse duty", "Oscillator", 0, 3, 1, true},
     {"Noise period", "Oscillator/Noise", 0, 15, 8, true},
     {"Noise mode", "Oscillator/Noise", 0, 1, 0, true},
@@ -134,7 +134,7 @@ constexpr std::array<ParamSpec, kParamCount> kSpecs{{
     {"DPCM trim end", "NES/DPCM bank", 0.05, 1, 1, false},
     {"Channel mute mask", "Hardware/Stack mixer", 0, 65535, 0, true},
     {"Channel solo mask", "Hardware/Stack mixer", 0, 65535, 0, true},
-    {"Preset", "Presets", 0, 144, 0, true},
+    {"Preset", "Presets", 0, 145, 0, true},
     {"Pitch bend range", "Performance", 0, 48, 2, true},
     {"Duty sequence", "Sequences/Duty", 0, 2, 0, true},
     {"Duty length", "Sequences/Duty", 1, 8, 4, true},
@@ -415,7 +415,7 @@ constexpr const char* kWaveNames[] = {
     "MSX-MUSIC stack", "Atari Lynx Mikey", "GBA DirectSound", "Virtual Boy VSU wavetable",
     "WonderSwan wavetable", "AY-3-8910 envelope buzzer", "Slap bass", "Virtual Boy noise",
     "WonderSwan noise", "Virtual Boy six-channel stack", "WonderSwan four-channel stack",
-    "GBA six-channel stack", "AY-3-8910 tone + noise"};
+    "GBA six-channel stack", "AY-3-8910 tone + noise", "Capcom QSound"};
 constexpr const char* kArpNames[] = {"Off", "Major", "Minor", "Octaves", "NES chord", "User steps"};
 constexpr const char* kLayerNames[] = {"Off", "Octave", "Fifth", "Sub octave", "Triangle", "Noise"};
 constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord lead",
@@ -523,7 +523,8 @@ constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord l
     "Game Boy quiet sine wave (Zelda:OoA)",
     "PC Engine channel waves",
     "PC Engine drawn lead",
-    "AY tone-noise rasp"};
+    "AY tone-noise rasp",
+    "Capcom QSound brass"};
 static_assert(std::size(kWaveNames) == static_cast<size_t>(kSpecs[kWaveform].max) + 1);
 static_assert(std::size(kPresetNames) == static_cast<size_t>(kSpecs[kPreset].max) + 1);
 

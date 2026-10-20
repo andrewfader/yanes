@@ -1500,6 +1500,7 @@ SCENARIO(integration_every_preset_uses_the_chip_it_is_named_after) {
       {"WonderSwan", 75, "WonderSwan wavetable"},
       {"AY buzzer", 76, "AY-3-8910 envelope buzzer"},
       {"AY tone-noise", 83, "AY-3-8910 tone + noise"},
+      {"QSound", 84, "Capcom QSound"},
       {"Seinfeld", 77, "Slap bass"},
       {"Genesis channel stack", 21, "Genesis 10ch stack"},
       {"Genesis noise", 16, "Genesis PSG noise"},
@@ -1528,6 +1529,7 @@ SCENARIO(integration_every_preset_uses_the_chip_it_is_named_after) {
       {"Game Boy 7-bit", 12, "Game Boy noise"},
       {"Game Boy noise", 12, "Game Boy noise"},
       {"Game Boy wave", 11, "Game Boy wave"},
+      {" (", 11, "Game Boy wave"},  // the game wave tables: "Game Boy <shape> wave (<game>)"
       {"Game Boy duty macro", 10, "Game Boy pulse"},
       {"Game Boy custom", 11, "Game Boy wave"},
       {"Game Boy", 10, "Game Boy pulse"},

@@ -1789,6 +1789,15 @@ void register_sources() {
       const size_t gba = levels(render({{P::kWaveform, 82}, {P::kAttackMs, 400}}, {on(0, 60, 0), off(1.0, 60, 0)}, 1.0).left);
       const size_t gb = levels(render({{P::kWaveform, 19}, {P::kAttackMs, 400}}, {on(0, 60, 0), off(1.0, 60, 0)}, 1.0).left);
       expect(gba <= 512 && gb > 2000, fmt("GBA output has 9-bit levels (%zu distinct vs Game Boy %zu)", gba, gb));
+      // QSound mixes at a fixed 24038 Hz: rendered at 48 kHz, the output can change at most
+      // 24038 times a second, about every other sample, whatever note plays.
+      {
+        const auto q = render({{P::kWaveform, 84}}, {on(0, 84), off(1.0, 84)}, 1.0).left;
+        size_t changes = 0;
+        for (size_t i = 4801; i < 43200; ++i) changes += q[i] != q[i - 1];
+        const double rate = changes / 0.8;
+        expect(rate > 20000 && rate <= 24100, fmt("QSound output steps at its 24038 Hz rate (%.0f changes/s)", rate));
+      }
       // WonderSwan channel 2 becomes a PCM voice when its bank slot holds a sample.
       {
         const auto dir = std::filesystem::temp_directory_path() / "yanes-advertised-swan-voice";
@@ -2057,6 +2066,7 @@ PresetClaim preset_claim(int id) {
       {{35}, kStack | kWaveRam},        // 142 PC Engine channel waves
       {{26}, kSustain | kWaveRam},      // 143 PC Engine drawn lead
       {{83}, kSustain | kNoisy},        // 144 AY tone-noise rasp
+      {{84}, kSustain},                 // 145 Capcom QSound brass
   }};
   static_assert(table.size() == std::size(P::kPresetNames), "one proof row per preset");
   return table[static_cast<size_t>(id)];

@@ -91,7 +91,7 @@ error. It resamples differing source rates and also reports 1024-frame energy-en
 which is stable across different chip-core phase and resampling implementations. An optional
 minimum envelope-correlation threshold is suitable for CI.
 
-`advertised_tests` holds one proof per parameter (all 334) and one per preset (all 144) that it
+`advertised_tests` holds one proof per parameter (all 334) and one per preset (all 145) that it
 does what it advertises, measured from rendered audio in the advertised unit: Attack and
 Release in milliseconds, gains in dB, Transpose/Fine tune/bend/vibrato/sweep in semitones and
 cents, rates in Hz or steps per second, pulse duty in percent, FM index against the Bessel
@@ -103,12 +103,12 @@ channels), and every setting its recipe makes must be audible in its sound. The 
 indexed by ID and sized to the parameter and preset lists, so the suite fails if a parameter or
 preset has no proof, no voice claim, or no character claim.
 
-The 38-chip audio suite (`tools/compare_furnace_audio.sh`, fixtures under `tests/furnace/`) uses
+The 39-chip audio suite (`tools/compare_furnace_audio.sh`, fixtures under `tests/furnace/`) uses
 `yanes-parity-compare`: onset alignment, log-band spectrum, octave-folded YIN pitch, and envelope
 shape. A fixture only selects a voice and plays a note — duty, wavetable, noise settings, FM ratio
 and release all come from the plugin's own per-voice defaults, so a passing row means the sound a
 user gets from that voice matches the chip, not that the engine could be talked into it. Each of the
-38 fixtures is also rendered an octave up and down as an untuned holdout; **all 110 registered
+39 fixtures is also rendered an octave up and down as an untuned holdout; **all 113 registered
 cases pass**.
 `yanes-parity-compare --self-test` runs as its own CTest to keep the gate from drifting into
 something a wrong render could satisfy. Every fixture is also scored by `envelope_oracle`, which
@@ -267,6 +267,17 @@ A further set covers sample players, one-bit speakers, speech, and the later han
   interpolation, and changes volume only once per video frame. It plays the bank or a built-in loop.
   The **GBA six-channel stack** adds the Game Boy's four PSG channels (1–4) to DirectSound A and B
   (5–6), and everything leaves through the GBA's 9-bit, 32768&nbsp;Hz DAC.
+- **Capcom QSound** is the CPS-2 arcade board's sample DSP (Street Fighter Alpha, Darkstalkers,
+  Marvel vs. Capcom). It steps 8-bit samples at its fixed 24038&nbsp;Hz output rate with no
+  interpolation, from a rate register with 1/4096-sample resolution, and mixes into one 16-bit word
+  per output sample. It plays the bank or one of eight built-in instrument loops (**Built-in loop**:
+  brass, strings, electric piano, slap bass, choir, reed, orchestra hit, pulse lead). Everything
+  then goes through the chip's power-on **Q1** output stage at centre pan: each side hears the dry
+  signal plus a negative, lowpassed copy a few samples later, which halves the bass and spreads the
+  two sides (the right runs two samples behind). Retro and rack effects process the mid of the two
+  sides; their difference rejoins after. The chip's own echo is left to the echo controls.
+  `qsound_parity` checks the voice and the Q1 stage against superctr's DL-1425 emulator (see
+  [FURNACE_PARITY.md](FURNACE_PARITY.md#qsound-reference-parity-dl-1425-emulator)).
 - **Virtual Boy VSU** (6-bit) and **WonderSwan** (4-bit) play 32-step wavetables from their 11-bit
   frequency registers, and each has a noise voice: a 15-bit LFSR with eight selectable taps
   (**Noise tap**), stepped from the frequency register. The **Virtual Boy six-channel stack** is
@@ -377,13 +388,13 @@ editor at four sizes with repeated window lifecycles and saves PPM screenshots. 
 X display; the ordinary CTest frontend checks remain headless. See the
 [native UI and leak results](docs/REVIEW_2026-09-26.md#follow-up-native-ui-and-leak-checks).
 
-The catalogue contains **84 sound sources and 144 factory presets** (plus Manual). Every source
+The catalogue contains **85 sound sources and 145 factory presets** (plus Manual). Every source
 has a factory starting preset, including the console stacks and noise voices. Recent recipes
 include the deep-bass set (Moog ladder, Oberheim SEM, Korg resonant, Moog lead), the 1980s synth
 families (Juno chorus strings, Prophet sync lead, Hoover rave stab, DX slap bass, CS-80 brass
 swell, SID PWM arp lead), the SNES voices (SNES soft bass, SNES bright sample, SNES sampler), and
 the Game Boy wave set, and the PC Engine wave-RAM and AY mixer recipes (PC Engine channel waves,
-PC Engine drawn lead, AY tone-noise rasp).
+PC Engine drawn lead, AY tone-noise rasp), and Capcom QSound brass.
 
 The Game Boy wave set plays wave tables real games loaded into CH3, byte for byte. Each preset is
 named for its shape, with the game it came from in parentheses: rounded pulse (Pokemon Red), ramp

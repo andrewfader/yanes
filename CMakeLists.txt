@@ -387,6 +387,27 @@ if(YANES_RESIDFP_LIB AND YANES_RESIDFP_INCLUDE)
 else()
   message(STATUS "SID reference parity disabled: libresidfp not found")
 endif()
+
+# QSound reference parity: pin the Capcom QSound voice to superctr's DL-1425 emulator (the core
+# MAME and Furnace use). Point this at the directory holding qsound.c/qsound.h (a Furnace
+# checkout's src/engine/platform/sound). Test-only, never linked into the product. Disabled when unset.
+set(YANES_QSOUND_REFERENCE "" CACHE PATH "Directory containing the reference qsound.c sources")
+if(YANES_QSOUND_REFERENCE)
+  if(NOT EXISTS "${YANES_QSOUND_REFERENCE}/qsound.c")
+    message(FATAL_ERROR "YANES_QSOUND_REFERENCE='${YANES_QSOUND_REFERENCE}' has no qsound.c")
+  endif()
+  set_source_files_properties("${YANES_QSOUND_REFERENCE}/qsound.c" PROPERTIES LANGUAGE CXX)
+  add_executable(qsound_parity tests/qsound_parity.cpp tests/qsound_reference.cpp
+    "${YANES_QSOUND_REFERENCE}/qsound.c")
+  target_compile_features(qsound_parity PRIVATE cxx_std_20)
+  target_include_directories(qsound_parity PRIVATE "${clap_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests" "${CMAKE_CURRENT_SOURCE_DIR}/src" "${YANES_QSOUND_REFERENCE}")
+  target_link_libraries(qsound_parity PRIVATE ${CMAKE_DL_LIBS})
+  yanes_enable_assertions(qsound_parity)
+  add_test(NAME qsound_parity COMMAND qsound_parity $<TARGET_FILE:yanes_clap>)
+else()
+  message(STATUS "QSound reference parity disabled: pass -DYANES_QSOUND_REFERENCE=/path/to/furnace/src/engine/platform/sound")
+endif()
 add_executable(bdd_e2e_tests tests/bdd_e2e_tests.cpp src/hardware_fm.cpp)
 target_include_directories(bdd_e2e_tests PRIVATE "${clap_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 target_compile_features(bdd_e2e_tests PRIVATE cxx_std_20)
@@ -535,7 +556,7 @@ if(YANES_FURNACE_FIXTURE_DIR)
 endif()
 
 # Full chip-audio oracle suite: timbre/pitch parity plus the envelope oracle for
-# 37 chip voices and 74 octave holdouts. Packaged Furnace 0.6.8.3 cannot load these INF2
+# 38 chip voices and 75 octave holdouts. Packaged Furnace 0.6.8.3 cannot load these INF2
 # fixtures, so there is no PATH lookup: point this at a git Furnace build (CI
 # builds one; see FURNACE_PARITY.md). A path that is set but missing is a
 # configuration error rather than a silently smaller suite.
@@ -546,13 +567,13 @@ elseif(NOT YANES_FURNACE_EXECUTABLE)
   message(STATUS "Furnace parity suite disabled: pass -DYANES_FURNACE_EXECUTABLE=/path/to/furnace")
 endif()
 if(YANES_FURNACE_EXECUTABLE)
-  # The original 21 chips, then the second wave: 38 fixtures, each with an octave-up and
+  # The original 21 chips, then the second wave: 39 fixtures, each with an octave-up and
   # octave-down holdout (FURNACE_PARITY.md lists what each one sets).
   set(YANES_FURNACE_FIXTURES ay-tone fds gameboy-noise gameboy-pulse gameboy-wave n163
       nes-noise nes-pulse nes-triangle pce-wave pokey-tone saa1099 scc sid6581
       sid8580 sms-noise sms-tone tia vrc6-pulse vrc6-saw vrc7
       pc-speaker zx-beeper virtual-boy-wave virtual-boy-noise wonderswan-wave wonderswan-noise
-      lynx msx-ym2413 msx-bass-drum msx-snare msx-tom msx-hihat msx-cymbal ay-buzzer amiga gba-minmod msm6295)
+      lynx msx-ym2413 msx-bass-drum msx-snare msx-tom msx-hihat msx-cymbal ay-buzzer amiga gba-minmod msm6295 qsound)
   # Known gaps: fixtures that pass timbre and pitch but whose note end misses the envelope gate
   # (60 ms) because ymfm's YM2413 envelope releases about 1.25x faster than Furnace's Nuked-OPLL
   # (see FURNACE_PARITY.md). Not registered rather than run with a looser gate.

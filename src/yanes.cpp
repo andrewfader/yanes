@@ -198,6 +198,10 @@ struct Plugin {
   uint64_t beeper_ticks{};
   double gba_phase{};  // The GBA's 32768 Hz output DAC.
   float gba_hold{};
+  double qsound_phase{};  // The QSound DSP's 24038 Hz output.
+  float qsound_hold{};
+  float qsound_side{};    // Half the Q1 stage's left-right difference, added after the mono rack.
+  yanes::extra::QsoundQ1 qsound_q1{};
   std::array<double,16> pitch_bend{};
   std::array<double,16> mod_wheel{};
   std::array<double,16> channel_volume{1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,
@@ -451,6 +455,7 @@ constexpr VoiceDefaults kVoiceDefaults[] = {
     {76, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // AY buzzer: falling-saw envelope
     {77, -1, 4, -1, -1, -1, -1, 90, 0, -1},   // Slap bass: thumb between soft and popped
     {83, -1, -1, 4, -1, -1, -1, 0, 0, -1},    // AY tone + noise: noise register 9, a fast rasp
+    {84, -1, 0, -1, -1, -1, -1, 0, 0, -1},    // Capcom QSound: built-in brass loop
 };
 
 void set_param(Plugin* p, clap_id id, double value, bool apply_preset);
@@ -716,6 +721,7 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
       break;
     case 143: put(kWaveform, 26); put(kPceWave1, 1); pce_drawn(0, "vvutsrqponmlkjihfedcba9876543210"); put(kReleaseMs, 150); put(kVibratoRate, 5.5); put(kVibratoDepth, 0.15); put(kVibratoDelay, 300); put(kGainDb, -6.0); break; // PC Engine drawn lead (a sloped square drawn into channel 1)
     case 144: put(kWaveform, 83); put(kNoisePeriod, 3); put(kReleaseMs, 30); put(kGainDb, -8.0); break; // AY tone-noise rasp (tone and noise mixed on one channel)
+    case 145: put(kWaveform, 84); put(kExpansionShape, 0); put(kReleaseMs, 220); put(kEchoMix, 0.18); put(kGainDb, 0.0); break; // Capcom QSound brass (CPS-2 sampled brass with the games' echo)
     default: break;
   }
 }
@@ -1875,6 +1881,29 @@ float render_voice(Plugin* p, Voice& v) {
       }
     }
     value = static_cast<float>(v.sample_hold);
+  } else if (waveform == 84) {
+    // Capcom QSound: 8-bit samples stepped at the DSP's fixed 24038 Hz output rate, nearest
+    // sample, by a rate register with 1/4096-sample resolution.
+    v.sample_clock += yanes::extra::kQsoundRate / p->sample_rate;
+    while (v.sample_clock >= 1.0) {
+      v.sample_clock -= 1.0;
+      if (v.snes_data && v.snes_data->pcm.size() >= 2) {
+        const BankWindow window = bank_window(p, v.snes_data->pcm.size());
+        if (bank_wrap(p, v, window)) {
+          v.sample_hold = bank_byte(v, window);
+          v.sample_pos += yanes::extra::qsound_step(yanes::snes::kNativeRate * bank_ratio(p, v, frequency) / yanes::extra::kQsoundRate);
+        } else {
+          v.sample_hold = 0.0;
+          v.releasing = true;
+        }
+      } else {
+        const int index = static_cast<int>(v.sample_pos) & (yanes::extra::kQsoundLoop - 1);
+        v.sample_hold = yanes::extra::qsound_builtin(shape, index) / 128.0;
+        v.sample_pos = std::fmod(v.sample_pos + yanes::extra::qsound_step(frequency * yanes::extra::kQsoundLoop / yanes::extra::kQsoundRate),
+                                 static_cast<double>(yanes::extra::kQsoundLoop));
+      }
+    }
+    value = static_cast<float>(v.sample_hold);
   } else if (waveform == 75 && selected_waveform == 81 && v.channel == 1 && v.snes_data && v.snes_data->pcm.size() >= 2) {
     // WonderSwan channel 2 in voice mode: the CPU writes 8-bit samples straight to its DAC, here
     // at 24 kHz from the loaded bank slot, nearest sample, no interpolation.
@@ -2171,6 +2200,10 @@ void plugin_reset(const clap_plugin_t* plugin) {
   p->beeper_ticks = 0;
   p->gba_phase = 0.0;
   p->gba_hold = 0.0f;
+  p->qsound_phase = 0.0;
+  p->qsound_hold = 0.0f;
+  p->qsound_side = 0.0f;
+  p->qsound_q1.reset();
   p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;
   p->output_peak_l.store(0.0f);p->output_peak_r.store(0.0f);p->output_clipped.store(false);
   p->nes_apu.reset();
@@ -2287,6 +2320,24 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
       if (p->gba_phase >= 1.0) { p->gba_phase -= std::floor(p->gba_phase); p->gba_hold = std::round(std::clamp(sample, -1.0f, 1.0f) * 256.0f) / 256.0f; }
       sample = p->gba_hold;
     }
+    const bool qsound = mixed_waveform == 84 && p->params[kCustomWave].load(std::memory_order_relaxed) < 0.5;
+    if (qsound) {
+      // QSound mixes every channel through its Q1 output stage into one 16-bit word per side per
+      // 24038 Hz output sample. A full-scale voice sits at half the DAC's range (voice volume
+      // 0x2000), leaving the 6 dB the Q1 stage's overshoot and a chord need. The rack is mono, so
+      // the two sides travel as their mean, and half their difference rejoins after it.
+      p->qsound_phase += yanes::extra::kQsoundRate / p->sample_rate;
+      if (p->qsound_phase >= 1.0) {
+        p->qsound_phase -= std::floor(p->qsound_phase);
+        const auto q1 = p->qsound_q1.tick(sample);
+        constexpr double half_range = 16384.0;
+        const double left = std::round(std::clamp(q1[0] * half_range, -32767.0, 32767.0)) / half_range;
+        const double right = std::round(std::clamp(q1[1] * half_range, -32767.0, 32767.0)) / half_range;
+        p->qsound_hold = static_cast<float>(0.5 * (left + right));
+        p->qsound_side = static_cast<float>(0.5 * (left - right));
+      }
+      sample = p->qsound_hold;
+    }
     if (beeper) {
       // One pin for every voice. Spectrum pin-pulse engines OR their narrow pulses together,
       // Apple II two-voice routines toggle the speaker for either voice (an XOR), and the PC
@@ -2332,7 +2383,12 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
       sample = static_cast<float>(clipped * master);
     }
     sample = process_retro(p, sample);
-    const StereoSample effected = process_rack(p, sample);
+    StereoSample effected = process_rack(p, sample);
+    if (qsound) {
+      const float side = static_cast<float>(p->qsound_side * db_gain(effective_param<kGainDb>(p)) * db_gain(effective_param<kMasterDb>(p)));
+      effected.left += side;
+      effected.right -= side;
+    }
     // Stereo width delays the right channel by up to 0.6 ms: the ear hears the two
     // sides as wider apart, with no change of level or tone on either.
     const double width_delay = std::min(255.0, std::round(effective_param<kStereoWidth>(p) * 0.0006 * p->sample_rate));

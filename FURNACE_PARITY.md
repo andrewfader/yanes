@@ -122,7 +122,7 @@ before that.
 
 Furnace `fa9541d` vs YANES at 48 kHz, for the original 21 chips: **21/21** primary fixtures
 and **42/42** octave holdouts, **63/63** overall, each row clearing every applicable threshold
-of both gates. The second wave below brings the registered suite to 110 cases.
+of both gates. The second wave below brings the registered suite to 113 cases.
 
 | Fixture | Envelope | Spectrum | Onset ms | Offset ms | Pitch cents | Env. shape dB | Env. local dB | Result |
 |---|---:|---:|---:|---:|---:|---:|---:|:---:|
@@ -150,8 +150,8 @@ of both gates. The second wave below brings the registered suite to 110 cases.
 
 ## Second wave (October 2026)
 
-Seventeen more fixtures cover the chips added in October 2026, each with octave holdouts:
-**110 registered parity tests pass** (37 primaries, 73 holdouts). Four cases (the `msx-cymbal`
+Eighteen more fixtures cover the chips added in October 2026, each with octave holdouts:
+**113 registered parity tests pass** (38 primaries, 75 holdouts). Four cases (the `msx-cymbal`
 fixture and both its holdouts, and `msx-ym2413`'s low holdout) are kept as files but not
 registered; CMake lists them at configure time. See *Known gaps* below.
 
@@ -173,6 +173,7 @@ nothing else:
 | amiga | Amiga | YANES's built-in 32-byte saw loop as the sample | Amiga Paula, C-4 |
 | gba-minmod | GBA MinMod (software mixer), 13379 Hz | YANES's built-in 64-byte string loop | GBA DirectSound, C-4 |
 | msm6295 | OKI MSM6295 | YANES's built-in arcade kick, at 7575 Hz | OKI MSM6295 ADPCM, C-4 (the kick) |
+| qsound | Capcom QSound (DL-1425), power-on centre pan | YANES's built-in 128-byte brass loop | Capcom QSound, C-4 |
 
 Furnace's Lynx driver clamps its timer above about D#5, so Furnace note 108 (C-6) plays 347 Hz;
 the Lynx fixture is centred on C-4 instead. The AY buzzer sets the envelope period directly
@@ -197,6 +198,7 @@ of a semitone sharp; YANES picks the nearest period. Snare, cymbal and hi-hat ar
 | amiga | 0.999 | 0.998 | 0.0 | 17.4 | 3.64 | 0.21 | 1.64 | -5 | Pass |
 | gba-minmod | 0.996 | 0.998 | 0.0 | 11.6 | 1.54 | 0.06 | 0.40 | 0 | Pass |
 | msm6295 | 1.000 | 1.000 | 0.0 | 0.0 | 3.73 | 0.09 | 0.11 | -5 | Pass |
+| qsound | 0.998 | 0.985 | 0.0 | 5.8 | 2.30 | 0.06 | 0.38 | 0 | Pass |
 | msx-cymbal (not registered) | 0.997 | 0.995 | 0.0 | 29.0 | n/a | 1.20 | 1.12 | -65 | Fail |
 
 ### What the references found
@@ -421,6 +423,30 @@ because their audio is the YM2413, not the PSG. Enable with
 `-DYANES_SMS_ROM=/path/to/game.sms` (the patched core defaults to
 `../yanes-oracles/genesis-plus-gx/genesis_plus_gx_libretro.so`); `tools/test_real_roms.sh` runs
 the SMS set alongside the NES, Game Boy and PC Engine lanes.
+
+## QSound reference parity (DL-1425 emulator)
+
+The Furnace `qsound` fixture passes, but its 24 log bands cannot tell the brass loop from the
+strings loop (spectrum 0.888 still clears 0.8). `qsound_parity` pins the voice to superctr's
+DL-1425 emulator directly (`qsound.c`, the core MAME and Furnace use, compiled from the Furnace
+tree with `-DYANES_QSOUND_REFERENCE=<furnace>/src/engine/platform/sound`; test-only, never linked
+into the product). Both play the same built-in loop at the same rate register for three loops
+(brass, strings, pulse) at C-3, C-4 and C-5, with the plug-in running at the chip's own 24038 Hz so
+each output sample is one DSP step. Each side is scored as signal-to-error after the best lag and
+gain over one second, against two gates:
+
+- **Voice, 35 dB.** The reference's linear-pan output is the bare voice; run through the plug-in's
+  Q1 model it must match the plug-in. The voice scores 44-92 dB. A wrong loop (3-11 dB), a
+  13379 Hz mix (7-18), a rate off the 1/4096 grid (10-20) and linear interpolation (14-28) all fail.
+- **Q1 output stage, 15 dB.** Against the reference's own power-on Q1 output the plug-in scores
+  19-29 dB. With no Q1 stage it scores 6-21 dB, with the wet path's sign flipped 3-20 dB, and with
+  left and right swapped 10-14 dB, all failing.
+
+The Q1 model is not the DSP's 95-tap filter tables. It was fitted from black-box impulse
+responses of the reference: on each side the dry signal plus a negative, one-pole-lowpassed copy a
+few samples later, which cancels about half the bass (-5.8 dB at DC). It matches the measured
+responses to about 25 dB; what it leaves out is the filter's fine ripple, worst from 400 Hz to
+2 kHz, which is why the Q1 gate sits lower than the voice gate.
 
 ## SID reference parity (reSIDfp)
 

@@ -148,6 +148,16 @@ int main(int argc, char **argv) {
          add_sample8(engine, loop, static_cast<int>(std::lround(261.6255653 * yanes::extra::kGbaLoop)));
          ins.amiga.initSample = 0;
        }, "sampRate=13379"},
+      // QSound mixes at its fixed 60 MHz / 2 / 1248 = 24038 Hz; Furnace runs superctr's DL-1425
+      // emulator with each channel at its power-on centre pan. The sample is YANES's built-in
+      // brass loop (128 bytes).
+      {"qsound", DIV_SYSTEM_QSOUND, 0,
+       [](DivEngine &engine, DivInstrument &ins, DivPattern &, int) {
+         std::vector<signed char> loop;
+         for (int i = 0; i < yanes::extra::kQsoundLoop; ++i) loop.push_back(yanes::extra::qsound_builtin(0, i));
+         add_sample8(engine, loop, static_cast<int>(std::lround(261.6255653 * yanes::extra::kQsoundLoop)));
+         ins.amiga.initSample = 0;
+       }, nullptr},
       // YANES's built-in arcade kick, rendered at the OKI's 7575 Hz; Furnace encodes it to ADPCM.
       {"msm6295", DIV_SYSTEM_MSM6295, 0,
        [](DivEngine &engine, DivInstrument &ins, DivPattern &, int) {
