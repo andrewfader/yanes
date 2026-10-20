@@ -385,11 +385,13 @@ swell, SID PWM arp lead), the SNES voices (SNES soft bass, SNES bright sample, S
 the Game Boy wave set, and the PC Engine wave-RAM and AY mixer recipes (PC Engine channel waves,
 PC Engine drawn lead, AY tone-noise rasp).
 
-The Game Boy wave set plays wave tables real games loaded into CH3, byte for byte: Pokemon Red
-round wave, Pokemon Crystal soft saw, hollow wave and buzz wave, Tetris Blast square wave, Link's
-Awakening wave bass, Kirby's Dream Land 2 wave, Gargoyle's Quest thin, bright and hollow waves,
-Mega Man Xtreme wave lead and buzz wave, Final Fantasy Adventure pulse wave, Metroid II wave,
-Wario Land spike wave, Mega Man V wave, and Oracle of Ages soft wave. The tables were harvested by
+The Game Boy wave set plays wave tables real games loaded into CH3, byte for byte. Each preset is
+named for its shape, with the game it came from in parentheses: rounded pulse (Pokemon Red), ramp
+saw, hollow notch and jagged buzz (Pokemon Crystal), square (Tetris Blast), slanted bass (Link's
+Awakening), double-hump (Kirby's Dream Land 2), thin triangle, bright plateau and shallow sine
+(Gargoyle's Quest), stepped sine lead and wobble buzz (Mega Man Xtreme), 25% pulse (Final Fantasy
+Adventure), pulse-train (Metroid II), narrow spike (Wario Land), trapezoid (Mega Man V) and quiet
+sine (Oracle of Ages). The tables were harvested by
 running each game under SameBoy (`yanes-gb-wave-harvest` logs every APU write while a seeded input
 schedule plays through menus and levels; `tools/gb_wave_tables.py` ranks the tables CH3 actually
 sounded). A table made the set only where its harmonic series differs from every other one's by

@@ -2037,23 +2037,23 @@ PresetClaim preset_claim(int id) {
       {{58}, kCustom | kDecay},         // 122 Crystal
       {{11}, kSustain | kBass},         // 123 Game Boy wave sine bass
       {{11}, kSustain},                 // 124 Game Boy wave organ
-      {{11}, kCustom | kSustain},       // 125 Pokemon Red round wave
-      {{11}, kCustom | kSustain},       // 126 Pokemon Crystal soft saw
-      {{11}, kCustom | kSustain},       // 127 Pokemon Crystal hollow wave
-      {{11}, kCustom | kSustain},       // 128 Pokemon Crystal buzz wave
-      {{11}, kCustom | kSustain},       // 129 Tetris Blast square wave
-      {{11}, kCustom | kSustain},       // 130 Link's Awakening wave bass
-      {{11}, kCustom | kSustain},       // 131 Kirby's Dream Land 2 wave
-      {{11}, kCustom | kSustain},       // 132 Gargoyle's Quest thin wave
-      {{11}, kCustom | kSustain},       // 133 Gargoyle's Quest bright wave
-      {{11}, kCustom | kSustain},       // 134 Gargoyle's Quest hollow wave
-      {{11}, kCustom | kSustain},       // 135 Mega Man Xtreme wave lead
-      {{11}, kCustom | kSustain},       // 136 Mega Man Xtreme buzz wave
-      {{11}, kCustom | kSustain},       // 137 Final Fantasy Adventure pulse wave
-      {{11}, kCustom | kSustain},       // 138 Metroid II wave
-      {{11}, kCustom | kSustain},       // 139 Wario Land spike wave
-      {{11}, kCustom | kSustain},       // 140 Mega Man V wave
-      {{11}, kCustom | kSustain},       // 141 Oracle of Ages soft wave
+      {{11}, kCustom | kSustain},       // 125 Game Boy rounded pulse wave (PKMN:R)
+      {{11}, kCustom | kSustain},       // 126 Game Boy ramp saw wave (PKMN:C)
+      {{11}, kCustom | kSustain},       // 127 Game Boy hollow notch wave (PKMN:C)
+      {{11}, kCustom | kSustain},       // 128 Game Boy jagged buzz wave (PKMN:C)
+      {{11}, kCustom | kSustain},       // 129 Game Boy square wave (Tetris Blast)
+      {{11}, kCustom | kSustain},       // 130 Game Boy slanted bass wave (Zelda:LA)
+      {{11}, kCustom | kSustain},       // 131 Game Boy double-hump wave (KDL2)
+      {{11}, kCustom | kSustain},       // 132 Game Boy thin triangle wave (GQ)
+      {{11}, kCustom | kSustain},       // 133 Game Boy bright plateau wave (GQ)
+      {{11}, kCustom | kSustain},       // 134 Game Boy shallow sine wave (GQ)
+      {{11}, kCustom | kSustain},       // 135 Game Boy stepped sine lead (MM Xtreme)
+      {{11}, kCustom | kSustain},       // 136 Game Boy wobble buzz wave (MM Xtreme)
+      {{11}, kCustom | kSustain},       // 137 Game Boy 25% pulse wave (FFA)
+      {{11}, kCustom | kSustain},       // 138 Game Boy pulse-train wave (Metroid II)
+      {{11}, kCustom | kSustain},       // 139 Game Boy narrow spike wave (Wario Land)
+      {{11}, kCustom | kSustain},       // 140 Game Boy trapezoid wave (MMV)
+      {{11}, kCustom | kSustain},       // 141 Game Boy quiet sine wave (Zelda:OoA)
       {{35}, kStack | kWaveRam},        // 142 PC Engine channel waves
       {{26}, kSustain | kWaveRam},      // 143 PC Engine drawn lead
       {{83}, kSustain | kNoisy},        // 144 AY tone-noise rasp
