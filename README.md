@@ -91,7 +91,7 @@ error. It resamples differing source rates and also reports 1024-frame energy-en
 which is stable across different chip-core phase and resampling implementations. An optional
 minimum envelope-correlation threshold is suitable for CI.
 
-`advertised_tests` holds one proof per parameter (all 334) and one per preset (all 145) that it
+`advertised_tests` holds one proof per parameter (all 335) and one per preset (all 147) that it
 does what it advertises, measured from rendered audio in the advertised unit: Attack and
 Release in milliseconds, gains in dB, Transpose/Fine tune/bend/vibrato/sweep in semitones and
 cents, rates in Hz or steps per second, pulse duty in percent, FM index against the Bessel
@@ -345,7 +345,7 @@ sample-accurate per-note tuning, volume, brightness, and pressure. Bitwig transp
 the arpeggiator and echo. Eight programmable pitch steps support tracker-style riffs, and Strict
 Hardware mode chokes an existing voice when a hardware-stack channel is retriggered.
 
-All 39 continuous parameters accept sample-accurate global CLAP parameter modulation, including
+All 40 continuous parameters accept sample-accurate global CLAP parameter modulation, including
 pitch, vibrato, FM brightness/feedback, filters, envelopes, and effects. Modulation offsets are
 added to the current automated base value and clamped to the parameter range; the editor and
 project state retain the base value. Reset clears transient offsets. Stepped choices remain
@@ -354,6 +354,10 @@ automatable, and per-note control uses the note expressions listed above.
 The internal effects rack contains soft drive, a feedback echo, and stereo modulated chorus. These
 run alongside the existing console/TV section, allowing a clean chip source, a tracker-like fake
 echo, a worn stereo digital effect, or the full RF/television treatment without extra devices.
+**Tape flutter** (FX + TV page, Cassette card) plays the whole output off a worn cassette: the
+read head lags by the integral of the transport's speed error, slow wow at 0.55 Hz from the
+capstan and reels plus pinch-roller flutter at 4.3 and 7.9 Hz, scaled so the knob is the RMS pitch
+deviation in cents. At zero the stage is bypassed.
 
 Technique presets demonstrate common chiptune arrangements with original settings: Envelope Bass
 Trick, Hyper Arpeggio Lead, Duty-Cycle Lead, Fake Echo Lead, Octave Power Bass, and Worn Chorus Pad.
@@ -388,13 +392,27 @@ editor at four sizes with repeated window lifecycles and saves PPM screenshots. 
 X display; the ordinary CTest frontend checks remain headless. See the
 [native UI and leak results](docs/REVIEW_2026-09-26.md#follow-up-native-ui-and-leak-checks).
 
-The catalogue contains **85 sound sources and 145 factory presets** (plus Manual). Every source
+The catalogue contains **85 sound sources and 147 factory presets** (plus Manual). Every source
 has a factory starting preset, including the console stacks and noise voices. Recent recipes
 include the deep-bass set (Moog ladder, Oberheim SEM, Korg resonant, Moog lead), the 1980s synth
 families (Juno chorus strings, Prophet sync lead, Hoover rave stab, DX slap bass, CS-80 brass
 swell, SID PWM arp lead), the SNES voices (SNES soft bass, SNES bright sample, SNES sampler), and
 the Game Boy wave set, and the PC Engine wave-RAM and AY mixer recipes (PC Engine channel waves,
-PC Engine drawn lead, AY tone-noise rasp), and Capcom QSound brass.
+PC Engine drawn lead, AY tone-noise rasp), Capcom QSound brass, and two cheap home keyboards
+taped on a 4-track cassette (4-track toy organ, 4-track melody keyboard).
+
+The 4-track presets are fitted to records rather than to a chip. `stem_gate_tests` plays each one
+through the CLAP interface at 44.1 kHz and measures it the way the song corpus's
+`scripts/features.py` measures a separated `other` stem (`tests/stem_features.hpp` ports its
+spectral centroid, 85% rolloff, share above 3 kHz, left/right correlation, and librosa pYIN tape
+wobble; on these renders the port agrees with the Python extractor to within 0.01 cents of wobble
+and 0.01 Hz of centroid). Each must land inside the interquartile range of the Olivia Tremor
+Control records' `other` stems in `tests/stem_reference.hpp`, which
+`python3 -I tools/stem_gate_reference.py song-corpus/features_ref.json` regenerates (numbers
+only), and the Porta FM toy organ, which has no tape stage, must fall outside it on wobble and
+stereo image. Their crest factor (1 to 7 dB against the stems' 9.7 to 10.9 dB), spectral flatness
+for the melody keyboard, and the toy organ's energy below 250 Hz are not gated and sit outside
+those ranges.
 
 The Game Boy wave set plays wave tables real games loaded into CH3, byte for byte. Each preset is
 named for its shape, with the game it came from in parentheses: rounded pulse (Pokemon Red), ramp
@@ -465,7 +483,8 @@ depend on the environment variable or original files. DPCM Base Key maps consecu
 slots; each file is limited to 1 MiB. Empty slots retain the generated, copyright-free kick/snare
 fallback. State versions 8 and 9 migrate their former single sample into slot one, while versions
 10 through 16 retain all sixteen slots and receive defaults for newer mixer, loop, DAC, trim,
-and later controls. Version 17 adds the per-slot BRR samples the SNES sample-bank voice plays.
+and later controls. Version 17 adds the per-slot BRR samples the SNES sample-bank voice plays,
+version 18 the PC Engine wave RAM, and version 19 Tape flutter.
 Each slot can loop independently through the DPCM Loop Mask, and DPCM Initial Level exposes the
 2A03 DAC starting value used before the first delta bit. DPCM Trim Start and Trim End provide
 normalized, non-destructive start/end boundaries shared by the bank; they are not per-sample loop

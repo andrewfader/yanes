@@ -231,6 +231,7 @@ const char* gui_help(clap_id id) {
     case kStackSoloMask:return "Stores soloed MIDI channels; use the channel tiles above for easier editing.";
     case kPreset:return "Loads a complete starting recipe; subsequent edits remain fully automatable.";
     case kPitchBendRange:return "Sets how many semitones a full pitch-wheel movement bends, up to four octaves.";
+    case kTapeFlutter:return "Plays the output off a worn cassette: slow wow and faster flutter, this many cents RMS. Zero is off.";
     default:break;
   }
   if(id>=kPceWave1&&id<=kPceWave6)return "Picks this PC Engine channel's wave RAM: Default keeps the Shape-knob wave (noise on channels 5-6), Drawn plays the lane below, or a built-in 5-bit table. The solo voice uses channel 1.";

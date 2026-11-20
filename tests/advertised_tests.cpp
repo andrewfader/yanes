@@ -1506,6 +1506,18 @@ void register_effects() {
       previous = high;
     }
   });
+  prove(P::kTapeFlutter, "Tape flutter is the RMS pitch deviation in cents", [] {
+    for (double cents : {0.0, 5.0, 15.0, 30.0}) {
+      const auto track = semitone_track(note(with(kClean, {{P::kTapeFlutter, cents}}), 5.0, 5.0, 69).mono(), 0.005, 0.02);
+      double sum = 0, squares = 0;
+      int n = 0;
+      for (size_t i = 60; i < 960 && i < track.size(); ++i)
+        if (!std::isnan(track[i])) { sum += track[i]; squares += track[i] * track[i]; ++n; }
+      const double mean = sum / n;
+      expect_near(100.0 * std::sqrt(std::max(0.0, squares / n - mean * mean)), cents, 0.3 + 0.1 * cents, "cents",
+                  fmt("Tape flutter %.0f cents", cents));
+    }
+  });
   auto channel_levels = [](const Patch& patch) {
     const auto x = render(with(kClean, patch), {on(0, 60, 0), on(0, 67, 1), on(0, 72, 5), off(0.6, 60, 0), off(0.6, 67, 1), off(0.6, 72, 5)}, 0.6).mono();
     const Span body(x, 9600, 14400);
@@ -1914,7 +1926,7 @@ void register_pce_wave_ram() {
 enum Claim : unsigned {
   kSustain = 1, kDecay = 2, kBass = 4, kArp = 8, kEcho = 16, kChorus = 32, kRetroChain = 64,
   kSweep = 128, kNoisy = 256, kStack = 512, kCustom = 1024, kDutyMacro = 2048, kDrums = 4096,
-  kWaveRam = 8192,
+  kWaveRam = 8192, kTape = 16384,
 };
 struct PresetClaim { std::vector<int> voices; unsigned claims; };
 
@@ -2067,6 +2079,8 @@ PresetClaim preset_claim(int id) {
       {{26}, kSustain | kWaveRam},      // 143 PC Engine drawn lead
       {{83}, kSustain | kNoisy},        // 144 AY tone-noise rasp
       {{84}, kSustain},                 // 145 Capcom QSound brass
+      {{51}, kSustain | kChorus | kTape},  // 146 4-track toy organ
+      {{47}, kSustain | kTape},         // 147 4-track melody keyboard
   }};
   static_assert(table.size() == std::size(P::kPresetNames), "one proof row per preset");
   return table[static_cast<size_t>(id)];
@@ -2194,6 +2208,16 @@ void prove_preset(int id) {
   if (claim.claims & kChorus) {
     const double lr = measure::correlation(Span(held.left, 9600, 24000), Span(held.right, 9600, 24000));
     expect(lr < 0.99, fmt("chorus widens it (left/right correlation %.3f)", lr));
+  }
+  if (claim.claims & kTape) {
+    // A held note's pitch wanders the way a worn cassette's does, by several cents.
+    const auto track = semitone_track(x, 0.005, 0.02);
+    double sum = 0, squares = 0;
+    int n = 0;
+    for (size_t i = 40; i < 280 && i < track.size(); ++i)
+      if (!std::isnan(track[i])) { sum += track[i]; squares += track[i] * track[i]; ++n; }
+    const double spread = n ? 100.0 * std::sqrt(std::max(0.0, squares / n - (sum / n) * (sum / n))) : 0.0;
+    expect(spread > 4.0, fmt("wobbles like tape (%.1f cents RMS while held)", spread));
   }
   if (claim.claims & kRetroChain) {
     const Take bypass = render(with(patch, {{P::kRetroAmount, 0}}), {on(0.0), off(1.5)}, 2.5);

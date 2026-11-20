@@ -1,5 +1,5 @@
-// CLAP state coverage: the current v18 round trip including DPCM bank payloads, the
-// legacy v8..v17 migration paths, and rejection of malformed blobs.
+// CLAP state coverage: the current v19 round trip including DPCM bank payloads, the
+// legacy v8..v18 migration paths, and rejection of malformed blobs.
 //
 // The legacy layouts are reconstructed here from the reader's own struct definitions.
 // That pins the on-disk contract so a future parameter insertion cannot silently shift
@@ -15,8 +15,9 @@ using namespace harness;
 namespace {
 
 constexpr uint32_t kMagic = 0x53454e59U;  // "YNES"
-constexpr uint32_t kCurrent = 18;            // the version the plug-in writes
+constexpr uint32_t kCurrent = 19;            // the version the plug-in writes
 constexpr size_t kV17Values = 136;           // parameters stored by v16 and v17
+constexpr size_t kV18Values = 334;           // parameters stored by v18
 
 // Byte-level builder for a state blob, so the tests do not depend on the plug-in's
 // private structs.
@@ -196,7 +197,7 @@ void test_editor_size_round_trip(const Library& library) {
 // size_count}; versions 8 and 9 stored a single DPCM size rather than sixteen.
 struct LegacyLayout { uint32_t version; size_t values; size_t sizes; };
 constexpr LegacyLayout kLegacy[] = {
-    {17, kV17Values, 16}, {16, kV17Values, 16}, {15, 103, 16}, {14, 91, 16}, {13, 79, 16}, {12, 77, 16}, {11, 75, 16}, {10, 73, 16}, {9, 72, 1}, {8, 62, 1},
+    {18, kV18Values, 16}, {17, kV17Values, 16}, {16, kV17Values, 16}, {15, 103, 16}, {14, 91, 16}, {13, 79, 16}, {12, 77, 16}, {11, 75, 16}, {10, 73, 16}, {9, 72, 1}, {8, 62, 1},
 };
 
 void test_legacy_migration(const Library& library) {
@@ -267,7 +268,7 @@ void test_legacy_sample_lands_in_first_slot(const Library& library) {
 
   StateMemory resaved;
   assert(save_state(plugin, &resaved));
-  // v18 header: magic, version, kParamCount doubles, sixteen DPCM sizes, sixteen
+  // v19 header: magic, version, kParamCount doubles, sixteen DPCM sizes, sixteen
   // BRR sizes, then the editor size.
   const size_t sizes_at = 8 + count * sizeof(double);
   uint32_t sizes[16]{};

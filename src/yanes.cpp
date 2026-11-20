@@ -211,6 +211,9 @@ struct Plugin {
   std::array<float, 256> width_line{};  // Stereo width: the right channel's short delay.
   size_t width_write{};
   double chorus_phase{};
+  std::vector<float> tape_left{}, tape_right{};  // The cassette transport's two tracks.
+  size_t tape_write{};
+  double tape_time{}, tape_depth{};
   std::atomic<double> tempo{120.0};
   std::array<AtomicSharedPtr<const std::vector<uint8_t>>, 16> dpcm_banks{};
   std::vector<std::shared_ptr<const std::vector<uint8_t>>> retired_dpcm_banks{};
@@ -505,7 +508,7 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
   if(previous!=value)p->ui_revision.fetch_add(1,std::memory_order_release);
   if (previous != value &&
       (id == kReleaseMs || id == kEchoMix || id == kEchoTime || id == kEchoFeedback ||
-       id == kChorusMix || id == kTempoSync || id == kSyncDivision))
+       id == kChorusMix || id == kTempoSync || id == kSyncDivision || id == kTapeFlutter))
     tail_changed(p);
   if (id == kGenesisAlgorithm || id == kGenesisFeedback || id == kFmBrightness ||
       (id >= kFmAttack && id <= kFmPmDepth)) p->fm_revision.fetch_add(1, std::memory_order_release);
@@ -722,6 +725,8 @@ void set_param(Plugin* p, clap_id id, double value, bool apply_preset = true) {
     case 143: put(kWaveform, 26); put(kPceWave1, 1); pce_drawn(0, "vvutsrqponmlkjihfedcba9876543210"); put(kReleaseMs, 150); put(kVibratoRate, 5.5); put(kVibratoDepth, 0.15); put(kVibratoDelay, 300); put(kGainDb, -6.0); break; // PC Engine drawn lead (a sloped square drawn into channel 1)
     case 144: put(kWaveform, 83); put(kNoisePeriod, 3); put(kReleaseMs, 30); put(kGainDb, -8.0); break; // AY tone-noise rasp (tone and noise mixed on one channel)
     case 145: put(kWaveform, 84); put(kExpansionShape, 0); put(kReleaseMs, 220); put(kEchoMix, 0.18); put(kGainDb, 0.0); break; // Capcom QSound brass (CPS-2 sampled brass with the games' echo)
+    case 146: put(kWaveform, 51); put(kFmRatio, 2); put(kFmIndex, 2.8); put(kFmBrightness, 0.5); put(kAttackMs, 1); put(kReleaseMs, 180); put(kFmSustainRate, 0); put(kChorusMix, 0.38); put(kTapeFlutter, 12); put(kGainDb, -6.0); break; // 4-track toy organ (a home FM keyboard's organ, chorused, on a worn cassette)
+    case 147: put(kWaveform, 47); put(kWavetablePosition, 0.95); put(kWavetableWarp, 0.1); put(kStereoWidth, 0.45); put(kTapeFlutter, 12); break; // 4-track melody keyboard (a Casio-style phase-distortion melody voice on a worn cassette)
     default: break;
   }
 }
@@ -939,7 +944,7 @@ void handle_event(Plugin* p, const clap_event_header_t* h, const clap_output_eve
       if (e->param_id == kGenesisFeedback || e->param_id == kFmBrightness)
         p->fm_revision.fetch_add(1, std::memory_order_release);
       if (e->param_id == kReleaseMs || e->param_id == kEchoMix || e->param_id == kEchoTime ||
-          e->param_id == kEchoFeedback || e->param_id == kChorusMix)
+          e->param_id == kEchoFeedback || e->param_id == kChorusMix || e->param_id == kTapeFlutter)
         tail_changed(p);
     }
   } else if (h->type == CLAP_EVENT_NOTE_ON) {
@@ -2113,6 +2118,36 @@ StereoSample process_rack(Plugin* p, float input) {
           echoed * (1.0f - chorus_mix) + chorus_r * chorus_mix};
 }
 
+// A cassette transport's speed error: wow from the capstan and reels, flutter from the pinch
+// roller. Each component's weight is its share of the RMS pitch deviation (the weights' squares
+// sum to two, so a deviation of D cents RMS is D times the sum of the weighted sines).
+struct TapeComponent { double hz, weight; };
+constexpr TapeComponent kTapeComponents[] = {{0.55, 1.0}, {4.3, 0.8}, {7.9, 0.6}};
+constexpr double kTapeMaxSeconds = 0.025;
+
+StereoSample process_tape(Plugin* p, StereoSample in) {
+  if (p->tape_left.empty()) return in;
+  const double target = effective_param<kTapeFlutter>(p);
+  p->tape_depth += (target - p->tape_depth) * (1.0 - std::exp(-1.0 / (0.02 * p->sample_rate)));
+  if (target == 0.0 && p->tape_depth < 1.0e-6) p->tape_depth = 0.0;
+  const size_t size = p->tape_left.size();
+  p->tape_left[p->tape_write] = in.left;
+  p->tape_right[p->tape_write] = in.right;
+  // The read head lags by the integral of the speed error: d(delay)/dt = ln 2 / 1200 per cent.
+  double lag = 0.0;
+  for (const auto& c : kTapeComponents)
+    lag += c.weight * (1.0 - std::cos(6.28318530718 * c.hz * p->tape_time)) / (6.28318530718 * c.hz);
+  p->tape_time += 1.0 / p->sample_rate;
+  const double back = std::min(static_cast<double>(size - 2), lag * p->tape_depth * 0.69314718056 / 1200.0 * p->sample_rate);
+  const size_t whole = static_cast<size_t>(back);
+  const float frac = static_cast<float>(back - static_cast<double>(whole));
+  const size_t a = (p->tape_write + size - whole) % size, b = (a + size - 1) % size;
+  p->tape_write = (p->tape_write + 1) % size;
+  if (p->tape_depth == 0.0) return in;
+  return {p->tape_left[a] + (p->tape_left[b] - p->tape_left[a]) * frac,
+          p->tape_right[a] + (p->tape_right[b] - p->tape_right[a]) * frac};
+}
+
 #ifdef YANES_HAS_EDITOR
 void gui_destroy(const clap_plugin_t* plugin);
 bool gui_is_open(const Plugin* p);
@@ -2166,6 +2201,8 @@ bool plugin_activate(const clap_plugin_t* plugin, double rate, uint32_t, uint32_
   p->sample_rate = rate;
   p->delay_buffer.assign(static_cast<size_t>(std::max(2.0, rate * 2.0)), 0.0f);
   p->delay_write = 0;
+  p->tape_left.assign(static_cast<size_t>(rate * kTapeMaxSeconds) + 2, 0.0f);
+  p->tape_right.assign(p->tape_left.size(), 0.0f);
   p->output_dc_x_l=p->output_dc_y_l=p->output_dc_x_r=p->output_dc_y_r=0.0;
   p->output_peak_l.store(0.0f);p->output_peak_r.store(0.0f);p->output_clipped.store(false);
   p->nes_apu.set_sample_rate(rate);
@@ -2186,6 +2223,11 @@ void plugin_reset(const clap_plugin_t* plugin) {
   std::fill(p->delay_buffer.begin(), p->delay_buffer.end(), 0.0f);
   p->width_line.fill(0.0f);
   p->width_write = 0;
+  std::fill(p->tape_left.begin(), p->tape_left.end(), 0.0f);
+  std::fill(p->tape_right.begin(), p->tape_right.end(), 0.0f);
+  p->tape_write = 0;
+  p->tape_time = 0.0;
+  p->tape_depth = effective_param<kTapeFlutter>(p);
   p->delay_write = 0;
   p->pitch_bend.fill(0.0);
   p->mod_wheel.fill(0.0);
@@ -2395,7 +2437,8 @@ clap_process_status plugin_process(const clap_plugin_t* plugin, const clap_proce
     p->width_line[p->width_write] = effected.right;
     const float right_delayed = p->width_line[(p->width_write + p->width_line.size() - static_cast<size_t>(width_delay)) % p->width_line.size()];
     p->width_write = (p->width_write + 1) % p->width_line.size();
-    const double raw_l = effected.left, raw_r = right_delayed;
+    const StereoSample taped = process_tape(p, {effected.left, right_delayed});
+    const double raw_l = taped.left, raw_r = taped.right;
     const int output_waveform=static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed));
     const bool custom_wave = p->params[kCustomWave].load(std::memory_order_relaxed) >= 0.5 ||
       static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed)) == 58;
@@ -2508,7 +2551,7 @@ const clap_plugin_params_t kParams{params_count, params_info, params_value, valu
 struct StateBlob { uint32_t magic; uint32_t version; double values[kParamCount]; uint32_t dpcm_sizes[16]; uint32_t brr_sizes[16]; uint32_t gui_width, gui_height; };
 bool state_save(const clap_plugin_t* plugin, const clap_ostream_t* stream) {
   if (!stream || !stream->write) return false;
-  StateBlob state{0x53454e59U, 18, {}, {}, {}, 0, 0};
+  StateBlob state{0x53454e59U, 19, {}, {}, {}, 0, 0};
 #ifdef YANES_HAS_EDITOR
   state.gui_width = self(plugin)->gui_width; state.gui_height = self(plugin)->gui_height;
 #endif
@@ -2538,8 +2581,16 @@ bool state_load(const clap_plugin_t* plugin, const clap_istream_t* stream) {
   for (clap_id i = 0; i < kParamCount; ++i) values[i] = kSpecs[i].def;
   std::array<uint32_t, 16> sizes{}, brr_sizes{};
   uint32_t gui_width = 0, gui_height = 0;
-  if (header.version == 18) {
+  if (header.version == 19) {
     StateBlob state{}; state.magic = header.magic; state.version = header.version;
+    if (!read_exact(reinterpret_cast<uint8_t*>(&state) + sizeof(header), sizeof(state) - sizeof(header))) return false;
+    std::copy(std::begin(state.values), std::end(state.values), values.begin());
+    std::copy(std::begin(state.dpcm_sizes), std::end(state.dpcm_sizes), sizes.begin());
+    std::copy(std::begin(state.brr_sizes), std::end(state.brr_sizes), brr_sizes.begin());
+    gui_width = state.gui_width; gui_height = state.gui_height;
+  } else if (header.version == 18) {
+    // v18 stored the 334 parameters up to the PC Engine wave RAM; v19 added Tape flutter.
+    struct Legacy18 { uint32_t magic, version; double values[334]; uint32_t dpcm_sizes[16]; uint32_t brr_sizes[16]; uint32_t gui_width, gui_height; } state{};
     if (!read_exact(reinterpret_cast<uint8_t*>(&state) + sizeof(header), sizeof(state) - sizeof(header))) return false;
     std::copy(std::begin(state.values), std::end(state.values), values.begin());
     std::copy(std::begin(state.dpcm_sizes), std::end(state.dpcm_sizes), sizes.begin());
@@ -2658,6 +2709,7 @@ uint32_t tail_get(const clap_plugin_t* plugin) {
   }
   if (chorus > 1.0e-6)
     seconds += 0.026; // 14 ms base delay plus the maximum 12 ms modulation depth.
+  if (effective_param<kTapeFlutter>(p) > 0.0) seconds += kTapeMaxSeconds;
   if (hardware_fm_waveform(static_cast<int>(p->params[kWaveform].load(std::memory_order_relaxed))))
     seconds = std::max(seconds, kChipReleaseCapSeconds);  // The chip's own release rings on.
   if (output_dc_blocker_active(p))

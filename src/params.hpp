@@ -43,6 +43,7 @@ enum ParamId : uint32_t {
   kPceWave1, kPceWave2, kPceWave3, kPceWave4, kPceWave5, kPceWave6,
   // Six channels of 32 wave-RAM samples, channel-major: channel c's sample s is kPceSample1 + 32 * c + s.
   kPceSample1, kPceSampleLast = kPceSample1 + 6 * 32 - 1,
+  kTapeFlutter,
   kParamCount
 };
 
@@ -134,7 +135,7 @@ constexpr std::array<ParamSpec, kParamCount> kSpecs{{
     {"DPCM trim end", "NES/DPCM bank", 0.05, 1, 1, false},
     {"Channel mute mask", "Hardware/Stack mixer", 0, 65535, 0, true},
     {"Channel solo mask", "Hardware/Stack mixer", 0, 65535, 0, true},
-    {"Preset", "Presets", 0, 145, 0, true},
+    {"Preset", "Presets", 0, 147, 0, true},
     {"Pitch bend range", "Performance", 0, 48, 2, true},
     {"Duty sequence", "Sequences/Duty", 0, 2, 0, true},
     {"Duty length", "Sequences/Duty", 1, 8, 4, true},
@@ -390,6 +391,7 @@ constexpr std::array<ParamSpec, kParamCount> kSpecs{{
     {"PCE ch 6 sample 30", "PC Engine wave RAM", 0, 31, 29, true},
     {"PCE ch 6 sample 31", "PC Engine wave RAM", 0, 31, 30, true},
     {"PCE ch 6 sample 32", "PC Engine wave RAM", 0, 31, 31, true},
+    {"Tape flutter", "Output/Cassette", 0, 30, 0, false},
 }};
 
 constexpr const char* kWaveNames[] = {
@@ -524,7 +526,9 @@ constexpr const char* kPresetNames[] = {"Manual", "Clean NES lead", "NES chord l
     "PC Engine channel waves",
     "PC Engine drawn lead",
     "AY tone-noise rasp",
-    "Capcom QSound brass"};
+    "Capcom QSound brass",
+    "4-track toy organ",
+    "4-track melody keyboard"};
 static_assert(std::size(kWaveNames) == static_cast<size_t>(kSpecs[kWaveform].max) + 1);
 static_assert(std::size(kPresetNames) == static_cast<size_t>(kSpecs[kPreset].max) + 1);
 
@@ -553,7 +557,7 @@ inline bool format_value(uint32_t id, double value, char* text, uint32_t capacit
   else if (id == kPreset) std::snprintf(text, capacity, "%s", kPresetNames[std::clamp(static_cast<int>(std::round(value)), 0, static_cast<int>(sizeof(kPresetNames) / sizeof(kPresetNames[0]) - 1))]);
   else if (id == kAttackMs || id == kReleaseMs || id == kPortamentoMs || id == kVibratoDelay || id == kEchoTime || id == kChorusDepth) std::snprintf(text, capacity, "%.1f ms", value);
   else if (id == kGainDb || id == kMasterDb) std::snprintf(text, capacity, "%.1f dB", value);
-  else if (id == kFineTune) std::snprintf(text, capacity, "%.1f cents", value);
+  else if (id == kFineTune || id == kTapeFlutter) std::snprintf(text, capacity, "%.1f cents", value);
   else if (id >= kCentsStep1 && id <= kCentsStep8) std::snprintf(text, capacity, "%+.0f cents", value);
   else if (id == kFmRatio) std::snprintf(text, capacity, "%.2f : 1", value);
   else if (id == kFmIndex || id == kGenesisFeedback || id == kRetroAmount || id == kRfNoise || id == kHum || id == kSpeaker || id == kStereoWidth || id == kChipResonance || id == kWavetablePosition || id == kWavetableWarp || id == kAdditiveTilt || id == kFmBrightness || id == kLayerMix || id == kDrive || id == kEchoMix || id == kEchoFeedback || id == kChorusMix) std::snprintf(text, capacity, "%.2f", value);

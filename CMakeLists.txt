@@ -427,6 +427,15 @@ yanes_enable_assertions(advertised_tests)
 add_test(NAME advertised_tests COMMAND advertised_tests $<TARGET_FILE:yanes_clap>)
 set_tests_properties(advertised_tests PROPERTIES TIMEOUT 600)
 
+# The record-fitted presets measured as the song corpus measures a stem, inside the records' range.
+add_executable(stem_gate_tests tests/stem_gate_tests.cpp)
+target_include_directories(stem_gate_tests PRIVATE "${clap_SOURCE_DIR}/include")
+target_compile_features(stem_gate_tests PRIVATE cxx_std_20)
+target_link_libraries(stem_gate_tests PRIVATE ${CMAKE_DL_LIBS})
+yanes_warnings(stem_gate_tests)
+yanes_enable_assertions(stem_gate_tests)
+add_test(NAME stem_gate_tests COMMAND stem_gate_tests $<TARGET_FILE:yanes_clap>)
+
 add_executable(envelope_tests tests/envelope_tests.cpp)
 target_include_directories(envelope_tests PRIVATE "${clap_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 target_compile_features(envelope_tests PRIVATE cxx_std_20)
